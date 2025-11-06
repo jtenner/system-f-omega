@@ -103,8 +103,8 @@ not functional yet.
 ```bash
 git clone https://github.com/yourname/system-f-omega.git
 cd system-f-omega
-npm install
-npm run build
+bun install
+bun run build
 ```
 
 ### Run the REPL or examples
@@ -115,9 +115,7 @@ This is not working yet, but it will be implemented at some point.
 # after installation
 bunx system-f-omega 
 # or
-npm run repl
-# or
-npm run example examples/polymorphic.ts
+bun repl
 ```
 
 ---
