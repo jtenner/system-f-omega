@@ -1,0 +1,56 @@
+{
+  "name": "system-f-omega",
+  "version": "0.0.1",
+  "description": "A higher‑kinded polymorphic type checker and experimental type system implementing System F‑Omega with traits, recursive types, variants, and kind inference.",
+  "license": "MIT",
+  "author": "Joshua Tenner <tenner.joshua@gmail.com>",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/jtenner/system-f-omega.git"
+  },
+  "homepage": "https://github.com/jtenner/system-f-omega#readme",
+
+  "type": "module",                           
+  "main": "./lib/index.js",                   
+  "types": "./lib/index.d.ts",                
+
+  "exports": {
+    ".": {
+      "import": "./lib/index.js",
+      "require": "./lib/index.cjs",
+      "types": "./lib/index.d.ts"
+    },
+    "./*": {
+      "import": "./lib/*.js",
+      "require": "./lib/*.cjs",
+      "types": "./lib/*.d.ts"
+    }
+  },
+
+  "files": [
+    "lib"
+  ],
+
+  "scripts": {
+    "build": "tsc",
+    "clean": "rm -rf lib",
+    "test": "bun test"
+  },
+
+  "keywords": [
+    "system-f",
+    "system-f-omega",
+    "typechecker",
+    "polymorphism",
+    "type-theory",
+    "lambda-calculus",
+    "higher-kinded-types",
+    "type-system",
+    "compiler"
+  ],
+  "devDependencies": {
+    "@biomejs/biome": "^2.3.4",
+    "@types/bun": "latest",
+    "typescript": "^5.9.3"
+  }
+}
