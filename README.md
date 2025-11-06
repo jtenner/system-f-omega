@@ -366,10 +366,10 @@ It is the core *type inference judgment* \(Γ ⊢ e : τ\).
 - **Returns:** The inferred type of the term, or a `TypingError` if type checking fails.
 
 - **Usage:**
-  ```ts
-  inferType(ctx, lamTerm("x", conType("Int"), varTerm("x")));
-  // => ok({ arrow: { from: Int, to: Int } })
-  ```
+```ts
+inferType(ctx, lamTerm("x", conType("Int"), varTerm("x")));
+// => ok({ arrow: { from: Int, to: Int } })
+```
 
 ---
 
@@ -383,10 +383,10 @@ This is the complementary relation \(Γ ⊢ e ⇐ τ\), used when the expected t
 - **Used internally** by `inferTypeWithMode`, applications, and polymorphic functions.
 
 - **Usage:**
-  ```ts
-  checkType(ctx, lamTerm("x", conType("Int"), varTerm("x")), arrowType(conType("Int"), conType("Int")));
-  // => ok({ type: (Int → Int), subst: Map(…) })
-  ```
+```ts
+checkType(ctx, lamTerm("x", conType("Int"), varTerm("x")), arrowType(conType("Int"), conType("Int")));
+// => ok({ type: (Int → Int), subst: Map(…) })
+```
 
 ---
 
@@ -400,10 +400,10 @@ Performs **type‑level β‑reduction** and **normalization**, simplifying type
 It ensures all types are in *normal form* for unification and equality checks.
 
 - **Example:**
-  ```ts
-  normalizeType(appType(lamType("t", starKind, arrowType(varType("t"), varType("t"))), conType("Int")));
-  // => (Int → Int)
-  ```
+```ts
+normalizeType(appType(lamType("t", starKind, arrowType(varType("t"), varType("t"))), conType("Int")));
+// => (Int → Int)
+```
 
 ---
 
@@ -413,10 +413,10 @@ Removes outer `∀`‑quantifiers by replacing bound variables with **fresh meta
 This transforms polymorphic types into monomorphic *instances* ready for checking or unification.
 
 - **Example:**
-  ```ts
-  instantiate(forallType("a", starKind, arrowType(varType("a"), varType("a"))));
-  // => (?0 → ?0)
-  ```
+```ts
+instantiate(forallType("a", starKind, arrowType(varType("a"), varType("a"))));
+// => (?0 → ?0)
+```
 
 - Useful when applying polymorphic functions to concrete arguments.
 
@@ -432,10 +432,10 @@ Implements logic similar to Haskell’s instance resolution.
 - Unifies `instance type` with the target `type`.
 
 - **Example:**
-  ```ts
-  checkTraitImplementation(ctx, "Eq", conType("Int"));
-  // => ok(dictTerm("Eq", Int, …))
-  ```
+```ts
+checkTraitImplementation(ctx, "Eq", conType("Int"));
+// => ok(dictTerm("Eq", Int, …))
+```
 
 ---
 
@@ -448,11 +448,11 @@ Attempts to unify two types, producing assignments for meta‑variables and gene
 - Returns errors for mismatched kinds or incompatible structures.
 
 - **Example:**
-  ```ts
-  const subst = new Map<string, Type>();
-  unifyTypes(varType("?0"), conType("Int"), [], subst);
-  // subst => Map("?0" → Int)
-  ```
+```ts
+const subst = new Map<string, Type>();
+unifyTypes(varType("?0"), conType("Int"), [], subst);
+// subst => Map("?0" → Int)
+```
 
 ---
 
@@ -466,10 +466,10 @@ Performs **subtyping** and **type containment** checking — ensuring that a mor
   - Structural subsumption (width subtyping for records and variants)
 
 - **Example:**
-  ```ts
-  subsumes(ctx, arrowType(conType("Int"), conType("Bool")), arrowType(neverType, conType("Bool")), [], new Map());
-  // ok(null) since ⊥ <: Int
-  ```
+```ts
+subsumes(ctx, arrowType(conType("Int"), conType("Bool")), arrowType(neverType, conType("Bool")), [], new Map());
+// ok(null) since ⊥ <: Int
+```
 
 ---
 
@@ -485,10 +485,10 @@ Used for:
 Supports all System‑FΩ constructs (`∀`, `λ`, `μ`, records, variants, traits, etc.).
 
 - **Example:**
-  ```ts
-  showType(forallType("a", starKind, arrowType(varType("a"), varType("a"))));
-  // => "∀a::*.(a → a)"
-  ```
+```ts
+showType(forallType("a", starKind, arrowType(varType("a"), varType("a"))));
+// => "∀a::*.(a → a)"
+```
 
 ---
 
@@ -499,10 +499,10 @@ Infers or validates the **kind** of a type (the “type of types”).
 Kinds ensure that type operators are used correctly — for instance `Option` has kind `* → *`, while `Int` has kind `*`.
 
 - **Example:**
-  ```ts
-  checkKind(ctx, lamType("t", starKind, arrowType(varType("t"), varType("t"))));
-  // => ok({ arrow: { from: *, to: * } })
-  ```
+```ts
+checkKind(ctx, lamType("t", starKind, arrowType(varType("t"), varType("t"))));
+// => ok({ arrow: { from: *, to: * } })
+```
 
 ---
 
@@ -512,12 +512,12 @@ Extracts variable bindings introduced by a pattern (from `match` or `let` constr
 The returned bindings form a partial context extension for pattern bodies.
 
 - **Example:**
-  ```ts
-  patternBindings(
-    recordPattern([["x", varPattern("y")], ["z", wildcardPattern()]])
-  );
-  // => [["y", { var: "$unknown" }]]
-  ```
+```ts
+patternBindings(
+  recordPattern([["x", varPattern("y")], ["z", wildcardPattern()]])
+);
+// => [["y", { var: "$unknown" }]]
+```
 
 ---
 
@@ -530,14 +530,14 @@ Ensures that a set of pattern clauses cover **all possible cases** for a given v
 - Returns a `TypingError` with `missing_case` if a label is not covered.
 
 - **Example:**
-  ```ts
-  checkExhaustive(
-    [variantPattern("Some", varPattern("x"))],
-    appType(conType("Option"), conType("Int")),
-    ctx
-  );
-  // => err({ missing_case: { label: "None" } })
-  ```
+```ts
+checkExhaustive(
+  [variantPattern("Some", varPattern("x"))],
+  appType(conType("Option"), conType("Int")),
+  ctx
+);
+// => err({ missing_case: { label: "None" } })
+```
 
 ---
 
