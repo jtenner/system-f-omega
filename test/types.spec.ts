@@ -21,6 +21,7 @@ import {
   freshMetaVar,
   getMetaSubstitution,
   getSpineArgs,
+  getSpineHead,
   inferType,
   inferTypeWithMode,
   injectTerm,
@@ -36,6 +37,7 @@ import {
   mergeSubsts,
   metaKind,
   muType,
+  neverType,
   normalizeType,
   projectTerm,
   recordPattern,
@@ -6514,4 +6516,63 @@ test("checkKind of recursive type using enum", () => {
   const actualConKind = assertOk(conKind, "Constructor kind should return");
 
   expect(kindsEqual(actualConKind, arrowKind(starKind, starKind))).toBe(true);
+});
+
+function resolveMetaVariables(t: Type): Type {
+  const subst = getMetaSubstitution(); // "?0" ↦ Result<?1,?2>, …
+  return applySubstitution(subst, t);
+}
+
+test("infers parameter type from usage (pattern match on Result)", () => {
+  // ---------- enum definition ----------
+  const resultEnum = {
+    name: "Result",
+    kind: arrowKind(starKind, arrowKind(starKind, starKind)), // * → * → *
+    params: ["a", "b"],
+    variants: [
+      ["Ok", varType("a")],
+      ["Err", varType("b")],
+    ],
+  } satisfies EnumDef;
+
+  const ctx: Context = [{ enum: resultEnum }];
+
+  // ---------- term ----------
+  const scrutinee = varTerm("n");
+  const matchTerm_ = matchTerm(scrutinee, [
+    // Ok carries a *single* field → no tuple wrapper
+    [variantPattern("Ok", varPattern("x")), varTerm("x")],
+    // Err discards its field
+    [
+      variantPattern("Err", wildcardPattern()),
+      conTerm("unreachable", neverType),
+    ],
+  ]);
+
+  const fnTerm = lamTerm("n", freshMetaVar(), matchTerm_);
+
+  // ---------- inference ----------
+  const res = inferType(ctx, fnTerm);
+  if ("err" in res)
+    throw new Error(`Inference failed: ${JSON.stringify(res.err)}`);
+
+  // Resolve the metas that have been solved during inference
+  const inferredType = resolveMetaVariables(res.ok); // ← NEW
+
+  console.log("Inferred type:", showType(inferredType));
+
+  // ---------- assertions ----------
+  expect("arrow" in inferredType).toBe(true);
+  const { from, to } = (inferredType as ArrowType).arrow;
+
+  // The parameter must be an application whose head is the enum constructor
+  expect(
+    "app" in from && // it is an app chain
+      "con" in getSpineHead(from) && // the head is a constructor
+      (getSpineHead(from) as { con: string }).con === "Result",
+  ).toBe(true);
+
+  // Return type must be the first type argument of the enum
+  const [firstArg] = getSpineArgs(from);
+  expect(typesEqual(to, firstArg!)).toBe(true);
 });

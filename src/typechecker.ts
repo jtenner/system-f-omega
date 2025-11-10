@@ -949,6 +949,49 @@ export function checkPattern(
 
     const normType = normalizeType(type, ctx);
 
+    // Handle meta variable case - infer enum type from pattern
+    if ("var" in normType && isMetaVar(normType)) {
+      const label = pattern.variant.label;
+
+      // Find enum with this variant label
+      const enumBinding = ctx.find(
+        (b) => "enum" in b && b.enum.variants.some(([l]) => l === label),
+      );
+
+      if (!enumBinding || !("enum" in enumBinding)) {
+        return err({ unbound: label });
+      }
+
+      const def = enumBinding.enum;
+
+      // Build enum type with fresh meta variables: Result<?1, ?2>
+      let enumType: Type = conType(def.name);
+      for (let i = 0; i < def.params.length; i++) {
+        enumType = appType(enumType, freshMetaVar());
+      }
+
+      // Unify the scrutinee's meta variable with the enum type
+      const worklist: Worklist = [];
+      const subst = new Map<string, Type>();
+      const unifyRes = unifyTypes(normType, enumType, worklist, subst);
+      if ("err" in unifyRes) return unifyRes;
+
+      const solveRes = solveConstraints(worklist, subst);
+      if ("err" in solveRes) return solveRes;
+
+      // Update global meta variable solutions
+      for (const [varName, soln] of solveRes.ok.entries()) {
+        if (metaKind.has(varName)) {
+          const globalSolve = solveMetaVar(varName, soln);
+          if ("err" in globalSolve) return globalSolve;
+        }
+      }
+
+      // Recurse with the resolved type
+      const resolvedType = applySubstitution(solveRes.ok, normType);
+      return checkPattern(pattern, resolvedType, ctx);
+    }
+
     // Structural
     if ("variant" in normType) {
       const caseType = normType.variant.find(
@@ -2886,13 +2929,11 @@ function inferFoldType(ctx: Context, term: FoldTerm) {
 
   return ok(term.fold.type);
 }
-
 function inferMatchType(ctx: Context, term: MatchTerm) {
   const scrutineeType = inferType(ctx, term.match.scrutinee);
   if ("err" in scrutineeType) return scrutineeType;
   let normalizedScrutinee = normalizeType(scrutineeType.ok, ctx);
   if ("mu" in normalizedScrutinee) {
-    // Automatically unfold folded values when pattern matching
     normalizedScrutinee = substituteType(
       normalizedScrutinee.mu.var,
       normalizedScrutinee,
@@ -2907,7 +2948,14 @@ function inferMatchType(ctx: Context, term: MatchTerm) {
   let commonType: Type | null = null;
 
   for (const [pat, bod] of term.match.cases) {
-    const patternResult = checkPattern(pat, normalizedScrutinee, ctx); // Now handles nominal
+    // Apply global meta variable solutions before checking each pattern
+    const globalSubst = getMetaSubstitution();
+    const currentScrutineeType = normalizeType(
+      applySubstitution(globalSubst, normalizedScrutinee),
+      ctx,
+    );
+
+    const patternResult = checkPattern(pat, currentScrutineeType, ctx); // ← Use currentScrutineeType
     if ("err" in patternResult) return patternResult;
 
     const extendedCtx = [...ctx, ...patternResult.ok];
@@ -2921,36 +2969,30 @@ function inferMatchType(ctx: Context, term: MatchTerm) {
     if (commonType === null) {
       commonType = instBodyType;
     } else {
-      // Use subsumes (subtype check) instead of unifyTypes to allow ⊥ <: commonType
-      // This handles unreachable arms: ⊥ from unreachable() <: t_ok]
       const worklist: Worklist = [];
       const subst = new Map<string, Type>();
 
-      // First, try subsuming new arm into the common (instBodyType <: commonType)
-      // If that fails, try reverse (commonType <: instBodyType) for bidirectional subtyping
       let subsumesRes = subsumes(
-        extendedCtx, // Use extended context for better binding resolution
-        instBodyType, // New arm type
-        commonType, // Existing common type
+        extendedCtx,
+        instBodyType,
+        commonType,
         worklist,
         subst,
       );
 
       if ("err" in subsumesRes) {
-        // Fallback: Try commonType <: instBodyType (e.g., if common is ⊥ and new is t_ok)
-        subst.clear(); // Clear previous subst
-        worklist.length = 0; // Clear worklist
+        subst.clear();
+        worklist.length = 0;
         subsumesRes = subsumes(
           extendedCtx,
-          commonType, // Existing
-          instBodyType, // New
+          commonType,
+          instBodyType,
           worklist,
           subst,
         );
       }
 
       if ("err" in subsumesRes) {
-        // If neither direction works, fall back to unification (strict equality) and error
         const unifyRes = unifyTypes(commonType, instBodyType, worklist, subst);
         if ("err" in unifyRes) return unifyRes;
       }
@@ -2958,16 +3000,12 @@ function inferMatchType(ctx: Context, term: MatchTerm) {
       const solveRes = solveConstraints(worklist, subst);
       if ("err" in solveRes) return solveRes;
 
-      // Update common to the least upper bound (LUB) or just apply subst to common
-      // For simplicity, apply to commonType; in full system, compute LUB if needed
       commonType = applySubstitution(solveRes.ok, commonType!);
     }
   }
 
-  // Ensure overall match is monotype (no generalization here)
   return ok(normalizeType(commonType!));
 }
-
 function inferInjectType(
   ctx: Context,
   term: InjectTerm,
