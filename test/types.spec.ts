@@ -21,11 +21,14 @@ import {
   freshMetaVar,
   getMetaSubstitution,
   getSpineArgs,
+  inferType,
   inferTypeWithMode,
   injectTerm,
   instantiateWithTraits,
   isAssignableTo,
+  isStarKind,
   kindArity,
+  kindsEqual,
   lamTerm,
   lamType,
   letTerm,
@@ -56,6 +59,7 @@ import {
   tupleType,
   tyappTerm,
   tylamTerm,
+  typeAliasBinding,
   typecheck,
   typesEqual,
   unfoldTerm,
@@ -70,8 +74,6 @@ import {
   varType,
   type Worklist,
   wildcardPattern,
-  typeAliasBinding,
-  inferType,
 } from "../src/typechecker.js";
 import type {
   ArrowType,
@@ -6479,4 +6481,38 @@ describe("Type Aliases", () => {
       expect(typesEqual(normalized, conType("Bool"))).toBe(true);
     });
   });
+});
+
+test("checkKind of recursive type using enum", () => {
+  const listEnum: EnumDef = {
+    name: "List",
+    kind: arrowKind(starKind, starKind), // * → *
+    params: ["t"],
+    variants: [
+      ["Nil", tupleType([])],
+      [
+        "Cons",
+        tupleType([varType("t"), appType(conType("List"), varType("t"))]),
+      ],
+    ],
+  };
+
+  const context: Context = [
+    { type: { name: "Int", kind: starKind } },
+    { enum: listEnum },
+  ];
+
+  // Now check the kind of List<Int>
+  const listIntType = appType(conType("List"), conType("Int"));
+  const val = checkKind(context, listIntType);
+  const actual = assertOk(val, "Kind should return");
+
+  expect(isStarKind(actual)).toBe(true);
+
+  // Or check the kind of the constructor itself
+  const listConType = conType("List");
+  const conKind = checkKind(context, listConType);
+  const actualConKind = assertOk(conKind, "Constructor kind should return");
+
+  expect(kindsEqual(actualConKind, arrowKind(starKind, starKind))).toBe(true);
 });

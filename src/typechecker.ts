@@ -11,6 +11,7 @@ import type {
   ConType,
   Context,
   DictTerm,
+  FieldScheme,
   FoldTerm,
   ForallType,
   InjectTerm,
@@ -46,7 +47,6 @@ import type {
   VariantType,
   VarTerm,
   VarType,
-  FieldScheme,
 } from "./types.js";
 import { err, ok } from "./types.js";
 
@@ -1372,10 +1372,17 @@ function checkConKind(context: Context, type: ConType, lenient: boolean) {
     return ok(kind);
   }
 
-  // Existing type constructor lookup
+  // Lookup kind in context (like vars) for user-defined type constructors
   const binding = context.find((b) => "type" in b && b.type.name === type.con);
   if (binding && "type" in binding) return ok(binding.type.kind);
 
+  // Also check for enum definitions
+  const enumBinding = context.find(
+    (b) => "enum" in b && b.enum.name === type.con,
+  );
+  if (enumBinding && "enum" in enumBinding) return ok(enumBinding.enum.kind);
+
+  // Unbound con: Error if strict, else assume * for lenient
   return lenient ? ok(starKind) : err({ unbound: type.con });
 }
 
