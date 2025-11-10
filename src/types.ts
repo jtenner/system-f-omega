@@ -143,6 +143,9 @@ export type Term =
 // Context entries for type checking
 export type TermBinding = { term: { name: string; type: Type } };
 export type TypeBinding = { type: { name: string; kind: Kind } };
+export type TypeAliasBinding = {
+  type_alias: { name: string; params: string[]; kinds: Kind[]; body: Type };
+};
 // Trait definition - defines required methods
 export type TraitDef = {
   name: string;
@@ -185,7 +188,8 @@ export type Binding =
   | TraitDefBinding // trait definition
   | TraitImplBinding // trait impl
   | DictBinding // dict binding
-  | EnumDefBinding; // enums
+  | EnumDefBinding // enums
+  | TypeAliasBinding; // Type Alias
 export type Context = Binding[];
 
 export type UnboundTypeError = { unbound: string };

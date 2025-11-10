@@ -1,9 +1,9 @@
-import { expect, test } from "bun:test";
+import { describe, expect, it, test } from "bun:test";
 import {
   applySubstitution,
   appTerm,
   appType,
-  arrow_kind,
+  arrowKind,
   arrowType,
   boundedForallType,
   checkExhaustive,
@@ -54,7 +54,7 @@ import {
   tupleProjectTerm,
   tupleTerm,
   tupleType,
-  tyapp_term,
+  tyappTerm,
   tylamTerm,
   typecheck,
   typesEqual,
@@ -70,6 +70,8 @@ import {
   varType,
   type Worklist,
   wildcardPattern,
+  typeAliasBinding,
+  inferType,
 } from "../src/typechecker.js";
 import type {
   ArrowType,
@@ -142,7 +144,7 @@ test("Type application", () => {
     starKind,
     lamTerm("x", varType("T"), varTerm("x")),
   );
-  const intId = tyapp_term(polyId, intType);
+  const intId = tyappTerm(polyId, intType);
   const result = typecheck([{ type: { kind: starKind, name: "Int" } }], intId);
   const type = assertOk(result, "should typecheck");
   assert("arrow" in type, "should be function type");
@@ -175,7 +177,7 @@ test("Polymorphic record projection", () => {
     ["y", conTerm("42", conType("Int"))],
   ]);
 
-  const app = appTerm(tyapp_term(selectX, conType("String")), record);
+  const app = appTerm(tyappTerm(selectX, conType("String")), record);
 
   const result = typecheck(context, app);
   const type = assertOk(result, "should infer polymorphic projection");
@@ -730,8 +732,8 @@ test("State monad return type structure", () => {
   assert("forall" in type.forall.body, "should be polymorphic in A");
 
   // Instantiate with concrete types: return[Int][String]
-  const concrete = tyapp_term(
-    tyapp_term(returnState, conType("Int")),
+  const concrete = tyappTerm(
+    tyappTerm(returnState, conType("Int")),
     conType("String"),
   );
 
@@ -780,7 +782,7 @@ test("State monad get operation", () => {
   );
 
   // Instantiate with Int: get[Int] : Int -> {value: Int, state: Int}
-  const intGet = tyapp_term(getState, conType("Int"));
+  const intGet = tyappTerm(getState, conType("Int"));
   const result = typecheck(context, intGet);
   const type = assertOk(result, "should instantiate get with Int");
 
@@ -827,7 +829,7 @@ test("State monad put operation", () => {
   );
 
   // Instantiate with Int
-  const intPut = tyapp_term(putState, conType("Int"));
+  const intPut = tyappTerm(putState, conType("Int"));
   const result = typecheck(context, intPut);
   const type = assertOk(result, "should instantiate put with Int");
 
@@ -1645,7 +1647,7 @@ test("Polymorphic self-application succeeds in System F", () => {
     "x",
     polyId, // x : ∀β. β → β
     appTerm(
-      tyapp_term(varTerm("x"), polyId), // x[∀β. β → β] : (∀β. β → β) → (∀β. β → β)
+      tyappTerm(varTerm("x"), polyId), // x[∀β. β → β] : (∀β. β → β) → (∀β. β → β)
       varTerm("x"), // x : ∀β. β → β
     ),
   );
@@ -2490,7 +2492,7 @@ test("Trait method returning trait-constrained type", () => {
       lamTerm(
         "x",
         varType("A"),
-        tyapp_term(traitMethodTerm(varTerm("monadDict"), "pure"), varType("A")),
+        tyappTerm(traitMethodTerm(varTerm("monadDict"), "pure"), varType("A")),
       ),
     ),
   );
@@ -2869,7 +2871,7 @@ test("Monad trait with Option instance", () => {
   // Test: pure wraps a value
   // pure[Int] 42 : Option Int
   const pureInt = appTerm(
-    tyapp_term(varTerm("optionPure"), intType),
+    tyappTerm(varTerm("optionPure"), intType),
     conTerm("42", intType),
   );
 
@@ -2895,12 +2897,12 @@ test("Monad trait with Option instance", () => {
   const identity = lamTerm(
     "x",
     intType,
-    appTerm(tyapp_term(varTerm("optionPure"), intType), varTerm("x")),
+    appTerm(tyappTerm(varTerm("optionPure"), intType), varTerm("x")),
   );
 
   const boundBind = appTerm(
     appTerm(
-      tyapp_term(tyapp_term(varTerm("optionBind"), intType), intType),
+      tyappTerm(tyappTerm(varTerm("optionBind"), intType), intType),
       someValue,
     ),
     identity,
@@ -2926,14 +2928,14 @@ test("Monad trait with Option instance", () => {
 
   const innerChain = appTerm(
     appTerm(
-      tyapp_term(tyapp_term(varTerm("optionBind"), intType), intType),
+      tyappTerm(tyappTerm(varTerm("optionBind"), intType), intType),
       someValue2,
     ),
     lamTerm(
       "y",
       intType,
       appTerm(
-        tyapp_term(varTerm("optionPure"), intType),
+        tyappTerm(varTerm("optionPure"), intType),
         conTerm("15", intType),
       ),
     ),
@@ -2941,7 +2943,7 @@ test("Monad trait with Option instance", () => {
 
   const outerChain = appTerm(
     appTerm(
-      tyapp_term(tyapp_term(varTerm("optionBind"), intType), intType),
+      tyappTerm(tyappTerm(varTerm("optionBind"), intType), intType),
       someValue,
     ),
     lamTerm("x", intType, innerChain),
@@ -2968,7 +2970,7 @@ test("GADTs simulation with variants", () => {
     ]),
   );
 
-  const eval_term = lamTerm(
+  const evalTerm = lamTerm(
     "expr",
     exprType,
     matchTerm(unfoldTerm(varTerm("expr")), [
@@ -2987,7 +2989,7 @@ test("GADTs simulation with variants", () => {
       { type: { kind: starKind, name: "Int" } },
       { type: { kind: starKind, name: "Bool" } },
     ],
-    eval_term,
+    evalTerm,
   );
   assertOk(result, "should handle GADT-like structures");
 });
@@ -3459,7 +3461,7 @@ test("Higher-rank polymorphism simulation", () => {
     lamTerm(
       "x",
       conType("Int"),
-      appTerm(tyapp_term(varTerm("id"), conType("Int")), varTerm("x")),
+      appTerm(tyappTerm(varTerm("id"), conType("Int")), varTerm("x")),
     ),
   );
 
@@ -3479,7 +3481,7 @@ test("Apply f to a polymorphic identity function", () => {
     lamTerm(
       "x",
       conType("Int"),
-      appTerm(tyapp_term(varTerm("id"), conType("Int")), varTerm("x")),
+      appTerm(tyappTerm(varTerm("id"), conType("Int")), varTerm("x")),
     ),
   );
 
@@ -3512,7 +3514,7 @@ test("Apply f to a polymorphic identity function", () => {
     lamTerm(
       "x",
       conType("Int"),
-      appTerm(tyapp_term(varTerm("id"), conType("Int")), varTerm("x")),
+      appTerm(tyappTerm(varTerm("id"), conType("Int")), varTerm("x")),
     ),
   );
 
@@ -3541,8 +3543,8 @@ test("Check that f can use the polymorphic parameter multiple times", () => {
       "x",
       conType("Int"),
       appTerm(
-        tyapp_term(varTerm("id"), conType("Int")),
-        appTerm(tyapp_term(varTerm("id"), conType("Int")), varTerm("x")),
+        tyappTerm(varTerm("id"), conType("Int")),
+        appTerm(tyappTerm(varTerm("id"), conType("Int")), varTerm("x")),
       ),
     ),
   );
@@ -3574,11 +3576,11 @@ test("Demonstrate the key property of rank-2 types", () => {
     "id",
     forallType("a", starKind, arrowType(varType("a"), varType("a"))),
     recordTerm([
-      ["int", appTerm(tyapp_term(varTerm("id"), conType("Int")), int42)],
+      ["int", appTerm(tyappTerm(varTerm("id"), conType("Int")), int42)],
       [
         "bool",
         appTerm(
-          tyapp_term(varTerm("id"), conType("Bool")),
+          tyappTerm(varTerm("id"), conType("Bool")),
           conTerm("true", conType("Bool")),
         ),
       ],
@@ -3610,7 +3612,7 @@ test("Demonstrate the key property of rank-2 types", () => {
     lamTerm(
       "x",
       conType("Int"),
-      appTerm(tyapp_term(varTerm("id"), conType("Int")), varTerm("x")),
+      appTerm(tyappTerm(varTerm("id"), conType("Int")), varTerm("x")),
     ),
   );
 
@@ -3931,11 +3933,11 @@ test("Let polymorphism basic", () => {
     polyId,
     tupleTerm([
       appTerm(
-        tyapp_term(varTerm("id"), conType("Int")),
+        tyappTerm(varTerm("id"), conType("Int")),
         conTerm("5", conType("Int")),
       ),
       appTerm(
-        tyapp_term(varTerm("id"), conType("Bool")),
+        tyappTerm(varTerm("id"), conType("Bool")),
         conTerm("true", conType("Bool")),
       ),
     ]),
@@ -5119,7 +5121,7 @@ test("createVariantLambda builds kind-aware λ-type constructor and applies corr
   ]);
 
   // Desired kind: * → * → *
-  const eitherKind = arrow_kind(starKind, arrow_kind(starKind, starKind));
+  const eitherKind = arrowKind(starKind, arrowKind(starKind, starKind));
 
   // Create λ-type constructor
   const ctor = createVariantLambda(eitherVariant, eitherKind);
@@ -5286,6 +5288,7 @@ test("Nominal injection into enum (Option::Some)", () => {
 
   const result = typecheck(context, someVal);
   const type = assertOk(result, "should typecheck nominal Some");
+  console.log(type);
   assert("app" in type, "should be Option<Int>");
   const spineArgs = getSpineArgs(type);
   assert(
@@ -5851,4 +5854,629 @@ test("instantiateWithTraits automatically finds Show impl", () => {
   // The instantiated type body replaces Self with Int
   expect("arrow" in type).toBe(true);
   expect(((type as ArrowType).arrow.to as ConType).con).toBe("String");
+});
+
+describe("Type Aliases", () => {
+  describe("Basic Aliases", () => {
+    it("should expand simple non-parameterized alias", () => {
+      const ctx: Context = [
+        // type Int32 = Int
+        typeAliasBinding("Int32", [], [], conType("Int")),
+        { type: { name: "Int", kind: starKind } },
+      ];
+
+      const aliasType = conType("Int32");
+      const normalized = normalizeType(aliasType, ctx);
+
+      expect(typesEqual(normalized, conType("Int"))).toBe(true);
+    });
+
+    it("should check kind of simple alias", () => {
+      const ctx: Context = [
+        // type Int32 = Int
+        typeAliasBinding("Int32", [], [], conType("Int")),
+        { type: { name: "Int", kind: starKind } },
+      ];
+
+      const result = checkKind(ctx, conType("Int32"));
+
+      expect("ok" in result).toBe(true);
+      if ("ok" in result) {
+        expect("star" in result.ok).toBe(true);
+      }
+    });
+
+    it("should use alias in term types", () => {
+      const ctx: Context = [
+        // type Int32 = Int
+        typeAliasBinding("Int32", [], [], conType("Int")),
+        { type: { name: "Int", kind: starKind } },
+        { term: { name: "x", type: conType("Int") } },
+      ];
+
+      // λy:Int32. x
+      const term = lamTerm("y", conType("Int32"), varTerm("x"));
+      const result = inferType(ctx, term);
+
+      expect("ok" in result).toBe(true);
+      if ("ok" in result) {
+        expect(
+          typesEqual(result.ok, arrowType(conType("Int"), conType("Int"))),
+        ).toBe(true);
+      }
+    });
+  });
+
+  describe("Parameterized Aliases", () => {
+    it("should expand single-parameter alias", () => {
+      const ctx: Context = [
+        // type Ref<a> = { value: a }
+        typeAliasBinding(
+          "Ref",
+          ["a"],
+          [starKind],
+          recordType([["value", varType("a")]]),
+        ),
+        { type: { name: "Int", kind: starKind } },
+      ];
+
+      // Ref<Int>
+      const aliasType = appType(conType("Ref"), conType("Int"));
+      const normalized = normalizeType(aliasType, ctx);
+
+      expect(
+        typesEqual(normalized, recordType([["value", conType("Int")]])),
+      ).toBe(true);
+    });
+
+    it("should expand multi-parameter alias", () => {
+      const ctx: Context = [
+        // type Pair<a, b> = (a, b)
+        typeAliasBinding(
+          "Pair",
+          ["a", "b"],
+          [starKind, starKind],
+          tupleType([varType("a"), varType("b")]),
+        ),
+        { type: { name: "Int", kind: starKind } },
+        { type: { name: "Bool", kind: starKind } },
+      ];
+
+      // Pair<Int, Bool>
+      const aliasType = appType(
+        appType(conType("Pair"), conType("Int")),
+        conType("Bool"),
+      );
+      const normalized = normalizeType(aliasType, ctx);
+
+      expect(
+        typesEqual(normalized, tupleType([conType("Int"), conType("Bool")])),
+      ).toBe(true);
+    });
+
+    it("should check kind of parameterized alias", () => {
+      const ctx: Context = [
+        // type Ref<a> = { value: a }
+        typeAliasBinding(
+          "Ref",
+          ["a"],
+          [starKind],
+          recordType([["value", varType("a")]]),
+        ),
+      ];
+
+      const result = checkKind(ctx, conType("Ref"));
+
+      expect("ok" in result).toBe(true);
+      if ("ok" in result) {
+        expect("arrow" in result.ok).toBe(true);
+        if ("arrow" in result.ok) {
+          expect("star" in result.ok.arrow.from).toBe(true);
+          expect("star" in result.ok.arrow.to).toBe(true);
+        }
+      }
+    });
+
+    it("should check kind of applied alias", () => {
+      const ctx: Context = [
+        // type Ref<a> = { value: a }
+        typeAliasBinding(
+          "Ref",
+          ["a"],
+          [starKind],
+          recordType([["value", varType("a")]]),
+        ),
+        { type: { name: "Int", kind: starKind } },
+      ];
+
+      // Ref<Int>
+      const result = checkKind(ctx, appType(conType("Ref"), conType("Int")));
+
+      expect("ok" in result).toBe(true);
+      if ("ok" in result) {
+        expect("star" in result.ok).toBe(true);
+      }
+    });
+  });
+
+  describe("Nested Aliases", () => {
+    it("should expand nested aliases", () => {
+      const ctx: Context = [
+        // type Ref<a> = { value: a }
+        typeAliasBinding(
+          "Ref",
+          ["a"],
+          [starKind],
+          recordType([["value", varType("a")]]),
+        ),
+        // type IntRef = Ref<Int>
+        typeAliasBinding(
+          "IntRef",
+          [],
+          [],
+          appType(conType("Ref"), conType("Int")),
+        ),
+        { type: { name: "Int", kind: starKind } },
+      ];
+
+      const aliasType = conType("IntRef");
+      const normalized = normalizeType(aliasType, ctx);
+
+      expect(
+        typesEqual(normalized, recordType([["value", conType("Int")]])),
+      ).toBe(true);
+    });
+
+    it("should expand aliases that reference other aliases", () => {
+      const ctx: Context = [
+        // type Pair<a, b> = (a, b)
+        typeAliasBinding(
+          "Pair",
+          ["a", "b"],
+          [starKind, starKind],
+          tupleType([varType("a"), varType("b")]),
+        ),
+        // type Triple<a, b, c> = (Pair<a, b>, c)
+        typeAliasBinding(
+          "Triple",
+          ["a", "b", "c"],
+          [starKind, starKind, starKind],
+          tupleType([
+            appType(appType(conType("Pair"), varType("a")), varType("b")),
+            varType("c"),
+          ]),
+        ),
+        { type: { name: "Int", kind: starKind } },
+        { type: { name: "Bool", kind: starKind } },
+        { type: { name: "String", kind: starKind } },
+      ];
+
+      // Triple<Int, Bool, String>
+      const aliasType = appType(
+        appType(appType(conType("Triple"), conType("Int")), conType("Bool")),
+        conType("String"),
+      );
+      const normalized = normalizeType(aliasType, ctx);
+
+      expect(
+        typesEqual(
+          normalized,
+          tupleType([
+            tupleType([conType("Int"), conType("Bool")]),
+            conType("String"),
+          ]),
+        ),
+      ).toBe(true);
+    });
+  });
+
+  describe("Aliases in Complex Types", () => {
+    it("should expand alias in arrow type", () => {
+      const ctx: Context = [
+        // type Ref<a> = { value: a }
+        typeAliasBinding(
+          "Ref",
+          ["a"],
+          [starKind],
+          recordType([["value", varType("a")]]),
+        ),
+        { type: { name: "Int", kind: starKind } },
+      ];
+
+      // Ref<Int> → Int
+      const funcType = arrowType(
+        appType(conType("Ref"), conType("Int")),
+        conType("Int"),
+      );
+      const normalized = normalizeType(funcType, ctx);
+
+      expect(
+        typesEqual(
+          normalized,
+          arrowType(recordType([["value", conType("Int")]]), conType("Int")),
+        ),
+      ).toBe(true);
+    });
+
+    it("should expand alias in forall type", () => {
+      const ctx: Context = [
+        // type Ref<a> = { value: a }
+        typeAliasBinding(
+          "Ref",
+          ["a"],
+          [starKind],
+          recordType([["value", varType("a")]]),
+        ),
+      ];
+
+      // ∀t. Ref<t>
+      const polyType = forallType(
+        "t",
+        starKind,
+        appType(conType("Ref"), varType("t")),
+      );
+      const normalized = normalizeType(polyType, ctx);
+
+      expect("forall" in normalized).toBe(true);
+      if ("forall" in normalized) {
+        expect(
+          typesEqual(
+            normalized.forall.body,
+            recordType([["value", varType("t")]]),
+          ),
+        ).toBe(true);
+      }
+    });
+
+    it("should expand alias in variant type", () => {
+      const ctx: Context = [
+        // type Ref<a> = { value: a }
+        typeAliasBinding(
+          "Ref",
+          ["a"],
+          [starKind],
+          recordType([["value", varType("a")]]),
+        ),
+        { type: { name: "Int", kind: starKind } },
+      ];
+
+      // <Some: Ref<Int> | None: ()>
+      const varTy = variantType([
+        ["Some", appType(conType("Ref"), conType("Int"))],
+        ["None", tupleType([])],
+      ]);
+      const normalized = normalizeType(varTy, ctx);
+
+      expect(
+        typesEqual(
+          normalized,
+          variantType([
+            ["Some", recordType([["value", conType("Int")]])],
+            ["None", tupleType([])],
+          ]),
+        ),
+      ).toBe(true);
+    });
+
+    it("should expand alias in record type", () => {
+      const ctx: Context = [
+        // type Pair<a, b> = (a, b)
+        typeAliasBinding(
+          "Pair",
+          ["a", "b"],
+          [starKind, starKind],
+          tupleType([varType("a"), varType("b")]),
+        ),
+        { type: { name: "Int", kind: starKind } },
+        { type: { name: "String", kind: starKind } },
+      ];
+
+      // { name: String, coords: Pair<Int, Int> }
+      const recType = recordType([
+        ["name", conType("String")],
+        [
+          "coords",
+          appType(appType(conType("Pair"), conType("Int")), conType("Int")),
+        ],
+      ]);
+      const normalized = normalizeType(recType, ctx);
+
+      expect(
+        typesEqual(
+          normalized,
+          recordType([
+            ["name", conType("String")],
+            ["coords", tupleType([conType("Int"), conType("Int")])],
+          ]),
+        ),
+      ).toBe(true);
+    });
+  });
+
+  describe("Higher-Kinded Aliases", () => {
+    it("should handle alias with higher-kinded parameter", () => {
+      const ctx: Context = [
+        // type Apply<f, a> = f<a>
+        typeAliasBinding(
+          "Apply",
+          ["f", "a"],
+          [arrowKind(starKind, starKind), starKind],
+          appType(varType("f"), varType("a")),
+        ),
+        { type: { name: "List", kind: arrowKind(starKind, starKind) } },
+        { type: { name: "Int", kind: starKind } },
+      ];
+
+      // Apply<List, Int>
+      const aliasType = appType(
+        appType(conType("Apply"), conType("List")),
+        conType("Int"),
+      );
+      const normalized = normalizeType(aliasType, ctx);
+
+      expect(
+        typesEqual(normalized, appType(conType("List"), conType("Int"))),
+      ).toBe(true);
+    });
+
+    it("should check kind of higher-kinded alias", () => {
+      const ctx: Context = [
+        // type Apply<f, a> = f<a>
+        typeAliasBinding(
+          "Apply",
+          ["f", "a"],
+          [arrowKind(starKind, starKind), starKind],
+          appType(varType("f"), varType("a")),
+        ),
+      ];
+
+      const result = checkKind(ctx, conType("Apply"));
+
+      expect("ok" in result).toBe(true);
+      if ("ok" in result) {
+        expect("arrow" in result.ok).toBe(true);
+        // Should be (* → *) → * → *
+      }
+    });
+  });
+
+  describe("Error Cases", () => {
+    it("should error on wrong arity for parameterized alias", () => {
+      const ctx: Context = [
+        // type Pair<a, b> = (a, b)
+        typeAliasBinding(
+          "Pair",
+          ["a", "b"],
+          [starKind, starKind],
+          tupleType([varType("a"), varType("b")]),
+        ),
+        { type: { name: "Int", kind: starKind } },
+      ];
+
+      // Pair<Int> - missing second argument
+      const aliasType = appType(conType("Pair"), conType("Int"));
+
+      // Should not normalize (partial application)
+      const normalized = normalizeType(aliasType, ctx);
+
+      // The partially applied type should remain as-is
+      expect("app" in normalized).toBe(true);
+    });
+
+    it("should error on unbound alias", () => {
+      const ctx: Context = [];
+
+      const result = checkKind(ctx, conType("UnknownAlias"));
+
+      expect("err" in result).toBe(true);
+      if ("err" in result) {
+        expect("unbound" in result.err).toBe(true);
+      }
+    });
+
+    it("should error on kind mismatch in alias application", () => {
+      const ctx: Context = [
+        // type Ref<a> = { value: a }  (expects a::*)
+        typeAliasBinding(
+          "Ref",
+          ["a"],
+          [starKind],
+          recordType([["value", varType("a")]]),
+        ),
+        { type: { name: "List", kind: arrowKind(starKind, starKind) } },
+      ];
+
+      // Ref<List> - List has kind * → *, but Ref expects *
+      const aliasType = appType(conType("Ref"), conType("List"));
+      const result = checkKind(ctx, aliasType);
+
+      expect("err" in result).toBe(true);
+      if ("err" in result) {
+        expect("kind_mismatch" in result.err).toBe(true);
+      }
+    });
+  });
+
+  describe("Integration Tests", () => {
+    it("should typecheck function using aliased types", () => {
+      const ctx: Context = [
+        // type Pair<a, b> = (a, b)
+        typeAliasBinding(
+          "Pair",
+          ["a", "b"],
+          [starKind, starKind],
+          tupleType([varType("a"), varType("b")]),
+        ),
+        { type: { name: "Int", kind: starKind } },
+        { type: { name: "String", kind: starKind } },
+      ];
+
+      // λp:Pair<Int, String>. p[0]
+      const term = lamTerm(
+        "p",
+        appType(appType(conType("Pair"), conType("Int")), conType("String")),
+        tupleProjectTerm(varTerm("p"), 0),
+      );
+
+      const result = typecheck(ctx, term);
+
+      expect("ok" in result).toBe(true);
+      if ("ok" in result) {
+        expect("arrow" in result.ok).toBe(true);
+      }
+    });
+
+    it("should typecheck polymorphic function with aliased types", () => {
+      const ctx: Context = [
+        // type Ref<a> = { value: a }
+        typeAliasBinding(
+          "Ref",
+          ["a"],
+          [starKind],
+          recordType([["value", varType("a")]]),
+        ),
+      ];
+
+      // Λt. λref:Ref<t>. ref.value
+      const term = tylamTerm(
+        "t",
+        starKind,
+        lamTerm(
+          "ref",
+          appType(conType("Ref"), varType("t")),
+          projectTerm(varTerm("ref"), "value"),
+        ),
+      );
+
+      const result = typecheck(ctx, term);
+
+      expect("ok" in result).toBe(true);
+      if ("ok" in result) {
+        expect("forall" in result.ok).toBe(true);
+      }
+    });
+
+    it("should typecheck pattern matching with aliased variant", () => {
+      const ctx: Context = [
+        // type Option<a> = <Some: a | None: ()>
+        typeAliasBinding(
+          "Option",
+          ["a"],
+          [starKind],
+          variantType([
+            ["Some", varType("a")],
+            ["None", tupleType([])],
+          ]),
+        ),
+        { type: { name: "Int", kind: starKind } },
+        {
+          term: {
+            name: "opt",
+            type: appType(conType("Option"), conType("Int")),
+          },
+        },
+      ];
+
+      // match opt { Some(x) => x | None(_) => 0 }
+      const term = matchTerm(varTerm("opt"), [
+        [variantPattern("Some", varPattern("x")), varTerm("x")],
+        [variantPattern("None", wildcardPattern()), varTerm("zero")],
+      ]);
+
+      // Add zero constant
+      const ctxWithZero = [
+        ...ctx,
+        { term: { name: "zero", type: conType("Int") } },
+      ];
+
+      const result = typecheck(ctxWithZero, term);
+
+      expect("ok" in result).toBe(true);
+      if ("ok" in result) {
+        expect(typesEqual(result.ok, conType("Int"))).toBe(true);
+      }
+    });
+
+    it("should handle recursive alias definitions", () => {
+      const ctx: Context = [
+        // type List<a> = <Nil: () | Cons: (a, List<a>)>
+        typeAliasBinding(
+          "List",
+          ["a"],
+          [starKind],
+          variantType([
+            ["Nil", tupleType([])],
+            [
+              "Cons",
+              tupleType([varType("a"), appType(conType("List"), varType("a"))]),
+            ],
+          ]),
+        ),
+        { type: { name: "Int", kind: starKind } },
+      ];
+
+      // List<Int>
+      const listIntType = appType(conType("List"), conType("Int"));
+      const normalized = normalizeType(listIntType, ctx);
+
+      expect("variant" in normalized).toBe(true);
+      if ("variant" in normalized) {
+        const consCase = normalized.variant.find(([label]) => label === "Cons");
+        expect(consCase).toBeDefined();
+        if (consCase) {
+          expect("tuple" in consCase[1]).toBe(true);
+        }
+      }
+    });
+  });
+
+  describe("Edge Cases", () => {
+    it("should handle alias shadowing", () => {
+      const ctx: Context = [
+        // type T = Int
+        typeAliasBinding("T", [], [], conType("Int")),
+        { type: { name: "Int", kind: starKind } },
+      ];
+
+      // ∀T. T (T is shadowed by forall)
+      const polyType = forallType("T", starKind, varType("T"));
+      const normalized = normalizeType(polyType, ctx);
+
+      expect("forall" in normalized).toBe(true);
+      if ("forall" in normalized) {
+        // T in body should refer to bound var, not alias
+        expect("var" in normalized.forall.body).toBe(true);
+        if ("var" in normalized.forall.body) {
+          expect(normalized.forall.body.var).toBe("T");
+        }
+      }
+    });
+
+    it("should handle empty alias (type synonym)", () => {
+      const ctx: Context = [
+        // type Unit = ()
+        typeAliasBinding("Unit", [], [], tupleType([])),
+      ];
+
+      const aliasType = conType("Unit");
+      const normalized = normalizeType(aliasType, ctx);
+
+      expect(typesEqual(normalized, tupleType([]))).toBe(true);
+    });
+
+    it("should preserve non-alias constructors", () => {
+      const ctx: Context = [
+        // type MyInt = Int
+        typeAliasBinding("MyInt", [], [], conType("Int")),
+        { type: { name: "Int", kind: starKind } },
+        { type: { name: "Bool", kind: starKind } },
+      ];
+
+      // Bool should not be affected
+      const boolType = conType("Bool");
+      const normalized = normalizeType(boolType, ctx);
+
+      expect(typesEqual(normalized, conType("Bool"))).toBe(true);
+    });
+  });
 });

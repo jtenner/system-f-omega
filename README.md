@@ -6,19 +6,24 @@
 
 ## 🧩 Overview
 
-**System‑F‑Ω** (pronounced *F‑Omega*) is an experimental **type inference and checking engine** that implements higher‑kinded polymorphism, trait constraints, recursive algebraic types, and structural typing — designed for advanced research, interpreters, and language runtime experiments.
+**System‑F‑Ω** _(pronounced F‑Omega)_ is an experimental, strongly typed type inference and checking engine for exploring advanced languages.
 
-It extends **System F** (the polymorphic lambda calculus) with:
-- Type abstractions and applications (`Λα::* . e`, `e [τ]`)
-- Higher‑kinded types (λ‑types)
-- Type‑level functions and application
-- First‑class record, variant, and tuple types
-- Recursive types (`μt. τ`)
-- Trait constraints and dictionary passing (Haskell‑style typeclasses)
-- Kind inference and unification
-- Nominal *and* structural type reasoning
+It builds on the System F family of calculi to support:
 
-The implementation is written in **TypeScript**, fully strongly typed, and modular — each feature neatly isolated in `./src/typechecker.ts`.
+- Polymorphism (∀a::*.)
+- Type operators (λ‑types & higher‑kinds)
+- Records, variants, and tuples
+- Recursive algebraic types (μ)
+- Traits / typeclasses (with dictionary passing)
+- Type aliases and nominals
+- Structural + nominal type reasoning
+
+## 🧠 Why It Exists
+
+
+If you’re exploring type systems, writing your own compiler, or curious how Haskell, Rust, or TypeScript type inference works, this project can serve as an educational playground.
+
+Unlike rigid compilers, System‑F‑Ω exposes the inference and substitution process — letting you see inside type unification and normalization.
 
 
 ## 📖 Glossary
@@ -48,6 +53,14 @@ They come from the theory of typed λ‑calculi, but you don’t need an academi
 | **Occurs Check** | A safeguard inside unification that prevents defining a variable in terms of itself (e.g., `a = a → a` would be infinite). Your typechecker implements this in `occursCheck()`. |
 | **Bottom Type (⊥ / never)** | A type that represents “no value can exist.” It is a subtype of all types. In your code this is `{ never: null }`. |
 | **Normalization (revisited)** | Specifically, *type‑level β‑reduction*, meaning that when a type function (λ‑type) is applied to an argument, its body is simplified by substituting the argument in place of the parameter. |
+| Feature | Description |
+|:--|:--|
+| **Type Alias Binding** | Use `typeAliasBinding("Name", params, kinds, body)` to introduce synonyms like `Result<T> = Either<Error, T>` |
+| **Binding Constructors** | All bindings can be created through simple helpers — `termBinding`, `typeBinding`, `dictBinding`, `traitDefBinding`, `enumDefBinding`, or `traitImplBinding` |
+| **Dictionary Bindings (Traits)** | Traits use dictionaries (`dictBinding(...)`) that provide evidence of trait implementations, automatically resolved by `checkTraitImplementation()` |
+| **Normalization** | Automatically expands aliases, reduces `(λt. …) Int`, and unfolds recursive or nominal enums |
+| **Pretty Printers** | Functions like `showType()`, `showKind()`, and `showContext()` present normalized readable forms in REPLs or logs |
+
 
 ---
 
@@ -82,6 +95,8 @@ system-f-omega/
 │   ├── recursion.ts       # μ-types and fold/unfold usage
 │   └── tuples.ts          # Heterogeneous tuples
 │
+├── tests/                 # Extensive type system tests
+│   └── ...
 ├── biome.json
 ├── bunfig.toml
 ├── package.json
@@ -97,6 +112,42 @@ You can use it as a library or (in the future) as a command-line repl tool.
 
 Please note that there is no CLI actually implemented yet, so it's largely
 not functional yet.
+
+## ✍️ Quick Start
+
+```ts
+import {
+  inferType,
+  lamTerm,
+  varTerm,
+  conType,
+  starKind,
+  arrowType,
+  termBinding,
+  typeAliasBinding,
+  showType,
+  showContext,
+} from "./src/typechecker.ts";
+
+// Define context with a type alias
+const ctx = [
+  typeAliasBinding("IntAlias", [], [], conType("Int")),
+  termBinding("id", arrowType(conType("Int"), conType("Int"))),
+];
+
+const expr = lamTerm("x", conType("Int"), varTerm("x")); // λx:Int.x
+
+console.log(showContext(ctx));
+console.log(showType(inferType(ctx, expr).ok));
+```
+
+Result:
+
+```
+Type Alias: IntAlias = Int
+Term: id = (Int → Int)
+(Int → Int)
+```
 
 ### Clone and build
 
@@ -292,7 +343,7 @@ const EqTrait = {
   trait_def: {
     name: "Eq",
     type_param: "Self",
-    kind: arrow_kind(starKind, starKind),           // * → *
+    kind: arrow_kind(starKind, starKind), // * → *
     methods: [
       ["eq", arrowType(varType("Self"),
                arrowType(varType("Self"), conType("Bool")))],
@@ -330,6 +381,25 @@ checkTraitImplementation(ctx, "Eq", conType("Int"));
 ```
 
 Now any function constrained by `Eq<Int>` can retrieve the corresponding dictionary automatically.
+
+🧩 Type Aliases
+
+
+Aliases are lightweight bindings that act like type in Haskell or TypeScript:
+
+```ts
+const MaybeAlias = typeAliasBinding(
+  "Maybe",
+  ["a"],
+  [starKind],
+  appType(conType("Option"), varType("a")),
+);
+
+// expands to Option<a>
+const result = normalizeType({ con: "Maybe" }, [MaybeAlias]);
+```
+
+
 
 ---
 
@@ -624,5 +694,5 @@ System‑F‑Ω extends System‑F with **higher kinds (kind polymorphism)** and
 
 ## 🧾 License
 
-MIT © 2025 — Developed by Josh  
+MIT © 2025 — Developed by Joshua Tenner
 Use freely for research, teaching, and experimental compilers.

@@ -46,6 +46,7 @@ import type {
   VariantType,
   VarTerm,
   VarType,
+  FieldScheme,
 } from "./types.js";
 import { err, ok } from "./types.js";
 
@@ -160,7 +161,7 @@ export function instantiateTerm(
       new Set([term.tylam.var]),
     );
     // Return as tyapp: Apply the fresh type to the substituted body
-    return tyapp_term(instBody, freshType);
+    return tyappTerm(instBody, freshType);
   }
 
   // Recurse on non-tylam cases (e.g., app, lam, match, inject, dict, etc.)
@@ -177,7 +178,7 @@ export function instantiateTerm(
       instantiateTerm(term.lam.body, fresh, context),
     );
   if ("tyapp" in term)
-    return tyapp_term(
+    return tyappTerm(
       instantiateTerm(term.tyapp.term, fresh, context),
       instantiate(term.tyapp.type, fresh),
     );
@@ -707,7 +708,7 @@ function applySubstitutionToTyAppTerm(
   term: TyAppTerm,
   avoidFree: Set<string>,
 ) {
-  return tyapp_term(
+  return tyappTerm(
     applySubstitutionToTerm(subst, term.tyapp.term, avoidFree),
     applySubstitution(subst, term.tyapp.type, avoidFree),
   );
@@ -946,7 +947,7 @@ export function checkPattern(
       return checkPattern(pattern, unfolded, ctx);
     }
 
-    const normType = normalizeType(type);
+    const normType = normalizeType(type, ctx);
 
     // Structural
     if ("variant" in normType) {
@@ -1341,13 +1342,40 @@ export function checkKind(
 }
 
 function checkConKind(context: Context, type: ConType, lenient: boolean) {
-  // Lookup kind in context (like vars) for user-defined type constructors
-  // (e.g., Option :: * → *)
+  // Check for type alias first
+  const aliasBinding = context.find(
+    (b) => "type_alias" in b && b.type_alias.name === type.con,
+  );
+
+  if (aliasBinding && "type_alias" in aliasBinding) {
+    const alias = aliasBinding.type_alias;
+
+    // Extend context with parameters before checking body
+    const extendedContext: Context = [
+      ...alias.params.map((param, i) => typeBinding(param, alias.kinds[i]!)),
+      ...context,
+    ];
+
+    // Check the kind of the body with extended context
+    const bodyKindResult = checkKind(extendedContext, alias.body, lenient);
+    if ("err" in bodyKindResult) return bodyKindResult;
+
+    // Build the kind: kind₁ → kind₂ → ... → result_kind
+    // Start with the body's kind
+    let kind: Kind = bodyKindResult.ok;
+
+    // Build arrow kinds from right to left
+    for (let i = alias.params.length - 1; i >= 0; i--) {
+      kind = arrowKind(alias.kinds[i]!, kind);
+    }
+
+    return ok(kind);
+  }
+
+  // Existing type constructor lookup
   const binding = context.find((b) => "type" in b && b.type.name === type.con);
   if (binding && "type" in binding) return ok(binding.type.kind);
 
-  // Unbound con: Error if strict, else assume * for lenient
-  // (e.g., forward refs in subtyping)
   return lenient ? ok(starKind) : err({ unbound: type.con });
 }
 
@@ -1444,7 +1472,7 @@ function checkLamKind(context: Context, type: LamType, lenient: boolean) {
   const bodyKind = checkKind(extendedContext, type.lam.body, lenient);
   if ("err" in bodyKind) return bodyKind;
 
-  return ok(arrow_kind(type.lam.kind, bodyKind.ok));
+  return ok(arrowKind(type.lam.kind, bodyKind.ok));
 }
 
 function checkBoundedForallKind(
@@ -1543,9 +1571,13 @@ function typesEqualSpine(left: Type, right: Type): boolean {
   return true;
 }
 
-export function typesEqual(left: Type, right: Type): boolean {
-  left = normalizeType(left);
-  right = normalizeType(right);
+export function typesEqual(
+  left: Type,
+  right: Type,
+  ctx: Context = [],
+): boolean {
+  left = normalizeType(left, ctx);
+  right = normalizeType(right, ctx);
 
   if ("var" in left && "var" in right && left.var === right.var) return true;
 
@@ -2769,19 +2801,22 @@ function inferTupleProjectType(ctx: Context, term: TupleProjectTerm) {
   const tupleType = inferType(ctx, term.tuple_project.tuple);
   if ("err" in tupleType) return tupleType;
 
-  if (!("tuple" in tupleType.ok)) return err({ not_a_tuple: tupleType.ok });
+  // Normalize to expand type aliases
+  const normalizedType = normalizeType(tupleType.ok, ctx);
+
+  if (!("tuple" in normalizedType)) return err({ not_a_tuple: normalizedType });
 
   const index = term.tuple_project.index;
-  if (index < 0 || index >= tupleType.ok.tuple.length) {
+  if (index < 0 || index >= normalizedType.tuple.length) {
     return err({
       tuple_index_out_of_bounds: {
-        tuple: tupleType.ok,
+        tuple: normalizedType,
         index,
       },
     });
   }
 
-  return ok(tupleType.ok.tuple[index]!);
+  return ok(normalizedType.tuple[index]!);
 }
 
 function inferTupleType(ctx: Context, term: TupleTerm) {
@@ -2822,12 +2857,14 @@ function inferFoldType(ctx: Context, term: FoldTerm) {
       type_mismatch: { expected: term.fold.type, actual: term.fold.type },
     });
 
-  const unfoldedType = substituteType(
+  const unfoldedTypeSubstituded = substituteType(
     term.fold.type.mu.var,
     term.fold.type,
     term.fold.type.mu.body,
     new Set([term.fold.type.mu.var]),
   );
+
+  const unfoldedType = normalizeType(unfoldedTypeSubstituded, ctx);
 
   const termType = inferType(ctx, term.fold.term);
   if ("err" in termType) return termType;
@@ -2846,7 +2883,7 @@ function inferFoldType(ctx: Context, term: FoldTerm) {
 function inferMatchType(ctx: Context, term: MatchTerm) {
   const scrutineeType = inferType(ctx, term.match.scrutinee);
   if ("err" in scrutineeType) return scrutineeType;
-  let normalizedScrutinee = normalizeType(scrutineeType.ok);
+  let normalizedScrutinee = normalizeType(scrutineeType.ok, ctx);
   if ("mu" in normalizedScrutinee) {
     // Automatically unfold folded values when pattern matching
     normalizedScrutinee = substituteType(
@@ -2872,7 +2909,7 @@ function inferMatchType(ctx: Context, term: MatchTerm) {
     if ("err" in bodyType) return bodyType;
 
     let instBodyType = instantiate(bodyType.ok);
-    instBodyType = normalizeType(instBodyType);
+    instBodyType = normalizeType(instBodyType, ctx);
 
     if (commonType === null) {
       commonType = instBodyType;
@@ -2928,7 +2965,7 @@ function inferInjectType(
   ctx: Context,
   term: InjectTerm,
 ): Result<TypingError, Type> {
-  const variantType = normalizeType(term.inject.variant_type); // e.g., app({con: "Option"}, {var: "t"})
+  const variantType = term.inject.variant_type; // Don't normalize yet!
 
   // Case 1: Nominal enum (app with con head, e.g., Option<t>, Either<l, r>)
   if ("app" in variantType || "con" in variantType) {
@@ -2940,70 +2977,69 @@ function inferInjectType(
       const enumBinding = ctx.find(
         (b) => "enum" in b && b.enum.name === conName,
       );
-      if (!enumBinding || !("enum" in enumBinding))
-        return err({ not_a_variant: variantType });
-      const def = enumBinding.enum; // {name: "Option", params: ["t"], variants: [["Some", {var: "t"}]]}
+      if (enumBinding && "enum" in enumBinding) {
+        const def = enumBinding.enum;
 
-      // Check arity: Spine args must match param count
-      if (spineArgs.length !== def.params.length)
-        return err({
-          kind_mismatch: { expected: def.kind, actual: starKind },
-        });
+        // Check arity: Spine args must match param count
+        if (spineArgs.length !== def.params.length)
+          return err({
+            kind_mismatch: { expected: def.kind, actual: starKind },
+          });
 
-      const label = term.inject.label; // "Some" or "Left"
-      const variantEntry = def.variants.find(([l]) => l === label); // Lookup by label
-      if (!variantEntry)
-        return err({
-          invalid_variant_label: { variant: variantType, label },
-        });
+        const label = term.inject.label;
+        const variantEntry = def.variants.find(([l]) => l === label);
+        if (!variantEntry)
+          return err({
+            invalid_variant_label: { variant: variantType, label },
+          });
 
-      // Instantiate the field scheme with spine args
-      // Field scheme is unbound (e.g., {var: "t"} or {tuple: [{var: "t1"}, {var: "t2"}]} for multi-field)
-      let expectedFieldType: Type = variantEntry[1]; // Unbound scheme
-      for (let i = 0; i < def.params.length; i++) {
-        const paramName = def.params[i]!; // "t" or "l"/"r"
-        const concreteArg = spineArgs[i]!; // {var: "t"} or {var: "l"}
-        expectedFieldType = substituteType(
-          paramName,
-          concreteArg,
+        // Instantiate the field scheme with spine args
+        let expectedFieldType: Type = variantEntry[1];
+        for (let i = 0; i < def.params.length; i++) {
+          const paramName = def.params[i]!;
+          const concreteArg = spineArgs[i]!;
+          expectedFieldType = substituteType(
+            paramName,
+            concreteArg,
+            expectedFieldType,
+          );
+        }
+        expectedFieldType = normalizeType(expectedFieldType, ctx);
+
+        // Check the injected value against the field type
+        const valueCheck = checkInjectValue(
+          term.inject.value,
           expectedFieldType,
+          ctx,
         );
+
+        return "err" in valueCheck ? valueCheck : ok(variantType);
       }
-      expectedFieldType = normalizeType(expectedFieldType); // Beta-reduce if needed
-
-      // Check the injected value against the field type
-      // Handles single value, unit (zero fields), or tuple (multi-fields)
-      const valueCheck = checkInjectValue(
-        term.inject.value,
-        expectedFieldType,
-        ctx,
-      );
-
-      return "err" in valueCheck ? valueCheck : ok(variantType);
     }
   }
 
-  // Case 2: Structural variant (legacy/fallback, e.g., {variant: [["Some", {var: "t"}]]})
-  if ("variant" in variantType) {
-    const caseEntry = variantType.variant.find(
+  // Case 2: Structural variant - NOW normalize to expand
+  const normalizedVariant = normalizeType(variantType, ctx);
+  if ("variant" in normalizedVariant) {
+    const caseEntry = normalizedVariant.variant.find(
       ([l]) => l === term.inject.label,
     );
     if (!caseEntry)
       return err({
         invalid_variant_label: {
-          variant: variantType,
+          variant: normalizedVariant,
           label: term.inject.label,
         },
       });
 
-    const expectedFieldType = caseEntry[1]; // e.g., {var: "t"}
+    const expectedFieldType = caseEntry[1];
     const valueCheck = checkInjectValue(
       term.inject.value,
       expectedFieldType,
       ctx,
     );
 
-    return "err" in valueCheck ? valueCheck : ok(variantType);
+    return "err" in valueCheck ? valueCheck : ok(variantType); // Return original
   }
 
   // Neither nominal nor structural: Fail
@@ -3107,15 +3143,19 @@ function inferProjectType(ctx: Context, term: ProjectTerm) {
   const recordType = inferType(ctx, term.project.record);
   if ("err" in recordType) return recordType;
 
-  if (!("record" in recordType.ok)) return err({ not_a_record: recordType.ok });
+  // Normalize to expand type aliases
+  const normalizedType = normalizeType(recordType.ok, ctx);
 
-  const fieldType = recordType.ok.record.find(
+  if (!("record" in normalizedType))
+    return err({ not_a_record: normalizedType });
+
+  const fieldType = normalizedType.record.find(
     (t) => t[0] === term.project.label,
   );
   if (!fieldType) {
     return err({
       missing_field: {
-        record: recordType.ok,
+        record: normalizedType,
         label: term.project.label,
       },
     });
@@ -3235,8 +3275,8 @@ function inferTraitAppType(ctx: Context, term: TraitAppTerm) {
   // Check that the type argument has the expected kind
   const argKind = checkKind(ctx, term.trait_app.type);
   if ("err" in argKind) return argKind;
-  const bounded_forall = termType.ok.bounded_forall;
-  if (!kindsEqual(bounded_forall.kind, argKind.ok))
+  const boundedForall = termType.ok.bounded_forall;
+  if (!kindsEqual(boundedForall.kind, argKind.ok))
     return err({
       kind_mismatch: {
         expected: termType.ok.bounded_forall.kind,
@@ -3248,7 +3288,7 @@ function inferTraitAppType(ctx: Context, term: TraitAppTerm) {
   const instantiatedConstraints = termType.ok.bounded_forall.constraints.map(
     (c) => ({
       trait: c.trait,
-      type: substituteType(bounded_forall.var, term.trait_app.type, c.type),
+      type: substituteType(boundedForall.var, term.trait_app.type, c.type),
     }),
   );
 
@@ -3809,7 +3849,13 @@ function inferLamType(ctx: Context, term: LamTerm) {
   const bodyType = inferType(extendedContext, term.lam.body);
   if ("err" in bodyType) return bodyType;
 
-  return ok(arrowType(term.lam.type, bodyType.ok));
+  // Normalize both parameter and body types
+  return ok(
+    arrowType(
+      normalizeType(term.lam.type, ctx),
+      normalizeType(bodyType.ok, ctx),
+    ),
+  );
 }
 
 function inferVarType(ctx: Context, term: VarTerm) {
@@ -3933,18 +3979,78 @@ export function normalizeType(
   context: Context = [],
   seen = new Set<string>(),
 ): Type {
-  // Simple cycle detection (use var names or JSON.stringify for safety)
+  // Cycle detection for variables
   if ("var" in ty && seen.has(ty.var)) return ty;
   const newSeen = "var" in ty ? new Set(seen).add(ty.var) : seen;
 
-  if ("var" in ty || "con" in ty || "never" in ty) return ty;
+  if ("var" in ty || "never" in ty) return ty;
+
+  if ("con" in ty) {
+    const aliasBinding = context.find(
+      (b) => "type_alias" in b && b.type_alias.name === ty.con,
+    );
+
+    if (aliasBinding && "type_alias" in aliasBinding) {
+      const alias = aliasBinding.type_alias;
+
+      // Only expand if it's a zero-parameter alias
+      if (alias.params.length === 0) {
+        // Create key for cycle detection
+        const aliasKey = `alias:${ty.con}`;
+        if (newSeen.has(aliasKey)) return ty;
+
+        const expandSeen = new Set(newSeen).add(aliasKey);
+        return normalizeType(alias.body, context, expandSeen);
+      }
+      return ty;
+    }
+
+    return ty;
+  }
 
   if ("app" in ty) {
     const head = getSpineHead(ty);
     if ("con" in head) {
-      const enumName = head.con;
+      const conName = head.con;
+
+      // Check for type alias BEFORE enum
+      const aliasBinding = context.find(
+        (b) => "type_alias" in b && b.type_alias.name === conName,
+      );
+
+      if (aliasBinding && "type_alias" in aliasBinding) {
+        const alias = aliasBinding.type_alias;
+        const spineArgs = "con" in ty ? [] : getSpineArgs(ty);
+
+        // Check arity matches
+        if (spineArgs.length === alias.params.length) {
+          // Create a key to detect recursive expansion
+          const aliasKey = `alias:${conName}<${spineArgs.map(showType).join(",")}>`;
+
+          // If we're already expanding this exact alias application, return as-is
+          if (newSeen.has(aliasKey)) {
+            return ty; // Don't expand recursively
+          }
+
+          // Add to seen set before expanding
+          const expandSeen = new Set(newSeen).add(aliasKey);
+
+          // Substitute params with concrete args
+          let expanded = alias.body;
+          for (let i = 0; i < alias.params.length; i++) {
+            expanded = substituteType(
+              alias.params[i]!,
+              spineArgs[i]!,
+              expanded,
+            );
+          }
+          // Recursively normalize with the updated seen set
+          return normalizeType(expanded, context, expandSeen);
+        }
+      }
+
       const enumBinding = context.find(
-        (b) => "enum" in b && b.enum.name === enumName,
+        (b) => "enum" in b && b.enum.name === conName,
       );
       if (enumBinding && "enum" in enumBinding) {
         const def = enumBinding.enum;
@@ -4085,7 +4191,7 @@ export function autoInstantiate(
   // Auto-apply type arguments
   while ("forall" in accType) {
     const fv = freshMetaVar();
-    accTerm = tyapp_term(accTerm, fv);
+    accTerm = tyappTerm(accTerm, fv);
     accType = substituteType(accType.forall.var, fv, accType.forall.body);
   }
 
@@ -4254,7 +4360,7 @@ export function stripAppsByArity(
   return acc;
 }
 
-export const arrow_kind = (from: Kind, to: Kind): Kind => ({
+export const arrowKind = (from: Kind, to: Kind): Kind => ({
   arrow: { from, to },
 });
 
@@ -4295,7 +4401,7 @@ export const appTerm = (callee: Term, arg: Term) => ({ app: { callee, arg } });
 export const tylamTerm = (name: string, kind: Kind, body: Term) => ({
   tylam: { var: name, kind, body },
 });
-export const tyapp_term = (term: Term, type: Type) => ({
+export const tyappTerm = (term: Term, type: Type) => ({
   tyapp: { term, type },
 });
 export const conTerm = (name: string, type: Type) => ({ con: { name, type } });
@@ -4385,4 +4491,54 @@ export const showBinding = (bind: Binding) => {
     return `Impl: ${bind.trait_impl.trait} = ${showTerm(bind.trait_impl.dict)}: ${showType(bind.trait_impl.type)}`;
   if ("dict" in bind)
     return `Dict: ${bind.dict.name} = Trait ${bind.dict.trait} : ${showType(bind.dict.type)}`;
+  if ("type_alias" in bind) {
+    const params = bind.type_alias.params
+      .map((p, i) => `${p}::${showKind(bind.type_alias.kinds[i]!)}`)
+      .join(", ");
+    return `Type Alias: ${bind.type_alias.name}<${params}> = ${showType(bind.type_alias.body)}`;
+  }
 };
+
+export const termBinding = (name: string, type: Type) => ({
+  term: { name, type },
+});
+export const typeBinding = (name: string, kind: Kind) => ({
+  type: { name, kind },
+});
+export const typeAliasBinding = (
+  name: string,
+  params: string[],
+  kinds: Kind[],
+  body: Type,
+) => ({
+  type_alias: { name, params, kinds, body },
+});
+export const traitDefBinding = (
+  name: string,
+  type_param: string,
+  kind: Kind,
+  methods: [string, Type][],
+) => ({
+  trait_def: {
+    name,
+    type_param,
+    kind,
+    methods,
+  },
+});
+
+export const traitImplBinding = (trait: string, type: Type, dict: Term) => ({
+  trait_impl: { trait, type, dict },
+});
+
+export const dictBinding = (name: string, trait: string, type: Type) => ({
+  dict: { name, trait, type },
+});
+export const enumDefBinding = (
+  name: string,
+  kind: Kind,
+  params: string[],
+  variants: [string, FieldScheme][],
+) => ({
+  enum: { name, kind, params, variants },
+});
