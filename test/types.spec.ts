@@ -5290,7 +5290,6 @@ test("Nominal injection into enum (Option::Some)", () => {
 
   const result = typecheck(context, someVal);
   const type = assertOk(result, "should typecheck nominal Some");
-  console.log(type);
   assert("app" in type, "should be Option<Int>");
   const spineArgs = getSpineArgs(type);
   assert(
