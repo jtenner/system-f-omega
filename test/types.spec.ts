@@ -1,3 +1,4 @@
+// ./test/types.spec.ts
 import { describe, expect, it, test } from "bun:test";
 import {
   applySubstitution,
@@ -3267,6 +3268,7 @@ test("Automatic type instantiation for polymorphic identity", () => {
   );
 });
 
+// ./test/types.spec.ts (cont.)
 test("Inference with nested applications", () => {
   const context: Context = [
     { type: { kind: starKind, name: "Int" } },
