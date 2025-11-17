@@ -6571,17 +6571,12 @@ test("infers parameter type from usage (pattern match on Result)", () => {
   // Resolve the metas that have been solved during inference
   const inferredType = applySubstitution(ctx, ctx.meta.solutions, res.ok);
 
-  console.log("Inferred type:", showType(inferredType));
-
   // ---------- assertions ----------
   expect("arrow" in inferredType).toBe(true);
   const { from, to } = (inferredType as ArrowType).arrow;
 
   // The parameter must be an application whose head is the enum constructor
 
-  if (!("app" in from)) {
-    console.log(`${showType(from)}`);
-  }
   // it is an app chain
   expect("variant" in from).toBeTrue();
   expect((from as VariantType).variant.map(([l]) => l).sort()).toEqual([
@@ -6591,6 +6586,5 @@ test("infers parameter type from usage (pattern match on Result)", () => {
 
   // Return type must be the first type argument of the enum
   const okCase = (from as VariantType).variant.find(([l]) => l === "Ok")!;
-  console.log(okCase);
   expect(typesEqual(ctx, to, okCase[1]!)).toBe(true);
 });
