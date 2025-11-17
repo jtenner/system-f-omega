@@ -1,6 +1,5 @@
 
 import {
-  Context,
   traitMethodTerm,
   dictTerm,
   lamTerm,
@@ -11,6 +10,7 @@ import {
   showType,
   starKind,
   TraitDefBinding,
+  state,
 } from "../src";
 
 // Trait definition: Eq<Self> with eq : Self → Self → Bool
@@ -38,10 +38,10 @@ const eqIntDict = dictTerm("Eq", conType("Int"), [
 ]);
 
 // Context includes trait def + implementation
-const ctx: Context = [
+const ctx = state([
   eqTrait,
   { trait_impl: { trait: "Eq", type: conType("Int"), dict: eqIntDict } },
-];
+]);
 
 // Access the method eq from the dictionary
 const eqAccess = traitMethodTerm(varTerm("d"), "eq");

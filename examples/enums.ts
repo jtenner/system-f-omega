@@ -11,7 +11,10 @@ import {
   inferType,
   showType,
   EnumDefBinding,
+  state,
 } from "../src";
+
+
 
 // Define Option<a> enum
 const OptionEnum: EnumDefBinding = {
@@ -27,7 +30,7 @@ const OptionEnum: EnumDefBinding = {
 };
 
 // Context with enum definition
-const ctx: Context = [{ enum: OptionEnum.enum }];
+const ctx = state([{ enum: OptionEnum.enum }]);
 
 // <Some = 42> as Option<Int>
 const optionIntType = appType(conType("Option"), conType("Int"));

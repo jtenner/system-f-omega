@@ -7,13 +7,13 @@ import {
   tylamTerm,
   lamTerm,
   varTerm,
-  tyapp_term,
+  tyappTerm,
   conType,
-  Context,
+  state,
 } from "../src";
 
 // Γ = · (empty context)
-const ctx: Context = [];
+const ctx = state();
 
 // Λa::* . λx:a. x
 const idPoly = tylamTerm(
@@ -30,7 +30,7 @@ console.log("Polymorphic identity function:");
 console.log(showType(idType.ok)); // ∀a::*.(a → a)
 
 // Apply it to Int: (Λa. λx:a. x) [Int]
-const appId = tyapp_term(idPoly, conType("Int"));
+const appId = tyappTerm(idPoly, conType("Int"));
 const appType = inferType(ctx, appId);
 if ("err" in appType) throw new Error(JSON.stringify(appType.err, null, 2));
 

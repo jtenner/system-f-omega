@@ -10,6 +10,7 @@ import {
   injectTerm,
   inferType,
   showType,
+  state,
 } from "../src";
 
 // μList.<Nil: (), Cons: (Int, List)>
@@ -21,7 +22,7 @@ const ListType = muType(
   ]),
 );
 
-const ctx: Context = [];
+const ctx = state();
 
 // fold[List](<Nil = ()>)
 const nilVal = injectTerm("Nil", { tuple: [] }, ListType);

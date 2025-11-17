@@ -6,6 +6,7 @@ import {
   conTerm,
   conType,
   Context,
+  state,
 } from "../src";
 
 // Tuple: #(42, true)
@@ -14,7 +15,7 @@ const pair = tupleTerm([
   conTerm("true", conType("Bool")),
 ]);
 
-const ctx: Context = [];
+const ctx = state();
 
 // Infer type of tuple
 const pairType = inferType(ctx, pair);
