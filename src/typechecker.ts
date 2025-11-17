@@ -7,7 +7,6 @@ import type {
   BoundedForallType,
   ConPattern,
   Constraint,
-  ConTerm,
   ConType,
   Context,
   DictTerm,
@@ -21,6 +20,8 @@ import type {
   LamType,
   LetTerm,
   MatchTerm,
+  MetaEnv,
+  MetaType,
   MuType,
   Pattern,
   ProjectTerm,
@@ -41,6 +42,7 @@ import type {
   TyAppTerm,
   TyLamTerm,
   Type,
+  TypeCheckerState,
   TypeEqConstraint,
   TypingError,
   UnfoldTerm,
@@ -56,11 +58,11 @@ export const typeEq = (left: Type, right: Type): TypeEqConstraint => ({
 export const kindEq = (left: Kind, right: Kind): KindEqConstraint => ({
   kind_eq: { left, right },
 });
-export const hasKind = (ty: Type, kind: Kind, context: Context) => ({
-  has_kind: { ty, kind, context },
+export const hasKind = (ty: Type, kind: Kind, state: TypeCheckerState) => ({
+  has_kind: { ty, kind, state },
 });
-export const hasType = (term: Term, ty: Type, context: Context) => ({
-  has_type: { term, ty, context },
+export const hasType = (term: Term, ty: Type, state: TypeCheckerState) => ({
+  has_type: { term, ty, state },
 });
 
 export type Worklist = Constraint[];
@@ -71,35 +73,23 @@ export type InferMode =
   | { check: Type }; // Check against expected type
 
 export function inferTypeWithMode(
-  context: Context,
+  state: TypeCheckerState,
   term: Term,
   mode: InferMode,
 ): Result<TypingError, Type> {
   // Delegate based on mode
   if ("check" in mode) {
-    const result = checkType(context, term, mode.check);
+    const result = checkType(state, term, mode.check);
     if ("ok" in result) return ok(result.ok.type);
     return result;
   }
-  return inferType(context, term);
+  return inferType(state, term);
 }
 
 export type MetaVar = { meta: number };
 
 export const starKind: Kind = { star: null };
 export const neverType = { never: null };
-let mvarCount = 0;
-const metaVarSolutions = new Map<number, Type>();
-
-// Helper: Create a temporary string-keyed subst from global meta solutions
-// Maps "?N" (string var names) to their solved Types
-export function getMetaSubstitution(): Substitution {
-  const subst = new Map<string, Type>();
-  for (const [id, solvedType] of metaVarSolutions.entries())
-    subst.set(`?${id}`, solvedType);
-
-  return subst;
-}
 
 export function mergeSubsts(
   local: Substitution,
@@ -113,49 +103,97 @@ export function mergeSubsts(
   return merge;
 }
 
-export const metaKind = new Map<string, Kind>();
+export const isMetaVar = (type: Type): type is MetaType => "evar" in type;
 
-export const isMetaVar = (type: Type): type is VarType =>
-  "var" in type && metaKind.has(type.var);
-
-export function freshMetaVar(): VarType {
-  const varType = { var: `?${mvarCount++}` };
-  metaKind.set(varType.var, starKind);
-  return varType;
+export function freshMetaVar(env: MetaEnv, kind: Kind = starKind): MetaType {
+  const name = `?${env.counter++}`;
+  env.kinds.set(name, kind);
+  return { evar: name };
 }
 
-export const isBottom = (type: Type) => "never" in normalizeType(type);
+export const isBottom = (state: TypeCheckerState, type: Type) =>
+  "never" in normalizeType(state, type);
 
 export function solveMetaVar(
-  metaVar: string,
+  state: TypeCheckerState,
+  evar: string,
   solution: Type,
 ): Result<TypingError, null> {
-  if (metaVarSolutions.has(parseInt(metaVar.slice(1), 10))) {
-    const existing = metaVarSolutions.get(parseInt(metaVar.slice(1), 10))!;
-    if (!typesEqual(existing, solution))
-      return err({ type_mismatch: { expected: existing, actual: solution } });
-  } else {
-    metaVarSolutions.set(parseInt(metaVar.slice(1), 10), solution);
+  // Case 1: evar already solved → unify with existing
+  if (state.meta.solutions.has(evar)) {
+    const existing = state.meta.solutions.get(evar)!;
+    return typesEqual(state, existing, solution)
+      ? ok(null)
+      : err({ type_mismatch: { expected: existing, actual: solution } });
   }
+
+  // Case 2: not solved yet → occurs check
+  if (occursCheckEvar(state.meta, evar, solution)) return err({ cyclic: evar });
+
+  // Insert new solution
+  state.meta.solutions.set(evar, solution);
+
   return ok(null);
 }
 
+export function occursCheckEvar(env: MetaEnv, evar: string, ty: Type): boolean {
+  if ("evar" in ty) {
+    if (ty.evar === evar) return true;
+
+    const sol = env.solutions.get(ty.evar);
+    return sol ? occursCheckEvar(env, evar, sol) : false;
+  }
+
+  if ("var" in ty) return false;
+
+  if ("arrow" in ty)
+    return (
+      occursCheckEvar(env, evar, ty.arrow.from) ||
+      occursCheckEvar(env, evar, ty.arrow.to)
+    );
+
+  if ("app" in ty)
+    return (
+      occursCheckEvar(env, evar, ty.app.func) ||
+      occursCheckEvar(env, evar, ty.app.arg)
+    );
+
+  if ("forall" in ty) return occursCheckEvar(env, evar, ty.forall.body);
+
+  if ("bounded_forall" in ty)
+    return (
+      occursCheckEvar(env, evar, ty.bounded_forall.body) ||
+      ty.bounded_forall.constraints.some((c) =>
+        occursCheckEvar(env, evar, c.type),
+      )
+    );
+
+  if ("record" in ty)
+    return ty.record.some(([, t]) => occursCheckEvar(env, evar, t));
+
+  if ("variant" in ty)
+    return ty.variant.some(([, t]) => occursCheckEvar(env, evar, t));
+
+  if ("tuple" in ty) return ty.tuple.some((t) => occursCheckEvar(env, evar, t));
+
+  if ("mu" in ty) return occursCheckEvar(env, evar, ty.mu.body);
+
+  return false;
+}
+
 // Recurse, substitute into body, then tyapp the outer fresh
-export function instantiateTerm(
-  term: Term,
-  fresh: () => Type = freshMetaVar,
-  context: Context = [], // Optional: for occurs-check/augment rigid vars if needed
-): Term {
+export function instantiateTerm(state: TypeCheckerState, term: Term): Term {
   // Recurse first: Instantiate inner tytams (post-order)
   let instBody = term;
   if ("tylam" in term) {
     // For this tytam: Instantiate the body first (inner first)
-    instBody = instantiateTerm(term.tylam.body, fresh, context);
+    instBody = instantiateTerm(state, term.tylam.body);
     // Now, create fresh for this level and substitute it into the (already-instantiated) body
-    const freshType = fresh();
+    const freshType = freshMetaVar(state.meta);
     const subst = new Map<string, Type>([[term.tylam.var, freshType]]);
     // Apply substitution to the body term (updates embedded types like lam.type; recurses on subterms)
     instBody = applySubstitutionToTerm(
+      state,
       subst,
       instBody,
       new Set([term.tylam.var]),
@@ -168,42 +206,42 @@ export function instantiateTerm(
   // Use the existing applySubstitutionToTerm pattern, but since no subst here, just recurse structurally
   if ("app" in term)
     return appTerm(
-      instantiateTerm(term.app.callee, fresh, context),
-      instantiateTerm(term.app.arg, fresh, context),
+      instantiateTerm(state, term.app.callee),
+      instantiateTerm(state, term.app.arg),
     );
   if ("lam" in term)
     return lamTerm(
       term.lam.arg,
-      instantiate(term.lam.type, fresh),
-      instantiateTerm(term.lam.body, fresh, context),
+      instantiateType(state, term.lam.type),
+      instantiateTerm(state, term.lam.body),
     );
   if ("tyapp" in term)
     return tyappTerm(
-      instantiateTerm(term.tyapp.term, fresh, context),
-      instantiate(term.tyapp.type, fresh),
+      instantiateTerm(state, term.tyapp.term),
+      instantiateType(state, term.tyapp.type),
     );
   if ("match" in term)
     return matchTerm(
-      instantiateTerm(term.match.scrutinee, fresh, context),
+      instantiateTerm(state, term.match.scrutinee),
       term.match.cases.map(([pattern, body]) => [
         pattern, // Patterns don't have types to instantiate (structural only)
-        instantiateTerm(body, fresh, context),
+        instantiateTerm(state, body),
       ]),
     );
   if ("inject" in term)
     return injectTerm(
       term.inject.label,
-      instantiateTerm(term.inject.value, fresh, context),
-      instantiate(term.inject.variant_type, fresh), // Instantiate variant type
+      instantiateTerm(state, term.inject.value),
+      instantiateType(state, term.inject.variant_type), // Instantiate variant type
     );
 
   if ("dict" in term) {
     return dictTerm(
       term.dict.trait,
-      instantiate(term.dict.type, fresh),
+      instantiateType(state, term.dict.type),
       term.dict.methods.map(([name, impl]) => [
         name,
-        instantiateTerm(impl, fresh, context),
+        instantiateTerm(state, impl),
       ]),
     );
   }
@@ -216,9 +254,9 @@ export function instantiateTerm(
       t.kind,
       t.constraints.map((c) => ({
         ...c,
-        type: instantiate(c.type, fresh),
+        type: instantiateType(state, c.type),
       })),
-      instantiateTerm(t.body, fresh, context),
+      instantiateTerm(state, t.body),
     );
   }
   // Instantiate inner body, but don't substitute "Self" (constrained separately)
@@ -227,40 +265,37 @@ export function instantiateTerm(
     return recordTerm(
       term.record.map(([label, field]) => [
         label,
-        instantiateTerm(field, fresh, context),
+        instantiateTerm(state, field),
       ]),
     );
 
   if ("let" in term)
     return letTerm(
       term.let.name,
-      instantiateTerm(term.let.value, fresh, context),
-      instantiateTerm(term.let.body, fresh, context),
+      instantiateTerm(state, term.let.value),
+      instantiateTerm(state, term.let.body),
     );
 
   if ("tuple" in term)
-    return tupleTerm(term.tuple.map((t) => instantiateTerm(t, fresh, context)));
+    return tupleTerm(term.tuple.map((t) => instantiateTerm(state, t)));
 
   // Default: Recurse on any unrecognized (exhaustive on known constructors)
   return term;
 }
 
-export function instantiate(
-  type: Type,
-  fresh: () => Type = freshMetaVar,
-): Type {
+export function instantiateType(state: TypeCheckerState, type: Type): Type {
   if ("forall" in type) {
-    const fv = fresh();
+    const fv = freshMetaVar(state.meta);
     const instantiatedBody = substituteType(
       type.forall.var,
       fv,
       type.forall.body,
     );
-    return instantiate(instantiatedBody, fresh);
+    return instantiateType(state, instantiatedBody);
   }
 
   if ("bounded_forall" in type) {
-    const fv = fresh();
+    const fv = freshMetaVar(state.meta);
 
     // Instantiate constraints
     const instBody = substituteType(
@@ -269,25 +304,25 @@ export function instantiate(
       type.bounded_forall.body,
     );
     // Recurse (ignore constraints for now; assume provided externally)
-    return instantiate(instBody, fresh);
+    return instantiateType(state, instBody);
   }
 
   return type;
 }
 
 export function subsumes(
-  context: Context,
+  state: TypeCheckerState,
   general: Type, // Supertype (e.g., t_ok)
   specific: Type, // Subtype (e.g., ⊥)
   worklist: Worklist,
   subst: Substitution,
 ): Result<TypingError, null> {
   // Instantiate foralls in general
-  const instGeneral = instantiate(general);
+  const instGeneral = instantiateType(state, general);
 
   // Early bottom check: if specific is ⊥, always succeed (⊥ <: anything)
-  if (isBottom(specific)) {
-    const genKind = checkKind(context, instGeneral, true);
+  if (isBottom(state, specific)) {
+    const genKind = checkKind(state, instGeneral, true);
     if ("err" in genKind || !isStarKind(genKind.ok))
       return err({
         type_mismatch: { expected: instGeneral, actual: specific },
@@ -297,20 +332,24 @@ export function subsumes(
   }
 
   // NEW: If general is ⊥, then specific must also be ⊥ (already checked above)
-  if (isBottom(instGeneral)) {
+  if (isBottom(state, instGeneral)) {
     return err({
       type_mismatch: { expected: instGeneral, actual: specific },
     });
   }
 
   // Otherwise, standard unification
-  return unifyTypes(instGeneral, specific, worklist, subst);
+  return unifyTypes(state, instGeneral, specific, worklist, subst);
 }
 
-export function isAssignableTo(from: Type, to: Type): boolean {
-  if (isBottom(from)) return true; // ⊥ <: anything
-  if (isBottom(to)) return isBottom(from); // anything <: ⊥ only if ⊥
-  return typesEqual(from, to); // Otherwise, equality
+export function isAssignableTo(
+  state: TypeCheckerState,
+  from: Type,
+  to: Type,
+): boolean {
+  if (isBottom(state, from)) return true; // ⊥ <: anything
+  if (isBottom(state, to)) return isBottom(state, from); // anything <: ⊥ only if ⊥
+  return typesEqual(state, from, to); // Otherwise, equality
 }
 
 // Show patterns for debugging
@@ -410,6 +449,7 @@ export function showType(t: Type): string {
       .join(", ");
     return `∀${t.bounded_forall.var}::${showKind(t.bounded_forall.kind)} where ${constraints}.${showType(t.bounded_forall.body)}`;
   }
+  if ("evar" in t) return `?${t.evar}`;
   return "unknown";
 }
 
@@ -481,6 +521,7 @@ export function showTerm(t: Term): string {
 
 // Helper function to apply substitution to terms (you'll need to add this)
 function applySubstitutionToTerm(
+  state: TypeCheckerState,
   subst: Substitution,
   term: Term,
   avoidFree: Set<string> = new Set(),
@@ -488,288 +529,167 @@ function applySubstitutionToTerm(
   // Apply substitution to the types within the term structure
 
   if ("var" in term) return term;
-  if ("lam" in term) return applySubstitutionToLamTerm(subst, term, avoidFree);
-  if ("app" in term) return applySubstitutionToAppTerm(subst, term, avoidFree);
-  if ("tylam" in term)
-    return applySubstitutionToTyLamTerm(subst, term, avoidFree);
+  if ("lam" in term)
+    return lamTerm(
+      term.lam.arg,
+      applySubstitution(state, subst, term.lam.type, avoidFree),
+      applySubstitutionToTerm(state, subst, term.lam.body, avoidFree),
+    );
+  if ("app" in term)
+    return appTerm(
+      applySubstitutionToTerm(state, subst, term.app.callee, avoidFree),
+      applySubstitutionToTerm(state, subst, term.app.arg, avoidFree),
+    );
+  if ("tylam" in term) {
+    const newSubst = new Map(subst);
+    newSubst.delete(term.tylam.var);
+
+    return tylamTerm(
+      term.tylam.var,
+      term.tylam.kind,
+      applySubstitutionToTerm(state, newSubst, term.tylam.body, avoidFree),
+    );
+  }
   if ("tyapp" in term)
-    return applySubstitutionToTyAppTerm(subst, term, avoidFree);
-  if ("con" in term) return applySubstitutionToConTerm(term, subst, avoidFree);
+    return tyappTerm(
+      applySubstitutionToTerm(state, subst, term.tyapp.term, avoidFree),
+      applySubstitution(state, subst, term.tyapp.type, avoidFree),
+    );
+  if ("con" in term)
+    return conTerm(
+      term.con.name,
+      applySubstitution(state, subst, term.con.type, avoidFree),
+    );
   if ("dict" in term)
-    return applySubstitutionToDictTerm(subst, term, avoidFree);
-  if ("trait_lam" in term)
-    return applySubstitutionToTraitLamTerm(subst, term, avoidFree);
-  if ("trait_app" in term)
-    return applySubstitutionToTraitAppTerm(subst, term, avoidFree);
-  if ("trait_method" in term)
-    return applySubstitutionToTraitMethodTerm(subst, term, avoidFree);
-  if ("let" in term) return applySubstitutionToLetTerm(subst, term, avoidFree);
-  if ("match" in term)
-    return applySubstitutionToMatchTerm(subst, term, avoidFree);
-  if ("record" in term)
-    return applySubstitutionToRecordTerm(term, subst, avoidFree);
-  if ("project" in term)
-    return applySubstitutionToProjectTerm(subst, term, avoidFree);
-  if ("inject" in term)
-    return applySubstitutionToInjectTerm(term, subst, avoidFree);
-  if ("tuple" in term)
-    return applySubstitutionToTupleTerm(term, subst, avoidFree);
-  if ("tuple_project" in term)
-    return applySubstitutionToTupleProject(subst, term, avoidFree);
-  if ("fold" in term)
-    return applySubstitutionToFoldTerm(subst, term, avoidFree);
-  if ("unfold" in term)
-    return applySubstitutionToUnfoldTerm(subst, term, avoidFree);
-  // For other term constructors, recurse on subterms
-  return term;
-}
-
-function applySubstitutionToUnfoldTerm(
-  subst: Substitution,
-  term: UnfoldTerm,
-  avoidFree: Set<string>,
-) {
-  return unfoldTerm(applySubstitutionToTerm(subst, term.unfold, avoidFree));
-}
-
-function applySubstitutionToFoldTerm(
-  subst: Substitution,
-  term: FoldTerm,
-  avoidFree: Set<string>,
-) {
-  return foldTerm(
-    applySubstitution(subst, term.fold.type, avoidFree),
-    applySubstitutionToTerm(subst, term.fold.term, avoidFree),
-  );
-}
-
-function applySubstitutionToTupleProject(
-  subst: Substitution,
-  term: TupleProjectTerm,
-  avoidFree: Set<string>,
-) {
-  return tupleProjectTerm(
-    applySubstitutionToTerm(subst, term.tuple_project.tuple, avoidFree),
-    term.tuple_project.index,
-  );
-}
-
-function applySubstitutionToTupleTerm(
-  term: TupleTerm,
-  subst: Substitution,
-  avoidFree: Set<string>,
-) {
-  return tupleTerm(
-    term.tuple.map((t) => applySubstitutionToTerm(subst, t, avoidFree)),
-  );
-}
-
-function applySubstitutionToInjectTerm(
-  term: InjectTerm,
-  subst: Substitution,
-  avoidFree: Set<string>,
-) {
-  return injectTerm(
-    term.inject.label,
-    applySubstitutionToTerm(subst, term.inject.value, avoidFree),
-    applySubstitution(subst, term.inject.variant_type, avoidFree),
-  );
-}
-
-function applySubstitutionToProjectTerm(
-  subst: Substitution,
-  term: ProjectTerm,
-  avoidFree: Set<string>,
-) {
-  return projectTerm(
-    applySubstitutionToTerm(subst, term.project.record, avoidFree),
-    term.project.label,
-  );
-}
-
-function applySubstitutionToRecordTerm(
-  term: RecordTerm,
-  subst: Substitution,
-  avoidFree: Set<string>,
-) {
-  return recordTerm(
-    term.record.map(([label, field]) => [
-      label,
-      applySubstitutionToTerm(subst, field, avoidFree),
-    ]),
-  );
-}
-
-function applySubstitutionToMatchTerm(
-  subst: Substitution,
-  term: MatchTerm,
-  avoidFree: Set<string>,
-) {
-  return matchTerm(
-    applySubstitutionToTerm(subst, term.match.scrutinee, avoidFree),
-    term.match.cases.map(([pattern, body]) => [
-      pattern, // Patterns don't contain types that need substitution
-      applySubstitutionToTerm(subst, body, avoidFree),
-    ]),
-  );
-}
-
-function applySubstitutionToLetTerm(
-  subst: Substitution,
-  term: LetTerm,
-  avoidFree: Set<string>,
-) {
-  return letTerm(
-    term.let.name,
-    applySubstitutionToTerm(subst, term.let.value, avoidFree),
-    applySubstitutionToTerm(subst, term.let.body, avoidFree),
-  );
-}
-
-function applySubstitutionToTraitMethodTerm(
-  subst: Substitution,
-  term: TraitMethodTerm,
-  avoidFree: Set<string>,
-) {
-  return traitMethodTerm(
-    applySubstitutionToTerm(subst, term.trait_method.dict, avoidFree),
-    term.trait_method.method,
-  );
-}
-
-function applySubstitutionToTraitAppTerm(
-  subst: Substitution,
-  term: TraitAppTerm,
-  avoidFree: Set<string>,
-) {
-  return {
-    trait_app: {
-      term: applySubstitutionToTerm(subst, term.trait_app.term, avoidFree),
-      type: applySubstitution(subst, term.trait_app.type, avoidFree),
-      dicts: term.trait_app.dicts.map((dict) =>
-        applySubstitutionToTerm(subst, dict, avoidFree),
-      ),
-    },
-  };
-}
-
-function applySubstitutionToTraitLamTerm(
-  subst: Substitution,
-  term: TraitLamTerm,
-  avoidFree: Set<string>,
-) {
-  {
+    return dictTerm(
+      term.dict.trait,
+      applySubstitution(state, subst, term.dict.type, avoidFree),
+      term.dict.methods.map(([name, methodTerm]) => [
+        name,
+        applySubstitutionToTerm(state, subst, methodTerm, avoidFree),
+      ]),
+    );
+  if ("trait_lam" in term) {
     const newSubst = new Map(subst);
     newSubst.delete(term.trait_lam.type_var);
 
     const newConstraints = term.trait_lam.constraints.map((constraint) => ({
       ...constraint,
-      type: applySubstitution(newSubst, constraint.type, avoidFree),
+      type: applySubstitution(state, newSubst, constraint.type, avoidFree),
     }));
 
     return {
       trait_lam: {
         ...term.trait_lam,
         constraints: newConstraints,
-        body: applySubstitutionToTerm(newSubst, term.trait_lam.body, avoidFree),
+        body: applySubstitutionToTerm(
+          state,
+          newSubst,
+          term.trait_lam.body,
+          avoidFree,
+        ),
       },
     };
   }
-}
-
-function applySubstitutionToDictTerm(
-  subst: Substitution,
-  term: DictTerm,
-  avoidFree: Set<string>,
-) {
-  return dictTerm(
-    term.dict.trait,
-    applySubstitution(subst, term.dict.type, avoidFree),
-    term.dict.methods.map(([name, methodTerm]) => [
-      name,
-      applySubstitutionToTerm(subst, methodTerm, avoidFree),
-    ]),
-  );
-}
-
-function applySubstitutionToConTerm(
-  term: ConTerm,
-  subst: Substitution,
-  avoidFree: Set<string>,
-) {
-  return conTerm(
-    term.con.name,
-    applySubstitution(subst, term.con.type, avoidFree),
-  );
-}
-
-function applySubstitutionToTyAppTerm(
-  subst: Substitution,
-  term: TyAppTerm,
-  avoidFree: Set<string>,
-) {
-  return tyappTerm(
-    applySubstitutionToTerm(subst, term.tyapp.term, avoidFree),
-    applySubstitution(subst, term.tyapp.type, avoidFree),
-  );
-}
-
-function applySubstitutionToTyLamTerm(
-  subst: Substitution,
-  term: TyLamTerm,
-  avoidFree: Set<string>,
-) {
-  const newSubst = new Map(subst);
-  newSubst.delete(term.tylam.var);
-
-  return tylamTerm(
-    term.tylam.var,
-    term.tylam.kind,
-    applySubstitutionToTerm(newSubst, term.tylam.body, avoidFree),
-  );
-}
-
-function applySubstitutionToAppTerm(
-  subst: Substitution,
-  term: AppTerm,
-  avoidFree: Set<string>,
-) {
-  return appTerm(
-    applySubstitutionToTerm(subst, term.app.callee, avoidFree),
-    applySubstitutionToTerm(subst, term.app.arg, avoidFree),
-  );
-}
-
-function applySubstitutionToLamTerm(
-  subst: Substitution,
-  term: LamTerm,
-  avoidFree: Set<string>,
-) {
-  return lamTerm(
-    term.lam.arg,
-    applySubstitution(subst, term.lam.type, avoidFree),
-    applySubstitutionToTerm(subst, term.lam.body, avoidFree),
-  );
+  if ("trait_app" in term)
+    return {
+      trait_app: {
+        term: applySubstitutionToTerm(
+          state,
+          subst,
+          term.trait_app.term,
+          avoidFree,
+        ),
+        type: applySubstitution(state, subst, term.trait_app.type, avoidFree),
+        dicts: term.trait_app.dicts.map((dict) =>
+          applySubstitutionToTerm(state, subst, dict, avoidFree),
+        ),
+      },
+    };
+  if ("trait_method" in term)
+    return traitMethodTerm(
+      applySubstitutionToTerm(state, subst, term.trait_method.dict, avoidFree),
+      term.trait_method.method,
+    );
+  if ("let" in term)
+    return letTerm(
+      term.let.name,
+      applySubstitutionToTerm(state, subst, term.let.value, avoidFree),
+      applySubstitutionToTerm(state, subst, term.let.body, avoidFree),
+    );
+  if ("match" in term)
+    return matchTerm(
+      applySubstitutionToTerm(state, subst, term.match.scrutinee, avoidFree),
+      term.match.cases.map(([pattern, body]) => [
+        pattern, // Patterns don't contain types that need substitution
+        applySubstitutionToTerm(state, subst, body, avoidFree),
+      ]),
+    );
+  if ("record" in term)
+    return recordTerm(
+      term.record.map(([label, field]) => [
+        label,
+        applySubstitutionToTerm(state, subst, field, avoidFree),
+      ]),
+    );
+  if ("project" in term)
+    return projectTerm(
+      applySubstitutionToTerm(state, subst, term.project.record, avoidFree),
+      term.project.label,
+    );
+  if ("inject" in term)
+    return injectTerm(
+      term.inject.label,
+      applySubstitutionToTerm(state, subst, term.inject.value, avoidFree),
+      applySubstitution(state, subst, term.inject.variant_type, avoidFree),
+    );
+  if ("tuple" in term)
+    return tupleTerm(
+      term.tuple.map((t) =>
+        applySubstitutionToTerm(state, subst, t, avoidFree),
+      ),
+    );
+  if ("tuple_project" in term)
+    return tupleProjectTerm(
+      applySubstitutionToTerm(
+        state,
+        subst,
+        term.tuple_project.tuple,
+        avoidFree,
+      ),
+      term.tuple_project.index,
+    );
+  if ("fold" in term)
+    return foldTerm(
+      applySubstitution(state, subst, term.fold.type, avoidFree),
+      applySubstitutionToTerm(state, subst, term.fold.term, avoidFree),
+    );
+  if ("unfold" in term)
+    return unfoldTerm(
+      applySubstitutionToTerm(state, subst, term.unfold, avoidFree),
+    );
+  // For other term constructors, recurse on subterms
+  return term;
 }
 
 export function checkTraitImplementation(
-  ctx: Context,
+  state: TypeCheckerState,
   trait: string,
   type: Type,
 ): Result<TypingError, Term> {
-  const normalizedType = normalizeType(type, ctx);
+  const normalizedType = normalizeType(state, type);
 
   // First, look for exact match
-  const impl = ctx.find(
+  const impl = state.ctx.find(
     (b) =>
       "trait_impl" in b &&
       b.trait_impl.trait === trait &&
-      typesEqual(b.trait_impl.type, normalizedType),
+      typesEqual(state, b.trait_impl.type, normalizedType),
   );
 
   if (impl && "trait_impl" in impl) return ok(impl.trait_impl.dict);
 
-  const polymorphicImpls = ctx.filter(
+  const polymorphicImpls = state.ctx.filter(
     (b) => "trait_impl" in b && b.trait_impl.trait === trait,
   );
 
@@ -781,11 +701,11 @@ export function checkTraitImplementation(
       // This turns ((λt.λu.variant) l) r) into <variant with l, r>
       // and λt.λu.variant into λt.λu.variant (stays as is)
 
-      const normalizedImpl = normalizeType(implType, ctx);
-      const normalizedTarget = normalizeType(normalizedType, ctx);
+      const normalizedImpl = normalizeType(state, implType);
+      const normalizedTarget = normalizeType(state, normalizedType);
 
       // Now instantiate the impl (replaces any forall-bound vars with metas)
-      const instImplTy = instantiate(normalizedImpl);
+      const instImplTy = instantiateType(state, normalizedImpl);
 
       // For the target, if it's a lambda that needs to be applied to match the impl's level,
       // apply it to fresh metas
@@ -796,10 +716,10 @@ export function checkTraitImplementation(
         // Apply the lambda to fresh metas until it matches the impl's structure
 
         while ("lam" in matchingTarget) {
-          const fv = freshMetaVar();
+          const fv = freshMetaVar(state.meta);
           matchingTarget = normalizeType(
+            state,
             substituteType(matchingTarget.lam.var, fv, matchingTarget.lam.body),
-            ctx,
           );
         }
       }
@@ -808,15 +728,25 @@ export function checkTraitImplementation(
       const worklist: Worklist = [];
       const subst = new Map<string, Type>();
 
-      const unifyRes = unifyTypes(instImplTy, matchingTarget, worklist, subst);
+      const unifyRes = unifyTypes(
+        state,
+        instImplTy,
+        matchingTarget,
+        worklist,
+        subst,
+      );
 
       if ("ok" in unifyRes) {
-        const solveRes = solveConstraints(worklist, subst);
+        const solveRes = solveConstraints(state, worklist, subst);
 
         if ("ok" in solveRes) {
           // Successfully unified - instantiate and substitute into the dict
-          const instantiatedDict = instantiateTerm(polyImpl.trait_impl.dict);
+          const instantiatedDict = instantiateTerm(
+            state,
+            polyImpl.trait_impl.dict,
+          );
           const finalDict = applySubstitutionToTerm(
+            state,
             solveRes.ok,
             instantiatedDict,
           );
@@ -831,14 +761,14 @@ export function checkTraitImplementation(
 
 // Verify all trait constraints are satisfied
 export function checkTraitConstraints(
-  context: Context,
+  state: TypeCheckerState,
   constraints: TraitConstraint[],
 ): Result<TypingError, Term[]> {
   const dicts: Term[] = [];
 
   for (const constraint of constraints) {
     const result = checkTraitImplementation(
-      context,
+      state,
       constraint.trait,
       constraint.type,
     );
@@ -873,18 +803,20 @@ function extractPatternLabels(pattern: Pattern): Set<string> {
 
 // Updated checkExhaustive
 export function checkExhaustive(
+  state: TypeCheckerState,
   patterns: Pattern[],
   type: Type,
-  ctx: Context,
 ): Result<TypingError, null> {
-  const normType = normalizeType(type, ctx);
+  const normType = normalizeType(state, type);
 
   // Nominal check
   if ("app" in normType && "con" in normType.app.func) {
     const conName = normType.app.func.con;
     const spineArgs = getSpineArgs(normType);
 
-    const enumBinding = ctx.find((b) => "enum" in b && b.enum.name === conName);
+    const enumBinding = state.ctx.find(
+      (b) => "enum" in b && b.enum.name === conName,
+    );
     if (!enumBinding || !("enum" in enumBinding))
       return err({ not_a_variant: type }); // Triggered if no binding
     const def = enumBinding.enum;
@@ -931,9 +863,9 @@ export function checkExhaustive(
 
 // Check if a pattern matches a type and extract bindings
 export function checkPattern(
+  state: TypeCheckerState,
   pattern: Pattern,
   type: Type,
-  ctx: Context,
 ): Result<TypingError, Context> {
   // Variable pattern binds the whole value
   if ("var" in pattern) return ok([{ term: { name: pattern.var, type } }]);
@@ -944,17 +876,17 @@ export function checkPattern(
   if ("variant" in pattern) {
     if ("mu" in type) {
       const unfolded = substituteType(type.mu.var, type, type.mu.body);
-      return checkPattern(pattern, unfolded, ctx);
+      return checkPattern(state, pattern, unfolded);
     }
 
-    const normType = normalizeType(type, ctx);
+    const normType = normalizeType(state, type);
 
     // Handle meta variable case - infer enum type from pattern
-    if ("var" in normType && isMetaVar(normType)) {
+    if (isMetaVar(normType)) {
       const label = pattern.variant.label;
 
       // Find enum with this variant label
-      const enumBinding = ctx.find(
+      const enumBinding = state.ctx.find(
         (b) => "enum" in b && b.enum.variants.some(([l]) => l === label),
       );
 
@@ -967,29 +899,27 @@ export function checkPattern(
       // Build enum type with fresh meta variables: Result<?1, ?2>
       let enumType: Type = conType(def.name);
       for (let i = 0; i < def.params.length; i++) {
-        enumType = appType(enumType, freshMetaVar());
+        enumType = appType(enumType, freshMetaVar(state.meta));
       }
 
       // Unify the scrutinee's meta variable with the enum type
       const worklist: Worklist = [];
       const subst = new Map<string, Type>();
-      const unifyRes = unifyTypes(normType, enumType, worklist, subst);
+      const unifyRes = unifyTypes(state, normType, enumType, worklist, subst);
       if ("err" in unifyRes) return unifyRes;
 
-      const solveRes = solveConstraints(worklist, subst);
+      const solveRes = solveConstraints(state, worklist, subst);
       if ("err" in solveRes) return solveRes;
 
       // Update global meta variable solutions
       for (const [varName, soln] of solveRes.ok.entries()) {
-        if (metaKind.has(varName)) {
-          const globalSolve = solveMetaVar(varName, soln);
-          if ("err" in globalSolve) return globalSolve;
-        }
+        const globalSolve = solveMetaVar(state, varName, soln);
+        if ("err" in globalSolve) return globalSolve;
       }
 
       // Recurse with the resolved type
-      const resolvedType = applySubstitution(solveRes.ok, normType);
-      return checkPattern(pattern, resolvedType, ctx);
+      const resolvedType = applySubstitution(state, solveRes.ok, normType);
+      return checkPattern(state, pattern, resolvedType);
     }
 
     // Structural
@@ -1004,7 +934,7 @@ export function checkPattern(
             label: pattern.variant.label,
           },
         });
-      return checkPattern(pattern.variant.pattern, caseType[1], ctx);
+      return checkPattern(state, pattern.variant.pattern, caseType[1]);
     }
 
     // Nominal
@@ -1015,7 +945,7 @@ export function checkPattern(
       const conName = head.con;
       const spineArgs = "con" in normType ? [] : getSpineArgs(normType);
 
-      const enumBinding = ctx.find(
+      const enumBinding = state.ctx.find(
         (b) => "enum" in b && b.enum.name === conName,
       );
       if (!enumBinding || !("enum" in enumBinding))
@@ -1037,30 +967,31 @@ export function checkPattern(
       for (let i = 0; i < def.params.length; i++) {
         fieldType = substituteType(def.params[i]!, spineArgs[i]!, fieldType);
       }
-      fieldType = normalizeType(fieldType);
+      fieldType = normalizeType(state, fieldType);
 
-      return checkPattern(pattern.variant.pattern, fieldType, ctx);
+      return checkPattern(state, pattern.variant.pattern, fieldType);
     }
 
     return err({ not_a_variant: type });
   }
 
   // Existing cases (con, record, tuple, etc.)
-  if ("con" in pattern) return checkConPattern(pattern, type, ctx);
-  if ("record" in pattern) return checkRecordPattern(pattern, type, ctx);
-  if ("tuple" in pattern) return checkTuplePattern(pattern, type, ctx);
+  if ("con" in pattern) return checkConPattern(state, pattern, type);
+  if ("record" in pattern) return checkRecordPattern(state, pattern, type);
+  if ("tuple" in pattern) return checkTuplePattern(state, pattern, type);
 
   // Fallback: No bindings
   return ok([]);
 }
 
 function checkTuplePattern(
+  state: TypeCheckerState,
   pattern: TuplePattern,
   type: Type,
-  context: Context,
 ) {
   // Allow ⊥
-  if (!("tuple" in type) && !isBottom(type)) return err({ not_a_tuple: type });
+  if (!("tuple" in type) && !isBottom(state, type))
+    return err({ not_a_tuple: type });
 
   if ("tuple" in type && pattern.tuple.length !== type.tuple.length)
     return err({
@@ -1077,7 +1008,7 @@ function checkTuplePattern(
     const subPattern = pattern.tuple[i]!;
     const elementType =
       i < effectiveElements.length ? effectiveElements[i]! : unitType;
-    const subResult = checkPattern(subPattern, elementType, context);
+    const subResult = checkPattern(state, subPattern, elementType);
     if ("err" in subResult) return subResult;
     bindings.push(...subResult.ok);
   }
@@ -1085,11 +1016,11 @@ function checkTuplePattern(
 }
 
 const checkConPattern = (
+  state: TypeCheckerState,
   pattern: ConPattern,
   type: Type,
-  _context: Context,
 ) => {
-  return isAssignableTo(pattern.con.type, type)
+  return isAssignableTo(state, pattern.con.type, type)
     ? ok([])
     : err({ type_mismatch: { expected: type, actual: pattern.con.type } });
 };
@@ -1099,17 +1030,17 @@ const first = <T, U>(tuple: [T, U]) => tuple[0];
 
 // Updated checkRecordPattern
 function checkRecordPattern(
+  state: TypeCheckerState,
   pattern: RecordPattern,
   type: Type,
-  context: Context,
 ): Result<TypingError, Context> {
   // Handle bottom type: ⊥ matches any record pattern (unreachable code paths, etc.)
-  if (isBottom(type)) {
+  if (isBottom(state, type)) {
     // Extract bindings from subpatterns (but types are arbitrary since ⊥ <: anything)
     const bindings: Context = [];
     for (const [label, subPattern] of pattern.record) {
       // For bottom, bind subpattern vars to a fresh meta or unit (safe)
-      const subResult = checkPattern(subPattern, unitType, context); // Or freshMetaVar()
+      const subResult = checkPattern(state, subPattern, unitType); // Or freshMetaVar()
       if ("err" in subResult) return subResult;
       // Augment bindings with label (optional, for record projection later)
       subResult.ok.forEach((b) => {
@@ -1155,7 +1086,7 @@ function checkRecordPattern(
     if (!fieldEntry) return err({ missing_field: { record: type, label } });
 
     const fieldType = fieldEntry[1];
-    const subResult = checkPattern(subPattern, fieldType, context);
+    const subResult = checkPattern(state, subPattern, fieldType);
     if ("err" in subResult) return subResult;
 
     // Collect bindings (e.g., vars from subPattern bound to fieldType slices)
@@ -1361,32 +1292,40 @@ export const kindsEqual = (left: Kind, right: Kind): boolean =>
 
 // Updated checkKind function
 export function checkKind(
-  context: Context,
+  state: TypeCheckerState,
   type: Type,
   lenient: boolean = false,
 ): Result<TypingError, Kind> {
-  if ("var" in type) return checkVarKind(context, type, lenient);
-
-  if ("con" in type) return checkConKind(context, type, lenient);
+  if ("evar" in type) {
+    return state.meta.kinds.has(type.evar)
+      ? ok(state.meta.kinds.get(type.evar)!)
+      : err({ unbound: type.evar });
+  }
+  if ("var" in type) return checkVarKind(state, type, lenient);
+  if ("con" in type) return checkConKind(state, type, lenient);
 
   if ("never" in type) return ok(starKind);
-  if ("arrow" in type) return checkArrowKind(context, type, lenient);
-  if ("forall" in type) return checkForallKind(context, type, lenient);
+  if ("arrow" in type) return checkArrowKind(state, type, lenient);
+  if ("forall" in type) return checkForallKind(state, type, lenient);
   if ("bounded_forall" in type)
-    return checkBoundedForallKind(context, type, lenient);
-  if ("lam" in type) return checkLamKind(context, type, lenient);
-  if ("app" in type) return checkAppKind(context, type, lenient);
-  if ("record" in type) return checkRecordKind(context, type, lenient);
-  if ("variant" in type) return checkVariantKind(context, type, lenient);
-  if ("mu" in type) return checkMuKind(context, type, lenient);
-  if ("tuple" in type) return checkTupleKind(context, type, lenient);
+    return checkBoundedForallKind(state, type, lenient);
+  if ("lam" in type) return checkLamKind(state, type, lenient);
+  if ("app" in type) return checkAppKind(state, type, lenient);
+  if ("record" in type) return checkRecordKind(state, type, lenient);
+  if ("variant" in type) return checkVariantKind(state, type, lenient);
+  if ("mu" in type) return checkMuKind(state, type, lenient);
+  if ("tuple" in type) return checkTupleKind(state, type, lenient);
 
   throw new Error(`Unknown type: ${Object.keys(type)[0]}`);
 }
 
-function checkConKind(context: Context, type: ConType, lenient: boolean) {
+function checkConKind(
+  state: TypeCheckerState,
+  type: ConType,
+  lenient: boolean,
+) {
   // Check for type alias first
-  const aliasBinding = context.find(
+  const aliasBinding = state.ctx.find(
     (b) => "type_alias" in b && b.type_alias.name === type.con,
   );
 
@@ -1396,11 +1335,18 @@ function checkConKind(context: Context, type: ConType, lenient: boolean) {
     // Extend context with parameters before checking body
     const extendedContext: Context = [
       ...alias.params.map((param, i) => typeBinding(param, alias.kinds[i]!)),
-      ...context,
+      ...state.ctx,
     ];
 
     // Check the kind of the body with extended context
-    const bodyKindResult = checkKind(extendedContext, alias.body, lenient);
+    const bodyKindResult = checkKind(
+      {
+        ctx: extendedContext,
+        meta: state.meta,
+      },
+      alias.body,
+      lenient,
+    );
     if ("err" in bodyKindResult) return bodyKindResult;
 
     // Build the kind: kind₁ → kind₂ → ... → result_kind
@@ -1416,11 +1362,13 @@ function checkConKind(context: Context, type: ConType, lenient: boolean) {
   }
 
   // Lookup kind in context (like vars) for user-defined type constructors
-  const binding = context.find((b) => "type" in b && b.type.name === type.con);
+  const binding = state.ctx.find(
+    (b) => "type" in b && b.type.name === type.con,
+  );
   if (binding && "type" in binding) return ok(binding.type.kind);
 
   // Also check for enum definitions
-  const enumBinding = context.find(
+  const enumBinding = state.ctx.find(
     (b) => "enum" in b && b.enum.name === type.con,
   );
   if (enumBinding && "enum" in enumBinding) return ok(enumBinding.enum.kind);
@@ -1429,10 +1377,14 @@ function checkConKind(context: Context, type: ConType, lenient: boolean) {
   return lenient ? ok(starKind) : err({ unbound: type.con });
 }
 
-function checkTupleKind(context: Context, type: TupleType, lenient: boolean) {
+function checkTupleKind(
+  state: TypeCheckerState,
+  type: TupleType,
+  lenient: boolean,
+) {
   // All element types must have kind *
   for (const elemType of type.tuple) {
-    const elemKind = checkKind(context, elemType, lenient);
+    const elemKind = checkKind(state, elemType, lenient);
     if ("err" in elemKind) return elemKind;
     if (!isStarKind(elemKind.ok))
       return err({
@@ -1442,14 +1394,18 @@ function checkTupleKind(context: Context, type: TupleType, lenient: boolean) {
   return ok(starKind);
 }
 
-function checkMuKind(context: Context, type: MuType, lenient: boolean) {
+function checkMuKind(state: TypeCheckerState, type: MuType, lenient: boolean) {
   // μα.τ has kind * if τ has kind * in context extended with α::*
   const extendedContext: Context = [
     { type: { name: type.mu.var, kind: starKind } },
-    ...context,
+    ...state.ctx,
   ];
 
-  const bodyKind = checkKind(extendedContext, type.mu.body, lenient);
+  const bodyKind = checkKind(
+    { ctx: extendedContext, meta: state.meta },
+    type.mu.body,
+    lenient,
+  );
   if ("err" in bodyKind) return bodyKind;
 
   if (!isStarKind(bodyKind.ok))
@@ -1461,16 +1417,16 @@ function checkMuKind(context: Context, type: MuType, lenient: boolean) {
 }
 
 function checkVariantKind(
-  context: Context,
+  state: TypeCheckerState,
   type: VariantType,
   lenient: boolean,
 ) {
   // All case types must have kind *
   for (const [_, caseType] of type.variant) {
-    const caseKind = checkKind(context, caseType, lenient);
+    const caseKind = checkKind(state, caseType, lenient);
     if ("err" in caseKind) return caseKind;
 
-    if (!isBottom(caseType) && !isStarKind(caseKind.ok)) {
+    if (!isBottom(state, caseType) && !isStarKind(caseKind.ok)) {
       return err({
         kind_mismatch: { expected: starKind, actual: caseKind.ok },
       });
@@ -1479,10 +1435,14 @@ function checkVariantKind(
 
   return ok(starKind);
 }
-function checkRecordKind(context: Context, type: RecordType, lenient: boolean) {
+function checkRecordKind(
+  state: TypeCheckerState,
+  type: RecordType,
+  lenient: boolean,
+) {
   // All field types must have kind *
   for (const [_, fieldType] of type.record) {
-    const fieldKind = checkKind(context, fieldType, lenient);
+    const fieldKind = checkKind(state, fieldType, lenient);
     if ("err" in fieldKind) return fieldKind;
 
     if (!isStarKind(fieldKind.ok))
@@ -1494,11 +1454,15 @@ function checkRecordKind(context: Context, type: RecordType, lenient: boolean) {
   return ok(starKind);
 }
 
-function checkAppKind(context: Context, type: AppType, lenient: boolean) {
-  const funcKind = checkKind(context, type.app.func, lenient);
+function checkAppKind(
+  state: TypeCheckerState,
+  type: AppType,
+  lenient: boolean,
+) {
+  const funcKind = checkKind(state, type.app.func, lenient);
   if ("err" in funcKind) return funcKind;
 
-  const argKind = checkKind(context, type.app.arg, lenient);
+  const argKind = checkKind(state, type.app.arg, lenient);
   if ("err" in argKind) return argKind;
 
   if (!("arrow" in funcKind.ok))
@@ -1513,20 +1477,28 @@ function checkAppKind(context: Context, type: AppType, lenient: boolean) {
   return ok(funcKind.ok.arrow.to);
 }
 
-function checkLamKind(context: Context, type: LamType, lenient: boolean) {
+function checkLamKind(
+  state: TypeCheckerState,
+  type: LamType,
+  lenient: boolean,
+) {
   const extendedContext: Context = [
     { type: { name: type.lam.var, kind: type.lam.kind } },
-    ...context,
+    ...state.ctx,
   ];
 
-  const bodyKind = checkKind(extendedContext, type.lam.body, lenient);
+  const bodyKind = checkKind(
+    { ctx: extendedContext, meta: state.meta },
+    type.lam.body,
+    lenient,
+  );
   if ("err" in bodyKind) return bodyKind;
 
   return ok(arrowKind(type.lam.kind, bodyKind.ok));
 }
 
 function checkBoundedForallKind(
-  context: Context,
+  state: TypeCheckerState,
   type: BoundedForallType,
   lenient: boolean,
 ) {
@@ -1537,12 +1509,13 @@ function checkBoundedForallKind(
         kind: type.bounded_forall.kind,
       },
     },
-    ...context,
+    ...state.ctx,
   ];
 
+  const extendedState = { ctx: extendedContext, meta: state.meta };
   // Check that all constraint types are well-kinded
   for (const constraint of type.bounded_forall.constraints) {
-    const constraintKind = checkKind(extendedContext, constraint.type, lenient);
+    const constraintKind = checkKind(extendedState, constraint.type, lenient);
     if ("err" in constraintKind) return constraintKind;
 
     if (!isStarKind(constraintKind.ok))
@@ -1554,11 +1527,7 @@ function checkBoundedForallKind(
       });
   }
 
-  const bodyKind = checkKind(
-    extendedContext,
-    type.bounded_forall.body,
-    lenient,
-  );
+  const bodyKind = checkKind(extendedState, type.bounded_forall.body, lenient);
   if ("err" in bodyKind) return bodyKind;
 
   if (!isStarKind(bodyKind.ok))
@@ -1567,10 +1536,17 @@ function checkBoundedForallKind(
   return ok(starKind);
 }
 
-function checkVarKind(context: Context, type: VarType, lenient: boolean) {
-  if (metaKind.has(type.var)) return ok(metaKind.get(type.var)!);
+function checkVarKind(
+  state: TypeCheckerState,
+  type: VarType,
+  lenient: boolean,
+) {
+  if (state.meta.kinds.has(type.var))
+    return ok(state.meta.kinds.get(type.var)!);
 
-  const binding = context.find((b) => "type" in b && b.type.name === type.var);
+  const binding = state.ctx.find(
+    (b) => "type" in b && b.type.name === type.var,
+  );
   if (binding && "type" in binding) {
     return ok(binding.type.kind);
   }
@@ -1580,11 +1556,15 @@ function checkVarKind(context: Context, type: VarType, lenient: boolean) {
   return err({ unbound: type.var });
 }
 
-function checkArrowKind(context: Context, type: ArrowType, lenient: boolean) {
-  const fromKind = checkKind(context, type.arrow.from, lenient);
+function checkArrowKind(
+  state: TypeCheckerState,
+  type: ArrowType,
+  lenient: boolean,
+) {
+  const fromKind = checkKind(state, type.arrow.from, lenient);
   if ("err" in fromKind) return fromKind;
 
-  const toKind = checkKind(context, type.arrow.to, lenient);
+  const toKind = checkKind(state, type.arrow.to, lenient);
   if ("err" in toKind) return toKind;
 
   // Both operands must have kind *
@@ -1596,13 +1576,24 @@ function checkArrowKind(context: Context, type: ArrowType, lenient: boolean) {
   return ok(starKind);
 }
 
-function checkForallKind(context: Context, type: ForallType, lenient: boolean) {
+function checkForallKind(
+  state: TypeCheckerState,
+  type: ForallType,
+  lenient: boolean,
+) {
   const extendedContext: Context = [
     { type: { name: type.forall.var, kind: type.forall.kind } },
-    ...context,
+    ...state.ctx,
   ];
 
-  const bodyKind = checkKind(extendedContext, type.forall.body, lenient);
+  const bodyKind = checkKind(
+    {
+      ctx: extendedContext,
+      meta: state.meta,
+    },
+    type.forall.body,
+    lenient,
+  );
   if ("err" in bodyKind) return bodyKind;
 
   if (!isStarKind(bodyKind.ok))
@@ -1611,23 +1602,30 @@ function checkForallKind(context: Context, type: ForallType, lenient: boolean) {
   return ok(starKind);
 }
 
-function typesEqualSpine(left: Type, right: Type): boolean {
+function typesEqualSpine(
+  state: TypeCheckerState,
+  left: Type,
+  right: Type,
+): boolean {
   const lArgs = getSpineArgs(left);
   const rArgs = getSpineArgs(right);
   if (lArgs.length !== rArgs.length) return false;
   for (let i = 0; i < lArgs.length; i++) {
-    if (!typesEqual(lArgs[i]!, rArgs[i]!)) return false;
+    if (!typesEqual(state, lArgs[i]!, rArgs[i]!)) return false;
   }
   return true;
 }
 
 export function typesEqual(
+  state: TypeCheckerState,
   left: Type,
   right: Type,
-  ctx: Context = [],
 ): boolean {
-  left = normalizeType(left, ctx);
-  right = normalizeType(right, ctx);
+  left = normalizeType(state, left);
+  right = normalizeType(state, right);
+
+  if ("evar" in left && "evar" in right && left.evar === right.evar)
+    return true;
 
   if ("var" in left && "var" in right && left.var === right.var) return true;
 
@@ -1640,7 +1638,7 @@ export function typesEqual(
     "con" in right.app.func
   ) {
     if (left.app.func.con !== right.app.func.con) return false;
-    return typesEqualSpine(left, right); // Pairwise
+    return typesEqualSpine(state, left, right); // Pairwise
   }
 
   if ("never" in left && "never" in right) return true;
@@ -1648,8 +1646,8 @@ export function typesEqual(
   if (
     "arrow" in left &&
     "arrow" in right &&
-    typesEqual(left.arrow.from, right.arrow.from) &&
-    typesEqual(left.arrow.to, right.arrow.to)
+    typesEqual(state, left.arrow.from, right.arrow.from) &&
+    typesEqual(state, left.arrow.to, right.arrow.to)
   )
     return true;
 
@@ -1664,7 +1662,7 @@ export function typesEqual(
       left.forall.var,
       r.forall.body,
     );
-    return typesEqual(left.forall.body, renamedBody);
+    return typesEqual(state, left.forall.body, renamedBody);
   }
 
   if ("lam" in left && "lam" in right) {
@@ -1673,14 +1671,14 @@ export function typesEqual(
 
     // Alpha‑equivalence: rename RHS variable
     const renamedBody = alphaRename(r.lam.var, left.lam.var, r.lam.body);
-    return typesEqual(left.lam.body, renamedBody);
+    return typesEqual(state, left.lam.body, renamedBody);
   }
 
   if ("app" in left && "app" in right) {
     const r = right as { app: { func: Type; arg: Type } };
     return (
-      typesEqual(left.app.func, r.app.func) &&
-      typesEqual(left.app.arg, r.app.arg)
+      typesEqual(state, left.app.func, r.app.func) &&
+      typesEqual(state, left.app.arg, r.app.arg)
     );
   }
 
@@ -1698,6 +1696,7 @@ export function typesEqual(
     // All field types must be equal
     return leftLabels.every((label) =>
       typesEqual(
+        state,
         leftFields.find((t) => t[0] === label)![1],
         rightFields.find((t) => t[0] === label)![1],
       ),
@@ -1727,14 +1726,14 @@ export function typesEqual(
         rc.type,
       );
 
-      if (!typesEqual(lc.type, renamedConstraintType)) return false;
+      if (!typesEqual(state, lc.type, renamedConstraintType)) return false;
     }
     const renamedBody = alphaRename(
       right.bounded_forall.var,
       left.bounded_forall.var,
       right.bounded_forall.body,
     );
-    return typesEqual(left.bounded_forall.body, renamedBody);
+    return typesEqual(state, left.bounded_forall.body, renamedBody);
   }
 
   if ("variant" in left && "variant" in right) {
@@ -1751,6 +1750,7 @@ export function typesEqual(
     // All case types must be equal
     return leftLabels.every((label) =>
       typesEqual(
+        state,
         leftCases.find((t) => t[0] === label)![1],
         rightCases.find((t) => t[0] === label)![1],
       ),
@@ -1760,14 +1760,14 @@ export function typesEqual(
   if ("mu" in left && "mu" in right) {
     // μα.τ₁ = μβ.τ₂ if τ₁ = τ₂[β/α]
     const renamedBody = alphaRename(right.mu.var, left.mu.var, right.mu.body);
-    return typesEqual(left.mu.body, renamedBody);
+    return typesEqual(state, left.mu.body, renamedBody);
   }
 
   if ("tuple" in left && "tuple" in right) {
     if (left.tuple.length !== right.tuple.length) return false;
 
     return left.tuple.every((leftElem, i) =>
-      typesEqual(leftElem, right.tuple[i]!),
+      typesEqual(state, leftElem, right.tuple[i]!),
     );
   }
 
@@ -1869,26 +1869,19 @@ export function alphaRename(from: string, to: string, type: Type): Type {
 }
 
 export function unifyTypes(
+  state: TypeCheckerState,
   left: Type,
   right: Type,
   worklist: Worklist,
   subst: Substitution,
-  context: Context = [],
 ): Result<TypingError, null> {
-  left = normalizeType(left, context);
-  right = normalizeType(right, context);
+  left = normalizeType(state, left);
+  right = normalizeType(state, right);
 
-  if (typesEqual(left, right)) {
-    return ok(null);
-  }
+  if (typesEqual(state, left, right)) return ok(null);
 
-  if (
-    "mu" in left &&
-    "var" in left.mu.body &&
-    left.mu.body.var === left.mu.var
-  ) {
+  if ("mu" in left && "var" in left.mu.body && left.mu.body.var === left.mu.var)
     return err({ cyclic: left.mu.var });
-  }
   if (
     "mu" in right &&
     "var" in right.mu.body &&
@@ -1896,21 +1889,22 @@ export function unifyTypes(
   )
     return err({ cyclic: right.mu.var });
 
-  if (isBottom(left) && isBottom(normalizeType(right))) return ok(null);
+  if (isBottom(state, left) && isBottom(state, right)) return ok(null);
 
-  if (isBottom(left)) {
-    // ⊥ <: right? Check right :: *
-    const rightKind = checkKind([], right, true); // Empty ctx for base kind check
+  // ⊥ <: right? Check right :: *
+  if (isBottom(state, left)) {
+    // Empty ctx for base kind check
+    const rightKind = checkKind({ ctx: [], meta: state.meta }, right, true);
     if ("err" in rightKind || !isStarKind(rightKind.ok))
       return err({ type_mismatch: { expected: right, actual: left } });
 
     return ok(null);
   }
 
-  if (isBottom(right))
+  if (isBottom(state, right))
     // Unification is asymmetric: left ~ ⊥ only if left is also ⊥
     // (since non-bottom types are not subtypes of bottom)
-    return isBottom(left)
+    return isBottom(state, left)
       ? ok(null)
       : err({ type_mismatch: { expected: right, actual: left } });
 
@@ -1918,7 +1912,7 @@ export function unifyTypes(
   const rightRigid = "var" in right && !isMetaVar(right);
 
   if (leftRigid && rightRigid)
-    return typesEqual(left, right)
+    return typesEqual(state, left, right)
       ? ok(null)
       : err({ type_mismatch: { expected: left, actual: right } });
 
@@ -1928,17 +1922,49 @@ export function unifyTypes(
       return err({ cyclic: left.var });
 
     if ("var" in right && isMetaVar(right))
-      return unifyVariable(right.var, left, subst);
+      return unifyVariable(state, right.var, left, subst);
 
     return err({ type_mismatch: { expected: left, actual: right } });
   }
 
-  if (rightRigid) return unifyTypes(right, left, worklist, subst);
+  if (rightRigid) return unifyTypes(state, right, left, worklist, subst);
 
   // Variable cases
-  if ("var" in left) return unifyVariable(left.var, right, subst);
+  if ("var" in left) return unifyVariable(state, left.var, right, subst);
 
-  if ("var" in right) return unifyVariable(right.var, left, subst);
+  if ("var" in right) return unifyVariable(state, right.var, left, subst);
+
+  const unifyFlex = (
+    flexName: string,
+    rigidTy: Type,
+  ): Result<TypingError, null> => {
+    const appliedTy = applySubstitution(
+      state,
+      subst,
+      normalizeType(state, rigidTy),
+    ); // Local subst first
+    // Global sol?
+    if (state.meta.solutions.has(flexName)) {
+      const existing = normalizeType(
+        state,
+        state.meta.solutions.get(flexName)!,
+      );
+      return unifyTypes(state, existing, appliedTy, worklist, subst);
+    }
+    // Local subst?
+    if (subst.has(flexName)) {
+      const existing = applySubstitution(state, subst, subst.get(flexName)!);
+      return unifyTypes(state, existing, appliedTy, worklist, subst);
+    }
+    // Occurs (follow global sols; local subst already applied)
+    if (occursCheckEvar(state.meta, flexName, appliedTy))
+      return err({ cyclic: flexName });
+    subst.set(flexName, appliedTy); // Bind locally
+    return ok(null);
+  };
+
+  if (isMetaVar(left)) return unifyFlex(left.evar, right);
+  if (isMetaVar(right)) return unifyFlex(right.evar, left);
 
   if (
     "app" in left &&
@@ -1962,7 +1988,7 @@ export function unifyTypes(
   }
   if ("app" in left && "con" in left.app.func && "variant" in right) {
     const enumName = left.app.func.con;
-    const enumBinding = context.find(
+    const enumBinding = state.ctx.find(
       (b) => "enum" in b && b.enum.name === enumName,
     );
     if (enumBinding && "enum" in enumBinding) {
@@ -1977,9 +2003,8 @@ export function unifyTypes(
       if (
         !Array.from(rightLabels).every((l) => defLabels.has(l)) ||
         rightLabels.size !== defLabels.size
-      ) {
+      )
         return err({ type_mismatch: { expected: left, actual: right } });
-      }
 
       // Unify each case: Instantiate def variant with leftArgs, unify with right case
       for (const [label, rightCase] of right.variant) {
@@ -1997,7 +2022,7 @@ export function unifyTypes(
   }
   // Symmetric: variant ~ app(con)
   if ("variant" in left && "app" in right && "con" in right.app.func) {
-    return unifyTypes(right, left, worklist, subst, context); // Swap
+    return unifyTypes(state, right, left, worklist, subst); // Swap
   }
 
   // Also, for app vs. legacy variant: mismatch (or convert, but migrate to nominal)
@@ -2013,7 +2038,7 @@ export function unifyTypes(
     return unifyArrowTypes(left, right, worklist, subst);
 
   // Special case: Bottom-domain functions (⊥ → α ~ τ₁ → τ₂)
-  if ("arrow" in left && "arrow" in right && isBottom(left.arrow.from)) {
+  if ("arrow" in left && "arrow" in right && isBottom(state, left.arrow.from)) {
     // Bottom domain matches anything, so only unify codomains
     worklist.push(typeEq(left.arrow.to, right.arrow.to));
 
@@ -2023,7 +2048,11 @@ export function unifyTypes(
   }
 
   // Symmetric case: functions with bottom domain on right
-  if ("arrow" in left && "arrow" in right && isBottom(right.arrow.from)) {
+  if (
+    "arrow" in left &&
+    "arrow" in right &&
+    isBottom(state, right.arrow.from)
+  ) {
     // Only unify codomains, ignore domains
     worklist.push(typeEq(left.arrow.to, right.arrow.to));
     return ok(null);
@@ -2054,6 +2083,31 @@ export function unifyTypes(
     return unifyTupleTypes(left, right, worklist, subst);
 
   return err({ type_mismatch: { expected: left, actual: right } });
+}
+
+export function unifyMetaVar(
+  state: TypeCheckerState,
+  evar: string,
+  ty: Type,
+  worklist: Worklist,
+  subst: Substitution,
+): Result<TypingError, null> {
+  // Follow existing solution if solved
+  if (state.meta.solutions.has(evar)) {
+    const existing = state.meta.solutions.get(evar)!;
+    return unifyTypes(state, existing, ty, worklist, subst); // Recursive unify
+  }
+
+  // Check if ty contains evar (occurs)
+  if (occursCheckEvar(state.meta, evar, ty)) {
+    return err({ cyclic: evar });
+  }
+
+  // Bind locally first (for this unification), then solve globally later if needed
+  // (Or solve globally immediately if no local subst conflicts)
+  const currentSubstTy = applySubstitution(state, subst, ty); // Apply local subst to ty
+  subst.set(evar, currentSubstTy); // Bind in subst (allows propagation)
+  return ok(null);
 }
 
 function unifyTupleTypes(
@@ -2294,13 +2348,14 @@ function unifyBoundedForallTypes(
 }
 
 export function unifyVariable(
+  state: TypeCheckerState,
   varName: string,
   type: Type,
   subst: Substitution,
 ): Result<TypingError, null> {
   if (subst.has(varName)) {
     const existing = subst.get(varName)!;
-    return typesEqual(existing, type)
+    return typesEqual(state, existing, type)
       ? ok(null)
       : err({ type_mismatch: { expected: existing, actual: type } });
   }
@@ -2308,7 +2363,7 @@ export function unifyVariable(
   // var ~ var (tautology)
   if ("var" in type && type.var === varName) return ok(null);
 
-  if (isBottom(type)) {
+  if (isBottom(state, type)) {
     // Find var's binding kind (if bound in context, but since subst doesn't have kinds, assume *)
     // Check occurs to avoid cycles, but allow ⊥ <: var
     if (occursCheck(varName, type)) return err({ cyclic: varName });
@@ -2385,10 +2440,16 @@ export function occursCheck(varName: string, type: Type): boolean {
 }
 
 export function applySubstitution(
+  state: TypeCheckerState,
   subst: Substitution,
   type: Type,
   visited = new Set<string>(),
 ): Type {
+  if (isMetaVar(type)) {
+    const sol = subst.get(type.evar) || state.meta.solutions.get(type.evar); // Add state param?
+    return sol ? applySubstitution(state, subst, sol, visited) : type;
+  }
+
   if ("var" in type) {
     // Cycle detection, return the variable unchanged
     if (visited.has(type.var)) return type;
@@ -2399,15 +2460,15 @@ export function applySubstitution(
     // Add to visited set and recursively substitute
     const newVisited = new Set(visited);
     newVisited.add(type.var);
-    return applySubstitution(subst, replacement, newVisited);
+    return applySubstitution(state, subst, replacement, newVisited);
   }
 
   if ("con" in type) return type;
 
   if ("arrow" in type)
     return arrowType(
-      applySubstitution(subst, type.arrow.from),
-      applySubstitution(subst, type.arrow.to),
+      applySubstitution(state, subst, type.arrow.from),
+      applySubstitution(state, subst, type.arrow.to),
     );
 
   if ("forall" in type) {
@@ -2416,7 +2477,7 @@ export function applySubstitution(
     return forallType(
       type.forall.var,
       type.forall.kind,
-      applySubstitution(newSubst, type.forall.body),
+      applySubstitution(state, newSubst, type.forall.body),
     );
   }
 
@@ -2428,9 +2489,9 @@ export function applySubstitution(
       type.bounded_forall.kind,
       type.bounded_forall.constraints.map((c) => ({
         trait: c.trait,
-        type: applySubstitution(subst, c.type),
+        type: applySubstitution(state, subst, c.type),
       })),
-      applySubstitution(newSubst, type.bounded_forall.body),
+      applySubstitution(state, newSubst, type.bounded_forall.body),
     );
   }
 
@@ -2441,52 +2502,55 @@ export function applySubstitution(
       lam: {
         var: type.lam.var,
         kind: type.lam.kind,
-        body: applySubstitution(newSubst, type.lam.body),
+        body: applySubstitution(state, newSubst, type.lam.body),
       },
     };
   }
 
   if ("app" in type) {
     return appType(
-      applySubstitution(subst, type.app.func),
-      applySubstitution(subst, type.app.arg),
+      applySubstitution(state, subst, type.app.func),
+      applySubstitution(state, subst, type.app.arg),
     );
   }
 
   if ("record" in type) {
     const record: [string, Type][] = [];
     for (const [label, fieldType] of type.record)
-      record.push([label, applySubstitution(subst, fieldType)]);
+      record.push([label, applySubstitution(state, subst, fieldType)]);
     return { record };
   }
 
   if ("variant" in type) {
     const variant: [string, Type][] = [];
     for (const [label, caseType] of type.variant)
-      variant.push([label, applySubstitution(subst, caseType)]);
+      variant.push([label, applySubstitution(state, subst, caseType)]);
     return { variant };
   }
 
   if ("mu" in type) {
     const newSubst = new Map(subst);
     newSubst.delete(type.mu.var);
-    return muType(type.mu.var, applySubstitution(newSubst, type.mu.body));
+    return muType(
+      type.mu.var,
+      applySubstitution(state, newSubst, type.mu.body),
+    );
   }
 
   if ("tuple" in type)
-    return tupleType(type.tuple.map((t) => applySubstitution(subst, t)));
+    return tupleType(type.tuple.map((t) => applySubstitution(state, subst, t)));
 
   return type;
 }
 
 // Bidirectional type checking - check a term against an expected type
 export function checkType(
-  context: Context,
+  state: TypeCheckerState,
   term: Term,
   expectedType: Type,
 ): Result<TypingError, { type: Type; subst: Substitution }> {
   // Check kind of expected type
-  const kindResult = checkKind(context, expectedType);
+  const kindResult = checkKind(state, expectedType);
   if ("err" in kindResult) return kindResult;
 
   // Lambda: check against arrow type
@@ -2495,6 +2559,7 @@ export function checkType(
     const worklist: Worklist = [];
     const subst = new Map<string, Type>();
     const domainUnify = unifyTypes(
+      state,
       term.lam.type,
       expectedType.arrow.from,
       worklist,
@@ -2502,41 +2567,43 @@ export function checkType(
     );
     if ("err" in domainUnify) return domainUnify;
 
-    const solveRes = solveConstraints(worklist, subst);
+    const solveRes = solveConstraints(state, worklist, subst);
     if ("err" in solveRes) return solveRes;
 
     // Populate global meta variable solutions
     for (const [varName, soln] of solveRes.ok.entries()) {
-      if (metaKind.has(varName)) {
-        const globalSolve = solveMetaVar(varName, soln);
+      if (state.meta.solutions.has(varName)) {
+        const globalSolve = solveMetaVar(state, varName, soln);
         if ("err" in globalSolve) return globalSolve;
       }
     }
 
     // Apply substitution to get the resolved domain type
     let effectiveFromType = applySubstitution(
+      state,
       solveRes.ok,
       expectedType.arrow.from,
     );
 
-    if (isBottom(expectedType.arrow.from)) effectiveFromType = freshMetaVar();
+    if (isBottom(state, expectedType.arrow.from))
+      effectiveFromType = freshMetaVar(state.meta);
 
     const extendedContext: Context = [
-      ...context,
+      ...state.ctx,
       { term: { name: term.lam.arg, type: effectiveFromType } },
     ];
 
     const bodyCheckRes = checkType(
-      extendedContext,
+      { ctx: extendedContext, meta: state.meta },
       term.lam.body,
-      applySubstitution(solveRes.ok, expectedType.arrow.to),
+      applySubstitution(state, solveRes.ok, expectedType.arrow.to),
     );
     if ("err" in bodyCheckRes) return bodyCheckRes;
 
     const mergedSubst = mergeSubsts(solveRes.ok, bodyCheckRes.ok.subst);
 
-    let finalType: Type = applySubstitution(mergedSubst, expectedType);
-    if (isBottom(expectedType.arrow.from))
+    let finalType: Type = applySubstitution(state, mergedSubst, expectedType);
+    if (isBottom(state, expectedType.arrow.from))
       finalType = arrowType(neverType, (finalType as ArrowType).arrow.to);
 
     return ok({ type: finalType, subst: mergedSubst });
@@ -2554,7 +2621,7 @@ export function checkType(
       });
 
     const extendedContext: Context = [
-      ...context,
+      ...state.ctx,
       { type: { name: term.tylam.var, kind: term.tylam.kind } },
     ];
 
@@ -2566,7 +2633,7 @@ export function checkType(
     );
 
     const bodyResult = checkType(
-      extendedContext,
+      { ctx: extendedContext, meta: state.meta },
       term.tylam.body,
       renamedExpected,
     );
@@ -2611,7 +2678,7 @@ export function checkType(
         expectedConstraint.type,
       );
 
-      if (!typesEqual(termConstraint.type, renamedConstraintType))
+      if (!typesEqual(state, termConstraint.type, renamedConstraintType))
         return err({
           type_mismatch: {
             expected: renamedConstraintType,
@@ -2621,7 +2688,7 @@ export function checkType(
     }
 
     const extendedContext: Context = [
-      ...context,
+      ...state.ctx,
       {
         type: {
           name: term.trait_lam.type_var,
@@ -2645,7 +2712,7 @@ export function checkType(
     );
 
     const bodyResult = checkType(
-      extendedContext,
+      { ctx: extendedContext, meta: state.meta },
       term.trait_lam.body,
       renamedExpected,
     );
@@ -2677,7 +2744,7 @@ export function checkType(
         (f) => f[0] === label,
       )![1];
 
-      const fieldResult = checkType(context, fieldTerm, expectedFieldType);
+      const fieldResult = checkType(state, fieldTerm, expectedFieldType);
       if ("err" in fieldResult) return fieldResult;
     }
 
@@ -2696,7 +2763,7 @@ export function checkType(
 
     for (let i = 0; i < term.tuple.length; i++) {
       const elementResult = checkType(
-        context,
+        state,
         term.tuple[i]!,
         expectedType.tuple[i]!,
       );
@@ -2708,7 +2775,7 @@ export function checkType(
 
   // Injection: check value against variant case type
   if ("inject" in term) {
-    const variantType = normalizeType(expectedType);
+    const variantType = normalizeType(state, expectedType);
 
     if (!("variant" in variantType))
       return err({ not_a_variant: expectedType });
@@ -2725,7 +2792,7 @@ export function checkType(
         },
       });
 
-    const valueResult = checkType(context, term.inject.value, caseType[1]);
+    const valueResult = checkType(state, term.inject.value, caseType[1]);
     if ("err" in valueResult) return valueResult;
 
     return ok({ type: expectedType, subst: new Map() });
@@ -2750,28 +2817,34 @@ export function checkType(
       new Set([expectedType.mu.var]),
     );
 
-    const termResult = checkType(context, term.fold.term, unfoldedType);
+    const termResult = checkType(state, term.fold.term, unfoldedType);
     if ("err" in termResult) return termResult;
 
     return ok({ type: expectedType, subst: new Map() });
   }
 
   // Subsumption: infer and check if compatible
-  const inferredType = inferType(context, term);
+  const inferredType = inferType(state, term);
   if ("err" in inferredType) return inferredType;
 
   let polyInferred = inferredType.ok;
   if ("forall" in polyInferred && !("forall" in expectedType)) {
     // Instantiate poly to match expected
-    polyInferred = instantiate(polyInferred);
+    polyInferred = instantiateType(state, polyInferred);
     // Unify with expected (solves metas)
     const worklist: Worklist = [];
     const subst = new Map<string, Type>();
-    const unifyRes = unifyTypes(polyInferred, expectedType, worklist, subst);
+    const unifyRes = unifyTypes(
+      state,
+      polyInferred,
+      expectedType,
+      worklist,
+      subst,
+    );
     if ("err" in unifyRes) {
       // Original subsumption as fallback
       const subsumesRes = subsumes(
-        context,
+        state,
         inferredType.ok,
         expectedType,
         [],
@@ -2779,9 +2852,9 @@ export function checkType(
       );
       if ("err" in subsumesRes) return subsumesRes;
     } else {
-      const solveRes = solveConstraints(worklist, subst);
+      const solveRes = solveConstraints(state, worklist, subst);
       if ("err" in solveRes) return solveRes;
-      polyInferred = applySubstitution(solveRes.ok, polyInferred);
+      polyInferred = applySubstitution(state, solveRes.ok, polyInferred);
     }
   }
 
@@ -2789,7 +2862,7 @@ export function checkType(
   const worklist: Worklist = [];
   const subst = new Map<string, Type>();
   const subsumesResult = subsumes(
-    context,
+    state,
     expectedType,
     polyInferred,
     worklist,
@@ -2797,22 +2870,20 @@ export function checkType(
   );
   if ("err" in subsumesResult) return subsumesResult;
 
-  const solveResult = solveConstraints(worklist, subst);
+  const solveResult = solveConstraints(state, worklist, subst);
   if ("err" in solveResult) return solveResult;
 
   const finalSubst = solveResult.ok;
   for (const [varName, soln] of finalSubst.entries()) {
-    if (metaKind.has(varName)) {
-      const globalSolve = solveMetaVar(varName, soln);
-      if ("err" in globalSolve) return globalSolve;
-    }
+    const globalSolve = solveMetaVar(state, varName, soln);
+    if ("err" in globalSolve) return globalSolve;
   }
 
-  const resolvedExpected = applySubstitution(finalSubst, expectedType);
+  const resolvedExpected = applySubstitution(state, finalSubst, expectedType);
 
   let finalInferred = polyInferred;
-  if (!isAssignableTo(polyInferred, resolvedExpected)) {
-    finalInferred = applySubstitution(finalSubst, polyInferred);
+  if (!isAssignableTo(state, polyInferred, resolvedExpected)) {
+    finalInferred = applySubstitution(state, finalSubst, polyInferred);
     return err({
       type_mismatch: { expected: resolvedExpected, actual: finalInferred },
     });
@@ -2823,36 +2894,42 @@ export function checkType(
 
 // ./src/typechecker.ts (cont.)
 // Typing judgment: Γ ⊢ e : τ
-export function inferType(ctx: Context, term: Term): Result<TypingError, Type> {
-  if ("var" in term) return inferVarType(ctx, term);
+export function inferType(
+  state: TypeCheckerState,
+  term: Term,
+): Result<TypingError, Type> {
+  if ("var" in term) return inferVarType(state, term);
   if ("con" in term) return ok(term.con.type);
-  if ("lam" in term) return inferLamType(ctx, term);
-  if ("app" in term) return inferAppType(ctx, term);
-  if ("let" in term) return inferLetType(ctx, term);
-  if ("tylam" in term) return inferTylamType(ctx, term);
-  if ("tyapp" in term) return inferTyappType(ctx, term);
-  if ("dict" in term) return inferDictType(ctx, term);
-  if ("trait_lam" in term) return inferTraitLamType(ctx, term);
-  if ("trait_app" in term) return inferTraitAppType(ctx, term);
-  if ("trait_method" in term) return inferTraitMethodType(ctx, term);
-  if ("record" in term) return inferRecordType(ctx, term);
-  if ("project" in term) return inferProjectType(ctx, term);
-  if ("inject" in term) return inferInjectType(ctx, term);
-  if ("match" in term) return inferMatchType(ctx, term);
-  if ("fold" in term) return inferFoldType(ctx, term);
-  if ("unfold" in term) return inferUnfoldType(ctx, term);
-  if ("tuple" in term) return inferTupleType(ctx, term);
-  if ("tuple_project" in term) return inferTupleProjectType(ctx, term);
+  if ("lam" in term) return inferLamType(state, term);
+  if ("app" in term) return inferAppType(state, term);
+  if ("let" in term) return inferLetType(state, term);
+  if ("tylam" in term) return inferTylamType(state, term);
+  if ("tyapp" in term) return inferTyappType(state, term);
+  if ("dict" in term) return inferDictType(state, term);
+  if ("trait_lam" in term) return inferTraitLamType(state, term);
+  if ("trait_app" in term) return inferTraitAppType(state, term);
+  if ("trait_method" in term) return inferTraitMethodType(state, term);
+  if ("record" in term) return inferRecordType(state, term);
+  if ("project" in term) return inferProjectType(state, term);
+  if ("inject" in term) return inferInjectType(state, term);
+  if ("match" in term) return inferMatchType(state, term);
+  if ("fold" in term) return inferFoldType(state, term);
+  if ("unfold" in term) return inferUnfoldType(state, term);
+  if ("tuple" in term) return inferTupleType(state, term);
+  if ("tuple_project" in term) return inferTupleProjectType(state, term);
 
   throw new Error(`Unknown term: ${Object.keys(term)[0]}`);
 }
 
-function inferTupleProjectType(ctx: Context, term: TupleProjectTerm) {
-  const tupleType = inferType(ctx, term.tuple_project.tuple);
+function inferTupleProjectType(
+  state: TypeCheckerState,
+  term: TupleProjectTerm,
+) {
+  const tupleType = inferType(state, term.tuple_project.tuple);
   if ("err" in tupleType) return tupleType;
 
   // Normalize to expand type aliases
-  const normalizedType = normalizeType(tupleType.ok, ctx);
+  const normalizedType = normalizeType(state, tupleType.ok);
 
   if (!("tuple" in normalizedType)) return err({ not_a_tuple: normalizedType });
 
@@ -2869,11 +2946,11 @@ function inferTupleProjectType(ctx: Context, term: TupleProjectTerm) {
   return ok(normalizedType.tuple[index]!);
 }
 
-function inferTupleType(ctx: Context, term: TupleTerm) {
+function inferTupleType(state: TypeCheckerState, term: TupleTerm) {
   const elementTypes: Type[] = [];
 
   for (const element of term.tuple) {
-    const elementType = inferType(ctx, element);
+    const elementType = inferType(state, element);
     if ("err" in elementType) return elementType;
 
     elementTypes.push(elementType.ok);
@@ -2882,8 +2959,8 @@ function inferTupleType(ctx: Context, term: TupleTerm) {
   return ok(tupleType(elementTypes));
 }
 
-function inferUnfoldType(ctx: Context, term: UnfoldTerm) {
-  const termType = inferType(ctx, term.unfold);
+function inferUnfoldType(state: TypeCheckerState, term: UnfoldTerm) {
+  const termType = inferType(state, term.unfold);
   if ("err" in termType) return termType;
 
   if (!("mu" in termType.ok)) return err({ not_a_function: termType.ok });
@@ -2898,8 +2975,8 @@ function inferUnfoldType(ctx: Context, term: UnfoldTerm) {
   return ok(unfoldedType);
 }
 
-function inferFoldType(ctx: Context, term: FoldTerm) {
-  const muKind = checkKind(ctx, term.fold.type);
+function inferFoldType(state: TypeCheckerState, term: FoldTerm) {
+  const muKind = checkKind(state, term.fold.type);
   if ("err" in muKind) return muKind;
 
   if (!("mu" in term.fold.type))
@@ -2914,12 +2991,12 @@ function inferFoldType(ctx: Context, term: FoldTerm) {
     new Set([term.fold.type.mu.var]),
   );
 
-  const unfoldedType = normalizeType(unfoldedTypeSubstituded, ctx);
+  const unfoldedType = normalizeType(state, unfoldedTypeSubstituded);
 
-  const termType = inferType(ctx, term.fold.term);
+  const termType = inferType(state, term.fold.term);
   if ("err" in termType) return termType;
 
-  if (!isAssignableTo(termType.ok, unfoldedType))
+  if (!isAssignableTo(state, termType.ok, unfoldedType))
     return err({
       type_mismatch: {
         expected: unfoldedType,
@@ -2929,10 +3006,10 @@ function inferFoldType(ctx: Context, term: FoldTerm) {
 
   return ok(term.fold.type);
 }
-function inferMatchType(ctx: Context, term: MatchTerm) {
-  const scrutineeType = inferType(ctx, term.match.scrutinee);
+function inferMatchType(state: TypeCheckerState, term: MatchTerm) {
+  const scrutineeType = inferType(state, term.match.scrutinee);
   if ("err" in scrutineeType) return scrutineeType;
-  let normalizedScrutinee = normalizeType(scrutineeType.ok, ctx);
+  let normalizedScrutinee = normalizeType(state, scrutineeType.ok);
   if ("mu" in normalizedScrutinee) {
     normalizedScrutinee = substituteType(
       normalizedScrutinee.mu.var,
@@ -2942,29 +3019,29 @@ function inferMatchType(ctx: Context, term: MatchTerm) {
   }
 
   const patterns = term.match.cases.map((c) => c[0]);
-  const exhaustCheck = checkExhaustive(patterns, normalizedScrutinee, ctx);
+  const exhaustCheck = checkExhaustive(state, patterns, normalizedScrutinee);
   if ("err" in exhaustCheck) return exhaustCheck;
 
   let commonType: Type | null = null;
 
   for (const [pat, bod] of term.match.cases) {
     // Apply global meta variable solutions before checking each pattern
-    const globalSubst = getMetaSubstitution();
+    const globalSubst = state.meta.solutions;
     const currentScrutineeType = normalizeType(
-      applySubstitution(globalSubst, normalizedScrutinee),
-      ctx,
+      state,
+      applySubstitution(state, globalSubst, normalizedScrutinee),
     );
 
-    const patternResult = checkPattern(pat, currentScrutineeType, ctx); // ← Use currentScrutineeType
+    const patternResult = checkPattern(state, pat, currentScrutineeType); // ← Use currentScrutineeType
     if ("err" in patternResult) return patternResult;
 
-    const extendedCtx = [...ctx, ...patternResult.ok];
-
-    const bodyType = inferType(extendedCtx, bod);
+    const extendedCtx: Context = [...state.ctx, ...patternResult.ok];
+    const extendedState = { ctx: extendedCtx, meta: state.meta };
+    const bodyType = inferType(extendedState, bod);
     if ("err" in bodyType) return bodyType;
 
-    let instBodyType = instantiate(bodyType.ok);
-    instBodyType = normalizeType(instBodyType, ctx);
+    let instBodyType = instantiateType(state, bodyType.ok);
+    instBodyType = normalizeType(state, instBodyType);
 
     if (commonType === null) {
       commonType = instBodyType;
@@ -2973,7 +3050,7 @@ function inferMatchType(ctx: Context, term: MatchTerm) {
       const subst = new Map<string, Type>();
 
       let subsumesRes = subsumes(
-        extendedCtx,
+        extendedState,
         instBodyType,
         commonType,
         worklist,
@@ -2984,7 +3061,7 @@ function inferMatchType(ctx: Context, term: MatchTerm) {
         subst.clear();
         worklist.length = 0;
         subsumesRes = subsumes(
-          extendedCtx,
+          extendedState,
           commonType,
           instBodyType,
           worklist,
@@ -2993,21 +3070,27 @@ function inferMatchType(ctx: Context, term: MatchTerm) {
       }
 
       if ("err" in subsumesRes) {
-        const unifyRes = unifyTypes(commonType, instBodyType, worklist, subst);
+        const unifyRes = unifyTypes(
+          state,
+          commonType,
+          instBodyType,
+          worklist,
+          subst,
+        );
         if ("err" in unifyRes) return unifyRes;
       }
 
-      const solveRes = solveConstraints(worklist, subst);
+      const solveRes = solveConstraints(state, worklist, subst);
       if ("err" in solveRes) return solveRes;
 
-      commonType = applySubstitution(solveRes.ok, commonType!);
+      commonType = applySubstitution(state, solveRes.ok, commonType!);
     }
   }
 
-  return ok(normalizeType(commonType!));
+  return ok(normalizeType(state, commonType!));
 }
 function inferInjectType(
-  ctx: Context,
+  state: TypeCheckerState,
   term: InjectTerm,
 ): Result<TypingError, Type> {
   const variantType = term.inject.variant_type; // Don't normalize yet!
@@ -3019,7 +3102,7 @@ function inferInjectType(
       const conName = head.con;
       const spineArgs = "con" in variantType ? [] : getSpineArgs(variantType);
       // Lookup enum definition in context
-      const enumBinding = ctx.find(
+      const enumBinding = state.ctx.find(
         (b) => "enum" in b && b.enum.name === conName,
       );
       if (enumBinding && "enum" in enumBinding) {
@@ -3049,13 +3132,13 @@ function inferInjectType(
             expectedFieldType,
           );
         }
-        expectedFieldType = normalizeType(expectedFieldType, ctx);
+        expectedFieldType = normalizeType(state, expectedFieldType);
 
         // Check the injected value against the field type
         const valueCheck = checkInjectValue(
+          state,
           term.inject.value,
           expectedFieldType,
-          ctx,
         );
 
         return "err" in valueCheck ? valueCheck : ok(variantType);
@@ -3064,7 +3147,7 @@ function inferInjectType(
   }
 
   // Case 2: Structural variant - NOW normalize to expand
-  const normalizedVariant = normalizeType(variantType, ctx);
+  const normalizedVariant = normalizeType(state, variantType);
   if ("variant" in normalizedVariant) {
     const caseEntry = normalizedVariant.variant.find(
       ([l]) => l === term.inject.label,
@@ -3079,9 +3162,9 @@ function inferInjectType(
 
     const expectedFieldType = caseEntry[1];
     const valueCheck = checkInjectValue(
+      state,
       term.inject.value,
       expectedFieldType,
-      ctx,
     );
 
     return "err" in valueCheck ? valueCheck : ok(variantType); // Return original
@@ -3093,11 +3176,11 @@ function inferInjectType(
 
 // NEW Helper: Check injected value against field type (handles unit, single, tuple/multi-field)
 function checkInjectValue(
+  state: TypeCheckerState,
   value: Term,
   expectedFieldType: Type,
-  ctx: Context,
 ): Result<TypingError, { valueType: Type }> {
-  if (isBottom(expectedFieldType)) {
+  if (isBottom(state, expectedFieldType)) {
     // Bottom field: Always OK (unreachable variant)
     return ok({ valueType: neverType });
   }
@@ -3106,7 +3189,7 @@ function checkInjectValue(
   if ("tuple" in expectedFieldType && expectedFieldType.tuple.length === 0) {
     // Value should be unit {} or wildcard-ish
     if (!("tuple" in value) || value.tuple.length !== 0) {
-      const inferred = inferType(ctx, value);
+      const inferred = inferType(state, value);
       return err({
         type_mismatch: {
           expected: expectedFieldType,
@@ -3120,10 +3203,10 @@ function checkInjectValue(
   // Case: Single field (most common, e.g., Some(val) where field = {var: "t"})
   if (!("tuple" in expectedFieldType)) {
     // Treat single as non-tuple
-    const valueType = inferType(ctx, value);
+    const valueType = inferType(state, value);
     if ("err" in valueType) return valueType;
 
-    const checkRes = checkType(ctx, value, expectedFieldType);
+    const checkRes = checkType(state, value, expectedFieldType);
     if ("err" in checkRes) return checkRes;
 
     return ok({ valueType: checkRes.ok.type });
@@ -3141,7 +3224,7 @@ function checkInjectValue(
     return err({
       type_mismatch: {
         expected: expectedFieldType,
-        actual: { tuple: value.tuple.map(() => freshMetaVar()) },
+        actual: { tuple: value.tuple.map(() => freshMetaVar(state.meta)) },
       },
     });
   }
@@ -3151,10 +3234,10 @@ function checkInjectValue(
     const valueElem = value.tuple[i]!;
     const expectedElemType = expectedFieldType.tuple[i]!;
 
-    const elemType = inferType(ctx, valueElem);
+    const elemType = inferType(state, valueElem);
     if ("err" in elemType) return elemType;
 
-    const checkRes = checkType(ctx, valueElem, expectedElemType);
+    const checkRes = checkType(state, valueElem, expectedElemType);
     if ("err" in checkRes) return checkRes;
 
     valueType.tuple.push(checkRes.ok.type); // Collect for overall tuple type
@@ -3184,12 +3267,12 @@ export function getSpineHead(ty: Type): Type {
   return current;
 }
 
-function inferProjectType(ctx: Context, term: ProjectTerm) {
-  const recordType = inferType(ctx, term.project.record);
+function inferProjectType(state: TypeCheckerState, term: ProjectTerm) {
+  const recordType = inferType(state, term.project.record);
   if ("err" in recordType) return recordType;
 
   // Normalize to expand type aliases
-  const normalizedType = normalizeType(recordType.ok, ctx);
+  const normalizedType = normalizeType(state, recordType.ok);
 
   if (!("record" in normalizedType))
     return err({ not_a_record: normalizedType });
@@ -3209,11 +3292,11 @@ function inferProjectType(ctx: Context, term: ProjectTerm) {
   return ok(fieldType[1]);
 }
 
-function inferRecordType(ctx: Context, term: RecordTerm) {
+function inferRecordType(state: TypeCheckerState, term: RecordTerm) {
   const record: [string, Type][] = [];
 
   for (const [label, fieldTerm] of term.record) {
-    const fieldType = inferType(ctx, fieldTerm);
+    const fieldType = inferType(state, fieldTerm);
     if ("err" in fieldType) return fieldType;
 
     record.push([label, fieldType.ok]);
@@ -3222,8 +3305,8 @@ function inferRecordType(ctx: Context, term: RecordTerm) {
   return ok({ record });
 }
 
-function inferTraitMethodType(ctx: Context, term: TraitMethodTerm) {
-  const dictType = inferType(ctx, term.trait_method.dict);
+function inferTraitMethodType(state: TypeCheckerState, term: TraitMethodTerm) {
+  const dictType = inferType(state, term.trait_method.dict);
   if ("err" in dictType) return dictType;
 
   // Check if the dictionary is a variable bound in context
@@ -3231,13 +3314,13 @@ function inferTraitMethodType(ctx: Context, term: TraitMethodTerm) {
 
   if ("var" in dictTerm) {
     // dictTerm is a VarTerm
-    const dictBinding = ctx.find(
+    const dictBinding = state.ctx.find(
       (b) => "dict" in b && b.dict.name === dictTerm.var,
     );
 
     if (dictBinding && "dict" in dictBinding) {
       // Look up the trait definition
-      const traitDef = ctx.find(
+      const traitDef = state.ctx.find(
         (b) => "trait_def" in b && b.trait_def.name === dictBinding.dict.trait,
       );
 
@@ -3274,7 +3357,7 @@ function inferTraitMethodType(ctx: Context, term: TraitMethodTerm) {
     const dict = dictTerm.dict;
 
     // Look up the trait definition
-    const traitDef = ctx.find(
+    const traitDef = state.ctx.find(
       (b) => "trait_def" in b && b.trait_def.name === dict.trait,
     );
 
@@ -3295,7 +3378,7 @@ function inferTraitMethodType(ctx: Context, term: TraitMethodTerm) {
       });
 
     // Return the type of the method implementation
-    return inferType(ctx, methodImpl[1]);
+    return inferType(state, methodImpl[1]);
   }
   return err({
     type_mismatch: {
@@ -3305,8 +3388,8 @@ function inferTraitMethodType(ctx: Context, term: TraitMethodTerm) {
   });
 }
 
-function inferTraitAppType(ctx: Context, term: TraitAppTerm) {
-  const termType = inferType(ctx, term.trait_app.term);
+function inferTraitAppType(state: TypeCheckerState, term: TraitAppTerm) {
+  const termType = inferType(state, term.trait_app.term);
   if ("err" in termType) return termType;
 
   if (!("bounded_forall" in termType.ok))
@@ -3318,7 +3401,7 @@ function inferTraitAppType(ctx: Context, term: TraitAppTerm) {
     });
 
   // Check that the type argument has the expected kind
-  const argKind = checkKind(ctx, term.trait_app.type);
+  const argKind = checkKind(state, term.trait_app.type);
   if ("err" in argKind) return argKind;
   const boundedForall = termType.ok.bounded_forall;
   if (!kindsEqual(boundedForall.kind, argKind.ok))
@@ -3348,13 +3431,13 @@ function inferTraitAppType(ctx: Context, term: TraitAppTerm) {
   }
 
   // Check that all trait constraints are satisfied
-  const dictsResult = checkTraitConstraints(ctx, instantiatedConstraints);
+  const dictsResult = checkTraitConstraints(state, instantiatedConstraints);
   if ("err" in dictsResult) return dictsResult;
 
   // Type check each provided dictionary
   for (let i = 0; i < term.trait_app.dicts.length; i++) {
     const providedDict = term.trait_app.dicts[i]!;
-    const dictType = inferType(ctx, providedDict);
+    const dictType = inferType(state, providedDict);
     if ("err" in dictType) return dictType;
 
     // Verify it's actually a dictionary for the right trait/type
@@ -3362,7 +3445,7 @@ function inferTraitAppType(ctx: Context, term: TraitAppTerm) {
       const constraint = instantiatedConstraints[i]!;
       if (
         providedDict.dict.trait !== constraint.trait ||
-        !typesEqual(providedDict.dict.type, constraint.type)
+        !typesEqual(state, providedDict.dict.type, constraint.type)
       )
         return err({
           type_mismatch: {
@@ -3383,10 +3466,10 @@ function inferTraitAppType(ctx: Context, term: TraitAppTerm) {
   return ok(resultType);
 }
 
-function inferTraitLamType(ctx: Context, term: TraitLamTerm) {
+function inferTraitLamType(state: TypeCheckerState, term: TraitLamTerm) {
   // Add type variable to context
   const extendedContext: Context = [
-    ...ctx,
+    ...state.ctx,
     {
       type: {
         name: term.trait_lam.type_var,
@@ -3404,14 +3487,17 @@ function inferTraitLamType(ctx: Context, term: TraitLamTerm) {
   ];
 
   // Verify trait exists
-  const traitDef = ctx.find(
+  const traitDef = state.ctx.find(
     (b) => "trait_def" in b && b.trait_def.name === term.trait_lam.trait,
   );
 
   if (!traitDef || !("trait_def" in traitDef))
     return err({ unbound: term.trait_lam.trait });
 
-  const bodyType = inferType(extendedContext, term.trait_lam.body);
+  const bodyType = inferType(
+    { ctx: extendedContext, meta: state.meta },
+    term.trait_lam.body,
+  );
   if ("err" in bodyType) return bodyType;
 
   return ok(
@@ -3424,8 +3510,8 @@ function inferTraitLamType(ctx: Context, term: TraitLamTerm) {
   );
 }
 
-function inferDictType(ctx: Context, term: DictTerm) {
-  const traitDef = ctx.find(
+function inferDictType(state: TypeCheckerState, term: DictTerm) {
+  const traitDef = state.ctx.find(
     (b) => "trait_def" in b && b.trait_def.name === term.dict.trait,
   );
 
@@ -3433,11 +3519,11 @@ function inferDictType(ctx: Context, term: DictTerm) {
     return err({ unbound: term.dict.trait });
 
   const dictType = term.dict.type;
-  const typeKindResult = checkKind(ctx, dictType); // Full kind for basic well-formedness
+  const typeKindResult = checkKind(state, dictType); // Full kind for basic well-formedness
   if ("err" in typeKindResult) return typeKindResult;
 
   // Compute STRIPPED partial kind (e.g., Option<t> → Option : * → *)
-  const strippedResult = computeStrippedKind(dictType, [], ctx);
+  const strippedResult = computeStrippedKind(state, dictType, []);
   if ("err" in strippedResult) return strippedResult;
   const { kind: partialKind, stripped: strippedArity } = strippedResult.ok;
 
@@ -3465,7 +3551,7 @@ function inferDictType(ctx: Context, term: DictTerm) {
   }
 
   // This is the base type family (stripped of open args like t)
-  const partialDictType = stripAppsByArity(dictType, strippedArity, ctx);
+  const partialDictType = stripAppsByArity(state, dictType, strippedArity);
 
   const requiredMethods = new Set(traitDef.trait_def.methods.map((m) => m[0]));
   const providedMethods = new Set(term.dict.methods.map((m) => m[0]));
@@ -3477,7 +3563,10 @@ function inferDictType(ctx: Context, term: DictTerm) {
       });
 
   // Bind 'self' to dictType in a local method context for each impl inference
-  const methodCtx = [...ctx, { term: { name: "self", type: dictType } }];
+  const methodCtx: Context = [
+    ...state.ctx,
+    { term: { name: "self", type: dictType } },
+  ];
 
   for (const [methodName, methodImpl] of term.dict.methods) {
     const expectedMethod = traitDef.trait_def.methods.find(
@@ -3496,15 +3585,19 @@ function inferDictType(ctx: Context, term: DictTerm) {
       expectedMethodType,
     );
 
-    const implType = inferType(methodCtx, methodImpl);
+    const implType = inferType(
+      { ctx: methodCtx, meta: state.meta },
+      methodImpl,
+    );
     if ("err" in implType) return implType;
 
     // Subsumption: allow impl to provide the expected type (handles instantiation)
     const worklist: Worklist = [];
     const subst = new Map<string, Type>();
     const unifyRes = unifyTypes(
-      normalizeType(expectedMethodType), // Normalize both sides
-      normalizeType(implType.ok),
+      state,
+      normalizeType(state, expectedMethodType), // Normalize both sides
+      normalizeType(state, implType.ok),
       worklist,
       subst,
     );
@@ -3512,7 +3605,7 @@ function inferDictType(ctx: Context, term: DictTerm) {
     // Always solve the worklist after subsumes
     if ("err" in unifyRes) {
       // Solve any constraints from unification, then error if failed
-      const solveRes = solveConstraints(worklist, subst);
+      const solveRes = solveConstraints(state, worklist, subst);
       if ("err" in solveRes)
         return err({
           type_mismatch: {
@@ -3525,16 +3618,17 @@ function inferDictType(ctx: Context, term: DictTerm) {
     }
 
     // If unification succeeded, solve remaining constraints (e.g., from body unification)
-    const solveRes = solveConstraints(worklist, subst);
+    const solveRes = solveConstraints(state, worklist, subst);
     // Propagate if constraints fail (rare here)
     if ("err" in solveRes) return solveRes;
 
     // Apply subst to verify (optional, for safety)
-    const resolvedImpl = applySubstitution(solveRes.ok, implType.ok);
+    const resolvedImpl = applySubstitution(state, solveRes.ok, implType.ok);
     if (
       !typesEqual(
-        normalizeType(resolvedImpl),
-        normalizeType(expectedMethodType),
+        state,
+        normalizeType(state, resolvedImpl),
+        normalizeType(state, expectedMethodType),
       )
     ) {
       return err({
@@ -3549,8 +3643,8 @@ function inferDictType(ctx: Context, term: DictTerm) {
   return ok(conType(abstractedType));
 }
 
-function inferTyappType(ctx: Context, term: TyAppTerm) {
-  const termType = inferType(ctx, term.tyapp.term);
+function inferTyappType(state: TypeCheckerState, term: TyAppTerm) {
+  const termType = inferType(state, term.tyapp.term);
   if ("err" in termType) return termType;
 
   if (!("forall" in termType.ok))
@@ -3561,7 +3655,7 @@ function inferTyappType(ctx: Context, term: TyAppTerm) {
       },
     });
 
-  const argKind = checkKind(ctx, term.tyapp.type);
+  const argKind = checkKind(state, term.tyapp.type);
   if ("err" in argKind) return argKind;
 
   if (!kindsEqual(termType.ok.forall.kind, argKind.ok))
@@ -3581,35 +3675,38 @@ function inferTyappType(ctx: Context, term: TyAppTerm) {
   return ok(substituted);
 }
 
-function inferTylamType(context: Context, term: TyLamTerm) {
+function inferTylamType(state: TypeCheckerState, term: TyLamTerm) {
   const extendedContext: Context = [
     { type: { name: term.tylam.var, kind: term.tylam.kind } },
-    ...context,
+    ...state.ctx,
   ];
 
-  const bodyType = inferType(extendedContext, term.tylam.body);
+  const bodyType = inferType(
+    { ctx: extendedContext, meta: state.meta },
+    term.tylam.body,
+  );
   if ("err" in bodyType) return bodyType;
 
   return ok(forallType(term.tylam.var, term.tylam.kind, bodyType.ok));
 }
 
-function inferLetType(context: Context, term: LetTerm) {
-  const valueType = inferType(context, term.let.value);
+function inferLetType(state: TypeCheckerState, term: LetTerm) {
+  const valueType = inferType(state, term.let.value);
   if ("err" in valueType) return valueType;
 
   const extendedContext: Context = [
     { term: { name: term.let.name, type: valueType.ok } },
-    ...context,
+    ...state.ctx,
   ];
 
-  return inferType(extendedContext, term.let.body);
+  return inferType({ ctx: extendedContext, meta: state.meta }, term.let.body);
 }
 
-function inferAppType(context: Context, term: AppTerm) {
-  const calleeInferred = inferType(context, term.app.callee);
+function inferAppType(state: TypeCheckerState, term: AppTerm) {
+  const calleeInferred = inferType(state, term.app.callee);
   if ("err" in calleeInferred) return calleeInferred;
 
-  const argInferred = inferType(context, term.app.arg);
+  const argInferred = inferType(state, term.app.arg);
   if ("err" in argInferred) return argInferred;
 
   let instantiatedCallee = calleeInferred.ok;
@@ -3647,7 +3744,7 @@ function inferAppType(context: Context, term: AppTerm) {
 
   // Instantiate regular foralls first
   while ("forall" in instantiatedCallee) {
-    const fv = freshMetaVar();
+    const fv = freshMetaVar(state.meta);
     instantiatedCallee = substituteType(
       instantiatedCallee.forall.var,
       fv,
@@ -3659,7 +3756,7 @@ function inferAppType(context: Context, term: AppTerm) {
   while ("bounded_forall" in instantiatedCallee) {
     let body = instantiatedCallee.bounded_forall.body;
     while ("forall" in body) {
-      const fv = freshMetaVar();
+      const fv = freshMetaVar(state.meta);
       body = substituteType(body.forall.var, fv, body.forall.body);
     }
 
@@ -3669,11 +3766,11 @@ function inferAppType(context: Context, term: AppTerm) {
 
     // Try to infer Self from the argument
     const selfType = inferSelfFromArgument(
+      state,
       argInferred.ok,
       expectedParamType,
       instantiatedCallee.bounded_forall.var,
       instantiatedCallee.bounded_forall.kind,
-      context,
     );
 
     // If we can't infer Self yet, return a partially applied type
@@ -3713,7 +3810,7 @@ function inferAppType(context: Context, term: AppTerm) {
     );
 
     // Check trait constraints
-    const dictsResult = checkTraitConstraints(context, constraints);
+    const dictsResult = checkTraitConstraints(state, constraints);
     if ("err" in dictsResult) return dictsResult;
 
     // Apply to get instantiated body (with Self substituted)
@@ -3727,7 +3824,7 @@ function inferAppType(context: Context, term: AppTerm) {
     while ("forall" in instantiatedCallee) {
       instantiatedCallee = substituteType(
         instantiatedCallee.forall.var,
-        freshMetaVar(),
+        freshMetaVar(state.meta),
         instantiatedCallee.forall.body,
       );
     }
@@ -3741,37 +3838,47 @@ function inferAppType(context: Context, term: AppTerm) {
   const resultTypeBase = instantiatedCallee.arrow.to;
 
   // Bidirectional check
-  const argCheckRes = checkType(context, term.app.arg, paramType);
+  const argCheckRes = checkType(state, term.app.arg, paramType);
   if ("err" in argCheckRes) {
     const worklist: Worklist = [];
     const subst = new Map<string, Type>();
-    const unifyRes = unifyTypes(argInferred.ok, paramType, worklist, subst);
+    const unifyRes = unifyTypes(
+      state,
+      argInferred.ok,
+      paramType,
+      worklist,
+      subst,
+    );
     if ("err" in unifyRes) return argCheckRes;
 
-    const solveRes = solveConstraints(worklist, subst);
+    const solveRes = solveConstraints(state, worklist, subst);
     if ("err" in solveRes) return solveRes;
 
-    const resolvedResultType = applySubstitution(solveRes.ok, resultTypeBase);
+    const resolvedResultType = applySubstitution(
+      state,
+      solveRes.ok,
+      resultTypeBase,
+    );
     return ok(resolvedResultType);
   }
 
   const { subst: localSubst } = argCheckRes.ok;
-  const mergedSubst = mergeSubsts(localSubst, getMetaSubstitution());
-  let resultType = applySubstitution(mergedSubst, resultTypeBase);
-  resultType = normalizeType(resultType);
+  const mergedSubst = mergeSubsts(localSubst, state.meta.solutions);
+  let resultType = applySubstitution(state, mergedSubst, resultTypeBase);
+  resultType = normalizeType(state, resultType);
 
   return ok(resultType);
 }
 
 function inferSelfFromArgument(
+  state: TypeCheckerState,
   argType: Type,
   expectedType: Type,
   selfVar: string,
   selfKind: Kind,
-  ctx: Context,
 ): Result<TypingError, Type> {
-  const normArg = normalizeType(argType);
-  const normExpected = normalizeType(expectedType);
+  const normArg = normalizeType(state, argType);
+  const normExpected = normalizeType(state, expectedType);
 
   // If expected is (Self t), extract constructor from arg
   if ("app" in normExpected && "var" in normExpected.app.func) {
@@ -3780,7 +3887,7 @@ function inferSelfFromArgument(
       // reconstruct as Either<I32> by finding the enum def
       if ("variant" in normArg) {
         // Try to find which enum this variant belongs to
-        const etype = findEnumForVariant(normArg, ctx);
+        const etype = findEnumForVariant(state, normArg);
         return etype
           ? ok(etype)
           : // Fallback: create a lambda that captures the variant structure
@@ -3793,16 +3900,19 @@ function inferSelfFromArgument(
 
   return err({ unbound: "Self" });
 }
-function findEnumForVariant(variantType: Type, ctx: Context): Type | null {
+function findEnumForVariant(
+  state: TypeCheckerState,
+  variantType: Type,
+): Type | null {
   if (!("variant" in variantType)) return null;
 
   // Get the variant labels
   const labels = new Set(variantType.variant.map(([label]) => label));
 
   // Search context for an enum type that has exactly these variants
-  for (const binding of ctx) {
+  for (const binding of state.ctx) {
     if ("type" in binding) {
-      const typeEntry = ctx.find(
+      const typeEntry = state.ctx.find(
         (b) => "term" in b && b.term.name === Array.from(labels)[0], // Check if any label matches a constructor
       );
 
@@ -3879,8 +3989,8 @@ export function createVariantLambda(vtype: Type, selfKind: Kind): Type {
   return res;
 }
 
-function inferLamType(ctx: Context, term: LamTerm) {
-  const argKind = checkKind(ctx, term.lam.type);
+function inferLamType(state: TypeCheckerState, term: LamTerm) {
+  const argKind = checkKind(state, term.lam.type);
   if ("err" in argKind) return argKind;
 
   if (!isStarKind(argKind.ok))
@@ -3888,28 +3998,37 @@ function inferLamType(ctx: Context, term: LamTerm) {
 
   const extendedContext: Context = [
     { term: { name: term.lam.arg, type: term.lam.type } },
-    ...ctx,
+    ...state.ctx,
   ];
 
-  const bodyType = inferType(extendedContext, term.lam.body);
+  const bodyType = inferType(
+    { ctx: extendedContext, meta: state.meta },
+    term.lam.body,
+  );
   if ("err" in bodyType) return bodyType;
 
-  // Normalize both parameter and body types
-  return ok(
-    arrowType(
-      normalizeType(term.lam.type, ctx),
-      normalizeType(bodyType.ok, ctx),
-    ),
+  // Apply meta solutions to resolve the parameter type, but don't fully normalize
+  // (which would expand enums to structural form)
+  const resolvedParamType = applySubstitution(
+    state,
+    state.meta.solutions,
+    term.lam.type,
   );
+
+  return ok(arrowType(resolvedParamType, normalizeType(state, bodyType.ok)));
 }
 
-function inferVarType(ctx: Context, term: VarTerm) {
+function inferVarType(state: TypeCheckerState, term: VarTerm) {
   // Check for term binding
-  const termBinding = ctx.find((b) => "term" in b && b.term.name === term.var);
+  const termBinding = state.ctx.find(
+    (b) => "term" in b && b.term.name === term.var,
+  );
   if (termBinding && "term" in termBinding) return ok(termBinding.term.type);
 
   // Check for dict binding
-  const dictBinding = ctx.find((b) => "dict" in b && b.dict.name === term.var);
+  const dictBinding = state.ctx.find(
+    (b) => "dict" in b && b.dict.name === term.var,
+  );
   if (dictBinding && "dict" in dictBinding)
     // Return a dictionary type marker
     return ok(
@@ -3922,31 +4041,37 @@ function inferVarType(ctx: Context, term: VarTerm) {
 }
 
 // Helper to collect unbound meta variables from a type
-export function getUnboundMetas(ty: Type, metas = new Set<string>()): string[] {
-  if ("var" in ty && ty.var.startsWith("?")) {
-    if (!metaVarSolutions.has(parseInt(ty.var.slice(1), 10))) metas.add(ty.var);
+export function getUnboundMetas(
+  state: TypeCheckerState,
+  ty: Type,
+  metas = new Set<string>(),
+): string[] {
+  if ("evar" in ty) {
+    if (!state.meta.solutions.has(ty.evar)) metas.add(ty.evar);
   } else if ("app" in ty) {
-    getUnboundMetas(ty.app.func, metas);
-    getUnboundMetas(ty.app.arg, metas);
+    getUnboundMetas(state, ty.app.func, metas);
+    getUnboundMetas(state, ty.app.arg, metas);
   } else if ("arrow" in ty) {
-    getUnboundMetas(ty.arrow.from, metas);
-    getUnboundMetas(ty.arrow.to, metas);
-  } else if ("tuple" in ty) for (const t of ty.tuple) getUnboundMetas(t, metas);
+    getUnboundMetas(state, ty.arrow.from, metas);
+    getUnboundMetas(state, ty.arrow.to, metas);
+  } else if ("tuple" in ty)
+    for (const t of ty.tuple) getUnboundMetas(state, t, metas);
   else if ("record" in ty)
-    for (const [, t] of ty.record) getUnboundMetas(t, metas);
+    for (const [, t] of ty.record) getUnboundMetas(state, t, metas);
   else if ("variant" in ty)
-    for (const [, t] of ty.variant) getUnboundMetas(t, metas);
+    for (const [, t] of ty.variant) getUnboundMetas(state, t, metas);
 
   return Array.from(metas);
 }
 
 // Worklist constraint solver
 export function solveConstraints(
+  state: TypeCheckerState,
   worklist: Worklist,
   subst: Substitution = new Map(),
 ): Result<TypingError, Substitution> {
   while (worklist.length > 0) {
-    const result = processConstraint(worklist.shift()!, worklist, subst);
+    const result = processConstraint(state, worklist.shift()!, worklist, subst);
     if ("err" in result) return result;
   }
 
@@ -3954,14 +4079,22 @@ export function solveConstraints(
 }
 
 export function processConstraint(
+  state: TypeCheckerState,
   constraint: Constraint,
   worklist: Worklist,
   subst: Substitution,
 ): Result<TypingError, null> {
   if ("type_eq" in constraint) {
     return unifyTypes(
-      normalizeType(applySubstitution(subst, constraint.type_eq.left)),
-      normalizeType(applySubstitution(subst, constraint.type_eq.right)),
+      state,
+      normalizeType(
+        state,
+        applySubstitution(state, subst, constraint.type_eq.left),
+      ),
+      normalizeType(
+        state,
+        applySubstitution(state, subst, constraint.type_eq.right),
+      ),
       worklist,
       subst,
     );
@@ -3971,8 +4104,8 @@ export function processConstraint(
     return unifyKinds(constraint.kind_eq.left, constraint.kind_eq.right);
 
   if ("has_kind" in constraint) {
-    const type = applySubstitution(subst, constraint.has_kind.ty);
-    const kindResult = checkKind(constraint.has_kind.context, type);
+    const type = applySubstitution(state, subst, constraint.has_kind.ty);
+    const kindResult = checkKind(constraint.has_kind.state, type);
 
     if ("err" in kindResult) return kindResult;
 
@@ -3983,7 +4116,7 @@ export function processConstraint(
 
   if ("has_type" in constraint) {
     const typeResult = inferType(
-      constraint.has_type.context,
+      constraint.has_type.state,
       constraint.has_type.term,
     );
 
@@ -4002,26 +4135,26 @@ export const typecheck = inferType;
 
 // Type checking with constraint solving (for more complex scenarios)
 export function typecheckWithConstraints(
-  ctx: Context,
+  state: TypeCheckerState,
   term: Term,
 ): Result<TypingError, Type> {
-  const worklist: Worklist = [hasType(term, { var: "$result" }, ctx)];
+  const worklist: Worklist = [hasType(term, { var: "$result" }, state)];
 
   const subst = new Map<string, Type>();
-  const result = solveConstraints(worklist, subst);
+  const result = solveConstraints(state, worklist, subst);
 
   if ("err" in result) return result;
 
   const resultType = subst.get("$result");
-  if (!resultType) return inferType(ctx, term);
+  if (!resultType) return inferType(state, term);
 
   return ok(resultType);
 }
 
 // Update the normalizeType function
 export function normalizeType(
+  state: TypeCheckerState,
   ty: Type,
-  context: Context = [],
   seen = new Set<string>(),
 ): Type {
   // Cycle detection for variables
@@ -4030,8 +4163,15 @@ export function normalizeType(
 
   if ("var" in ty || "never" in ty) return ty;
 
+  if (isMetaVar(ty)) {
+    if (seen.has(ty.evar)) return neverType; // Cycle → bottom
+    const newSeen = new Set(seen).add(ty.evar);
+    const sol = state.meta.solutions.get(ty.evar);
+    return sol ? normalizeType(state, sol, newSeen) : ty;
+  }
+
   if ("con" in ty) {
-    const aliasBinding = context.find(
+    const aliasBinding = state.ctx.find(
       (b) => "type_alias" in b && b.type_alias.name === ty.con,
     );
 
@@ -4045,7 +4185,7 @@ export function normalizeType(
         if (newSeen.has(aliasKey)) return ty;
 
         const expandSeen = new Set(newSeen).add(aliasKey);
-        return normalizeType(alias.body, context, expandSeen);
+        return normalizeType(state, alias.body, expandSeen);
       }
       return ty;
     }
@@ -4059,7 +4199,7 @@ export function normalizeType(
       const conName = head.con;
 
       // Check for type alias BEFORE enum
-      const aliasBinding = context.find(
+      const aliasBinding = state.ctx.find(
         (b) => "type_alias" in b && b.type_alias.name === conName,
       );
 
@@ -4090,11 +4230,11 @@ export function normalizeType(
             );
           }
           // Recursively normalize with the updated seen set
-          return normalizeType(expanded, context, expandSeen);
+          return normalizeType(state, expanded, expandSeen);
         }
       }
 
-      const enumBinding = context.find(
+      const enumBinding = state.ctx.find(
         (b) => "enum" in b && b.enum.name === conName,
       );
       if (enumBinding && "enum" in enumBinding) {
@@ -4114,7 +4254,7 @@ export function normalizeType(
             }
             structuralVariant.push([
               label,
-              normalizeType(instField, context, seen),
+              normalizeType(state, instField, seen),
             ]);
           }
           return { variant: structuralVariant };
@@ -4125,7 +4265,7 @@ export function normalizeType(
 
   // For app - normalize func FIRST, then check for lam reduction
   if ("app" in ty) {
-    const normFunc = normalizeType(ty.app.func, context, newSeen);
+    const normFunc = normalizeType(state, ty.app.func, newSeen);
     if ("lam" in normFunc) {
       // Beta-reduce: [arg / var] body
       const substituted = substituteType(
@@ -4133,25 +4273,25 @@ export function normalizeType(
         ty.app.arg,
         normFunc.lam.body,
       );
-      return normalizeType(substituted, context, newSeen); // Recurse to fold further
+      return normalizeType(state, substituted, newSeen); // Recurse to fold further
     }
     // No beta: form normalized app
-    const normArg = normalizeType(ty.app.arg, context, newSeen);
+    const normArg = normalizeType(state, ty.app.arg, newSeen);
     return { app: { func: normFunc, arg: normArg } };
   }
 
   // Recurse on compounds
   if ("arrow" in ty)
     return arrowType(
-      normalizeType(ty.arrow.from, context, newSeen),
-      normalizeType(ty.arrow.to, context, newSeen),
+      normalizeType(state, ty.arrow.from, newSeen),
+      normalizeType(state, ty.arrow.to, newSeen),
     );
 
   if ("forall" in ty)
     return forallType(
       ty.forall.var,
       ty.forall.kind,
-      normalizeType(ty.forall.body, context, newSeen),
+      normalizeType(state, ty.forall.body, newSeen),
     );
 
   if ("bounded_forall" in ty)
@@ -4160,41 +4300,41 @@ export function normalizeType(
       ty.bounded_forall.kind,
       ty.bounded_forall.constraints.map((c) => ({
         trait: c.trait,
-        type: normalizeType(c.type, context, newSeen),
+        type: normalizeType(state, c.type, newSeen),
       })),
-      normalizeType(ty.bounded_forall.body, context, newSeen),
+      normalizeType(state, ty.bounded_forall.body, newSeen),
     );
 
   if ("lam" in ty)
     return lamType(
       ty.lam.var,
       ty.lam.kind,
-      normalizeType(ty.lam.body, context, newSeen),
+      normalizeType(state, ty.lam.body, newSeen),
     );
 
   if ("record" in ty)
     return recordType(
-      ty.record.map(([l, f]) => [l, normalizeType(f, context, newSeen)]),
+      ty.record.map(([l, f]) => [l, normalizeType(state, f, newSeen)]),
     );
 
   if ("variant" in ty)
     return variantType(
-      ty.variant.map(([l, c]) => [l, normalizeType(c, context, newSeen)]),
+      ty.variant.map(([l, c]) => [l, normalizeType(state, c, newSeen)]),
     );
 
   if ("mu" in ty) {
     if (newSeen.has(ty.mu.var)) return ty;
     const muSeen = new Set(newSeen).add(ty.mu.var);
-    return muType(ty.mu.var, normalizeType(ty.mu.body, context, muSeen));
+    return muType(ty.mu.var, normalizeType(state, ty.mu.body, muSeen));
   }
 
   if ("tuple" in ty)
-    return tupleType(ty.tuple.map((t) => normalizeType(t, context, newSeen)));
+    return tupleType(ty.tuple.map((t) => normalizeType(state, t, newSeen)));
 
   return ty; // Fallback
 }
 export function instantiateWithTraits(
-  ctx: Context,
+  state: TypeCheckerState,
   ty: Type,
 ): Result<TypingError, { type: Type; dicts: Term[] }> {
   // Only bother for bounded forall
@@ -4203,7 +4343,7 @@ export function instantiateWithTraits(
   const bound = ty.bounded_forall;
 
   // Instantiate the type variable with a fresh meta variable
-  const fresh = freshMetaVar();
+  const fresh = freshMetaVar(state.meta);
 
   // Substitute fresh into constraints BEFORE checking
   const instantiatedConstraints = bound.constraints.map((c) => ({
@@ -4212,7 +4352,7 @@ export function instantiateWithTraits(
   }));
 
   // Now check constraints with the instantiated type
-  const dictsResult = checkTraitConstraints(ctx, instantiatedConstraints);
+  const dictsResult = checkTraitConstraints(state, instantiatedConstraints);
   if ("err" in dictsResult) return dictsResult;
 
   // Substitute fresh into body
@@ -4224,10 +4364,10 @@ export function instantiateWithTraits(
 
 // When you encounter a polymorphic value in application position:
 export function autoInstantiate(
-  ctx: Context,
+  state: TypeCheckerState,
   term: Term,
 ): Result<TypingError, { term: Term; type: Type }> {
-  const termType = inferType(ctx, term);
+  const termType = inferType(state, term);
   if ("err" in termType) return termType;
 
   let accTerm = term;
@@ -4235,33 +4375,37 @@ export function autoInstantiate(
 
   // Auto-apply type arguments
   while ("forall" in accType) {
-    const fv = freshMetaVar();
+    const fv = freshMetaVar(state.meta);
     accTerm = tyappTerm(accTerm, fv);
     accType = substituteType(accType.forall.var, fv, accType.forall.body);
   }
 
   // Auto-apply trait dictionaries
   while ("bounded_forall" in accType) {
-    const instantiateRes = instantiateWithTraits(ctx, accType);
+    const instantiateRes = instantiateWithTraits(state, accType);
     if ("err" in instantiateRes) return instantiateRes;
 
-    accTerm = traitAppTerm(accTerm, freshMetaVar(), instantiateRes.ok.dicts);
+    accTerm = traitAppTerm(
+      accTerm,
+      freshMetaVar(state.meta),
+      instantiateRes.ok.dicts,
+    );
     accType = instantiateRes.ok.type;
   }
 
   return ok({ term: accTerm, type: accType });
 }
 
-export function resolveMetaVars(ty: Type): Type {
-  if ("var" in ty && isMetaVar(ty)) {
-    const solution = metaVarSolutions.get(parseInt(ty.var.slice(1), 10));
-    return solution ? resolveMetaVars(solution) : ty;
+export function resolveMetaVars(state: TypeCheckerState, ty: Type): Type {
+  if (isMetaVar(ty)) {
+    const solution = state.meta.solutions.get(ty.evar);
+    return solution ? resolveMetaVars(state, solution) : ty;
   }
 
   if ("arrow" in ty)
     return arrowType(
-      resolveMetaVars(ty.arrow.from),
-      resolveMetaVars(ty.arrow.to),
+      resolveMetaVars(state, ty.arrow.from),
+      resolveMetaVars(state, ty.arrow.to),
     );
 
   return ty;
@@ -4281,24 +4425,26 @@ export function kindArity(kind: Kind): number {
 }
 
 // Helper to check if type has unbound metas
-export function hasUnboundMetas(type: Type): boolean {
-  if (
-    "var" in type &&
-    isMetaVar(type) &&
-    !metaVarSolutions.has(parseInt(type.var.slice(1), 10))
-  ) {
+export function hasUnboundMetas(state: TypeCheckerState, type: Type): boolean {
+  if (isMetaVar(type) && !state.meta.solutions.has(type.evar)) {
     return true;
   }
   // Recurse on subterms...
   if ("app" in type)
-    return hasUnboundMetas(type.app.func) || hasUnboundMetas(type.app.arg);
+    return (
+      hasUnboundMetas(state, type.app.func) ||
+      hasUnboundMetas(state, type.app.arg)
+    );
   if ("arrow" in type)
-    return hasUnboundMetas(type.arrow.from) || hasUnboundMetas(type.arrow.to);
-  if ("tuple" in type) return type.tuple.some(hasUnboundMetas);
+    return (
+      hasUnboundMetas(state, type.arrow.from) ||
+      hasUnboundMetas(state, type.arrow.to)
+    );
+  if ("tuple" in type) return type.tuple.some((t) => hasUnboundMetas(state, t));
   if ("record" in type)
-    return type.record.some(([, ty]) => hasUnboundMetas(ty));
+    return type.record.some(([, ty]) => hasUnboundMetas(state, ty));
   if ("variant" in type)
-    return type.variant.some(([, ty]) => hasUnboundMetas(ty));
+    return type.variant.some(([, ty]) => hasUnboundMetas(state, ty));
   // Add for other constructors
   return false;
 }
@@ -4339,11 +4485,11 @@ export function collectTypeVars(
 }
 
 export function computeStrippedKind(
+  state: TypeCheckerState, // For kind checks
   type: Type,
   strippableVars: string[], // e.g., ["r", "u"] for impl params
-  ctx: Context, // For kind checks
 ): Result<TypingError, { stripped: number; kind: Kind }> {
-  let current = normalizeType(type, ctx); // Start normalized
+  let current = normalizeType(state, type); // Start normalized
   let stripped = 0;
 
   // Peel trailing apps if arg is strippable var
@@ -4351,10 +4497,10 @@ export function computeStrippedKind(
     const arg = current.app.arg;
     if ("var" in arg && strippableVars.includes(arg.var)) {
       // Kind check (as before)
-      const argKindRes = checkKind(ctx, arg);
+      const argKindRes = checkKind(state, arg);
       if ("err" in argKindRes) return err(argKindRes.err);
 
-      const funcKindRes = checkKind(ctx, current.app.func);
+      const funcKindRes = checkKind(state, current.app.func);
       if ("err" in funcKindRes) return err(funcKindRes.err);
 
       if (!("arrow" in funcKindRes.ok))
@@ -4378,25 +4524,25 @@ export function computeStrippedKind(
   }
 
   // Final kind of stripped (e.g., app(con "Either", l) : * → *)
-  const finalKindRes = checkKind(ctx, current);
+  const finalKindRes = checkKind(state, current);
   return "err" in finalKindRes
     ? finalKindRes
     : ok({ stripped, kind: finalKindRes.ok });
 }
 
 export function stripAppsByArity(
+  state: TypeCheckerState,
   type: Type,
   arity: number,
-  ctx: Context,
 ): Type {
-  let acc = normalizeType(type, ctx);
+  let acc = normalizeType(state, type);
   for (let i = 0; i < arity; i++) {
     if ("app" in acc) {
       // Only strip if arg is bound var (as in computeStrippedKind)
       const arg = acc.app.arg;
       if (
         "var" in arg &&
-        ctx.some((b) => "type" in b && b.type.name === arg.var)
+        state.ctx.some((b) => "type" in b && b.type.name === arg.var)
       ) {
         acc = acc.app.func;
       } else break; // Cannot strip further

@@ -48,7 +48,9 @@ export type VariantType = { variant: [string, Type][] };
 export type MuType = { mu: { var: string; body: Type } };
 export type TupleType = { tuple: Type[] };
 export type NeverType = { never: null };
+export type MetaType = { evar: string };
 export type Type =
+  | MetaType // meta type variable
   | VarType // type variable α
   | ArrowType // τ₁ → τ₂
   | ForallType // ∀α::κ.τ
@@ -191,6 +193,25 @@ export type Binding =
   | EnumDefBinding // enums
   | TypeAliasBinding; // Type Alias
 export type Context = Binding[];
+export type MetaEnv = {
+  solutions: Map<string, Type>; // evar -> Type
+  kinds: Map<string, Kind>; // evar -> Kind
+  counter: number;
+};
+export type TypeCheckerState = {
+  meta: MetaEnv;
+  ctx: Context;
+};
+
+export const state = (ctx: Context = []) =>
+  ({
+    ctx,
+    meta: {
+      solutions: new Map(),
+      kinds: new Map(),
+      counter: 0,
+    },
+  }) satisfies TypeCheckerState;
 
 export type UnboundTypeError = { unbound: string };
 export type KindMismatchTypeError = {
@@ -251,10 +272,10 @@ export type TypingError =
 export type TypeEqConstraint = { type_eq: { left: Type; right: Type } };
 export type KindEqConstraint = { kind_eq: { left: Kind; right: Kind } };
 export type HasKindConstraint = {
-  has_kind: { ty: Type; kind: Kind; context: Context };
+  has_kind: { ty: Type; kind: Kind; state: TypeCheckerState };
 };
 export type HasTypeConstraint = {
-  has_type: { term: Term; ty: Type; context: Context };
+  has_type: { term: Term; ty: Type; state: TypeCheckerState };
 };
 export type Constraint =
   | TypeEqConstraint
@@ -271,7 +292,7 @@ export type Value =
   | { vtuple: Value[] }
   | { vfold: { type: Type; value: Value } }
   | { vdict: { trait: string; type: Type; methods: Map<string, Value> } }
-  | { vthunk: { term: Term; env: Environment } }; // ← new
+  | { vthunk: { term: Term; env: Environment } };
 
 // Environment for variable bindings
 export type Environment = Map<string, Value>;

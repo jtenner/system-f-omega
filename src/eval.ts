@@ -13,7 +13,6 @@ import {
 } from "./typechecker.js";
 import {
   type AppTerm,
-  type Context,
   type DictTerm,
   type Environment,
   type EvalConfig,
@@ -33,6 +32,7 @@ import {
   type TupleProjectTerm,
   type TupleTerm,
   type Type,
+  type TypeCheckerState,
   type UnfoldTerm,
   type Value,
   type VarTerm,
@@ -40,7 +40,7 @@ import {
 
 export function evaluate(
   term: Term,
-  context: Context = [],
+  context: TypeCheckerState,
   config: EvalConfig = { strict: true, maxSteps: 1000 },
 ): EvalResult {
   const env = new Map<string, Value>();
@@ -50,7 +50,7 @@ export function evaluate(
 function evaluateWithEnv(
   term: Term,
   env: Environment,
-  context: Context,
+  context: TypeCheckerState,
   config: EvalConfig,
   steps: number,
 ): EvalResult {
@@ -61,7 +61,7 @@ function evaluateWithEnv(
 
   // Handle different term types
   if ("var" in term) {
-    return evaluateVar(term, env);
+    return evaluateVar(term, context, env);
   }
 
   if ("lam" in term) {
@@ -134,7 +134,11 @@ function evaluateWithEnv(
   return err(`Unknown term type: ${Object.keys(term)[0]}`);
 }
 
-function evaluateVar(term: VarTerm, env: Environment): EvalResult {
+function evaluateVar(
+  term: VarTerm,
+  ctx: TypeCheckerState,
+  env: Environment,
+): EvalResult {
   const value = env.get(term.var);
   if (!value) return err(`Unbound variable: ${term.var}`);
   // Force lazy thunks automatically during lookup (for call-by-need)
@@ -142,7 +146,7 @@ function evaluateVar(term: VarTerm, env: Environment): EvalResult {
     ? evaluateWithEnv(
         value.vthunk.term,
         value.vthunk.env,
-        [],
+        ctx,
         { strict: true, maxSteps: 1000 },
         0,
       )
@@ -152,7 +156,7 @@ function evaluateVar(term: VarTerm, env: Environment): EvalResult {
 function evaluateApp(
   term: AppTerm,
   env: Environment,
-  context: Context,
+  context: TypeCheckerState,
   config: EvalConfig,
   steps: number,
 ): EvalResult {
@@ -199,29 +203,10 @@ function evaluateApp(
   return err("Cannot apply non-function value");
 }
 
-function force(
-  value: Value,
-  context: Context,
-  config: EvalConfig,
-  steps: number,
-): EvalResult {
-  if ("vthunk" in value) {
-    // evaluate the thunk’s term in its environment
-    return evaluateWithEnv(
-      value.vthunk.term,
-      value.vthunk.env,
-      context,
-      config,
-      steps + 1,
-    );
-  }
-  return ok(value);
-}
-
 function evaluateRecord(
   term: RecordTerm,
   env: Environment,
-  context: Context,
+  context: TypeCheckerState,
   config: EvalConfig,
   steps: number,
 ): EvalResult {
@@ -245,7 +230,7 @@ function evaluateRecord(
 function evaluateProject(
   term: ProjectTerm,
   env: Environment,
-  context: Context,
+  context: TypeCheckerState,
   config: EvalConfig,
   steps: number,
 ): EvalResult {
@@ -272,7 +257,7 @@ function evaluateProject(
 function evaluateTuple(
   term: TupleTerm,
   env: Environment,
-  context: Context,
+  context: TypeCheckerState,
   config: EvalConfig,
   steps: number,
 ): EvalResult {
@@ -296,7 +281,7 @@ function evaluateTuple(
 function evaluateTupleProject(
   term: TupleProjectTerm,
   env: Environment,
-  context: Context,
+  context: TypeCheckerState,
   config: EvalConfig,
   steps: number,
 ): EvalResult {
@@ -323,7 +308,7 @@ function evaluateTupleProject(
 function evaluateInject(
   term: InjectTerm,
   env: Environment,
-  context: Context,
+  context: TypeCheckerState,
   config: EvalConfig,
   steps: number,
 ): EvalResult {
@@ -342,7 +327,7 @@ function evaluateInject(
 function evaluateMatch(
   term: MatchTerm,
   env: Environment,
-  context: Context,
+  context: TypeCheckerState,
   config: EvalConfig,
   steps: number,
 ): EvalResult {
@@ -370,7 +355,7 @@ function evaluateMatch(
 function evaluateFold(
   term: FoldTerm,
   env: Environment,
-  context: Context,
+  context: TypeCheckerState,
   config: EvalConfig,
   steps: number,
 ): EvalResult {
@@ -389,7 +374,7 @@ function evaluateFold(
 function evaluateUnfold(
   term: UnfoldTerm,
   env: Environment,
-  context: Context,
+  context: TypeCheckerState,
   config: EvalConfig,
   steps: number,
 ): EvalResult {
@@ -406,7 +391,7 @@ function evaluateUnfold(
 function evaluateLet(
   term: LetTerm,
   env: Environment,
-  context: Context,
+  context: TypeCheckerState,
   config: EvalConfig,
   steps: number,
 ): EvalResult {
@@ -431,7 +416,7 @@ function evaluateLet(
 function evaluateDict(
   term: DictTerm,
   env: Environment,
-  context: Context,
+  context: TypeCheckerState,
   config: EvalConfig,
   steps: number,
 ): EvalResult {
@@ -457,7 +442,7 @@ function evaluateDict(
 function evaluateTraitMethod(
   term: TraitMethodTerm,
   env: Environment,
-  context: Context,
+  context: TypeCheckerState,
   config: EvalConfig,
   steps: number,
 ): EvalResult {
@@ -606,7 +591,7 @@ export function valueToTerm(value: Value): Term {
 
 export function typecheckAndEvaluate(
   term: Term,
-  context: Context = [],
+  context: TypeCheckerState,
   config: EvalConfig = { strict: true, maxSteps: 1000 },
 ): Result<string, { type: Type; value: Value }> {
   // First typecheck the term
@@ -626,7 +611,7 @@ export function typecheckAndEvaluate(
 
 export function evaluateTerms(
   terms: Term[],
-  context: Context = [],
+  context: TypeCheckerState,
   config: EvalConfig = { strict: true, maxSteps: 1000 },
 ): Result<string, Value[]> {
   const results: Value[] = [];
@@ -650,7 +635,7 @@ export function evaluateTerms(
 // Alternative: Evaluate terms independently
 export function evaluateTermsIndependently(
   terms: Term[],
-  context: Context = [],
+  context: TypeCheckerState,
   config: EvalConfig = { strict: true, maxSteps: 1000 },
 ): Result<string, { term: Term; value: Value }[]> {
   const results: { term: Term; value: Value }[] = [];

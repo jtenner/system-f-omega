@@ -28,7 +28,7 @@ import {
   varTerm,
   varType,
 } from "../src/typechecker.ts"; // Adjust path if needed
-import type { Context, Result, Term, Type } from "../src/types.js";
+import { type Result, state, type Term, type Type } from "../src/types.js";
 
 const expectOk = <T>(val: Result<unknown, T>) => {
   if ("err" in val) console.error(val.err);
@@ -49,7 +49,7 @@ describe("Interpreter", () => {
       conTerm("hello", unitType),
     );
     const result = expectOk(
-      evaluate(term, [], { strict: true, maxSteps: 100 }),
+      evaluate(term, state(), { strict: true, maxSteps: 100 }),
     );
 
     expect(showValue(result)).toBe("hello");
@@ -61,7 +61,7 @@ describe("Interpreter", () => {
       "f",
     );
     const result = expectOk(
-      evaluate(term, [], { strict: true, maxSteps: 100 }),
+      evaluate(term, state(), { strict: true, maxSteps: 100 }),
     );
 
     expect(showValue(result)).toBe("42");
@@ -73,7 +73,7 @@ describe("Interpreter", () => {
       0,
     );
     const result = expectOk(
-      evaluate(term, [], { strict: true, maxSteps: 100 }),
+      evaluate(term, state(), { strict: true, maxSteps: 100 }),
     );
 
     expect(showValue(result)).toBe("1");
@@ -86,7 +86,7 @@ describe("Interpreter", () => {
       [variantPattern("Right", varPattern("y")), varTerm("y")],
     ]);
     const result = expectOk(
-      evaluate(match, [], { strict: true, maxSteps: 100 }),
+      evaluate(match, state(), { strict: true, maxSteps: 100 }),
     );
 
     expect(showValue(result)).toBe("5");
@@ -95,7 +95,7 @@ describe("Interpreter", () => {
   it("evaluates let binding", () => {
     const term: Term = letTerm("x", conTerm("10", unitType), varTerm("x"));
     const result = expectOk(
-      evaluate(term, [], { strict: true, maxSteps: 100 }),
+      evaluate(term, state(), { strict: true, maxSteps: 100 }),
     );
 
     expect(showValue(result)).toBe("10");
@@ -112,7 +112,7 @@ describe("Interpreter", () => {
     const nil: Term = foldTerm(muT, injectTerm("Nil", unitValue, muT));
     const unfolded = unfoldTerm(nil);
     const result = expectOk(
-      evaluate(unfolded, [], { strict: true, maxSteps: 100 }),
+      evaluate(unfolded, state(), { strict: true, maxSteps: 100 }),
     );
     expect(showValue(result)).toContain("Nil"); // Or equivalent
   });
@@ -120,7 +120,7 @@ describe("Interpreter", () => {
   it("errors on unbound variable during evaluation", () => {
     const term: Term = varTerm("unknown");
     const result = expectErr(
-      evaluate(term, [], { strict: true, maxSteps: 100 }),
+      evaluate(term, state(), { strict: true, maxSteps: 100 }),
     );
 
     expect(result).toContain("Unbound variable");
@@ -133,7 +133,7 @@ describe("Interpreter", () => {
       lamTerm("x", unitType, appTerm(varTerm("x"), varTerm("x"))),
     );
     const result = expectErr(
-      evaluate(omega, [], { strict: true, maxSteps: 5 }),
+      evaluate(omega, state(), { strict: true, maxSteps: 5 }),
     );
 
     expect(result).toContain("exceeded maximum steps");
@@ -142,28 +142,30 @@ describe("Interpreter", () => {
 
 describe("Integration: Typecheck + Evaluate", () => {
   it("typechecks and evaluates simple app successfully", () => {
+    const ctx = state();
     const term: Term = appTerm(
       lamTerm("x", unitType, varTerm("x")),
       conTerm("world", unitType),
     );
-    const result = expectOk(typecheckAndEvaluate(term));
+    const result = expectOk(typecheckAndEvaluate(term, ctx));
 
     expect(showType(result.type)).toBe("()"); // Unit
     expect(showValue(result.value)).toBe("world");
   });
 
   it("fails typecheck before evaluation", () => {
+    const ctx = state();
     const term: Term = appTerm(
       conTerm("1", varType("Int")),
       conTerm("true", varType("Bool")),
     );
-    const result = expectErr(typecheckAndEvaluate(term));
+    const result = expectErr(typecheckAndEvaluate(term, ctx));
 
     expect(result).toContain("Type error");
   });
 
   it("handles trait method evaluation (simple dict)", () => {
-    const ctx: Context = [
+    const ctx = state([
       { type: { kind: starKind, name: "String" } },
       { type: { kind: starKind, name: "Int" } },
       {
@@ -174,7 +176,7 @@ describe("Integration: Typecheck + Evaluate", () => {
           methods: [["show", arrowType(varType("T"), varType("String"))]],
         },
       },
-    ];
+    ]);
     const dict: Term = dictTerm("Show", varType("Int"), [
       ["show", lamTerm("x", varType("Int"), conTerm("int", varType("String")))],
     ]);
