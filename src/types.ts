@@ -180,6 +180,7 @@ export type EnumDef = {
   kind: Kind; // e.g., * → * → * (for two params)
   params: string[]; // param var names, e.g., ["t", "u"]
   variants: [string, FieldScheme][]; // variant label → field scheme (with param vars unbound)
+  recursive: boolean;
 };
 export type FieldScheme = Type; // e.g., { var: "t" } for Left, unit for None
 export type EnumDefBinding = { enum: EnumDef };

@@ -4241,25 +4241,46 @@ export function normalizeType(
       if (enumBinding && "enum" in enumBinding) {
         const def = enumBinding.enum;
         const spineArgs = getSpineArgs(ty);
-        if (spineArgs.length === def.params.length) {
-          const structuralVariant: [string, Type][] = [];
-          for (const [label, fieldScheme] of def.variants) {
-            let instField = fieldScheme;
-            for (let i = 0; i < def.params.length; i++) {
-              instField = substituteType(
-                def.params[i]!,
-                spineArgs[i]!,
-                instField,
-                seen,
-              );
-            }
-            structuralVariant.push([
-              label,
-              normalizeType(state, instField, seen),
-            ]);
-          }
-          return { variant: structuralVariant };
+        if (spineArgs.length !== def.params.length) {
+          return ty; // Or error
         }
+
+        // Build structural variants (unchanged)
+        const structuralVariant: [string, Type][] = [];
+        for (const [label, fieldScheme] of def.variants) {
+          let instField = fieldScheme;
+          for (let i = 0; i < def.params.length; i++) {
+            instField = substituteType(
+              def.params[i]!,
+              spineArgs[i]!,
+              instField,
+              seen,
+            );
+          }
+          structuralVariant.push([
+            label,
+            normalizeType(state, instField, seen),
+          ]);
+        }
+
+        // NEW: If recursive, wrap in mu and substitute self-ref to X
+        if (def.recursive) {
+          const muVar = freshMetaVar(state.meta, starKind).evar; // Or a fixed "X"
+          let muBody = { variant: structuralVariant } as Type;
+
+          // Substitute enum name with muVar in body (to resolve self-refs)
+          muBody = substituteType(
+            def.name,
+            { var: muVar },
+            muBody,
+            new Set([muVar]),
+          );
+
+          return muType(muVar, normalizeType(state, muBody, seen));
+        }
+
+        // Non-recursive: plain variant
+        return { variant: structuralVariant };
       }
     }
   }
@@ -4638,7 +4659,7 @@ export const dictTerm = (
   trait: string,
   type: Type,
   methods: [string, Term][],
-): Term => ({
+): DictTerm => ({
   dict: { trait, type, methods },
 });
 
@@ -4731,8 +4752,9 @@ export const enumDefBinding = (
   kind: Kind,
   params: string[],
   variants: [string, FieldScheme][],
+  recursive: boolean = false,
 ) => ({
-  enum: { name, kind, params, variants },
+  enum: { name, kind, params, variants, recursive },
 });
 
 export function renameType(
@@ -5718,7 +5740,9 @@ function bindingName(b: Binding): string {
   if ("term" in b) return b.term.name;
   if ("dict" in b) return b.dict.name;
   if ("trait_def" in b) return b.trait_def.name;
-  if ("trait_impl" in b) return b.trait_impl.trait;
+  if ("trait_impl" in b) {
+    return `${b.trait_impl.trait}<${showType(b.trait_impl.type)}>`;
+  }
   if ("type_alias" in b) return b.type_alias.name;
   if ("enum" in b) return b.enum.name;
   return "<unknown>";
@@ -5818,4 +5842,169 @@ export function showError(err: TypingError): string {
   }
 
   return "Unknown type error";
+}
+
+function addBinding(
+  state: TypeCheckerState,
+  binding: Binding,
+): Result<TypingError, TypeCheckerState> {
+  // Simple duplicate name check
+  const name = bindingName(binding);
+  const exists = state.ctx.some((b) => bindingName(b) === name);
+  if (exists)
+    return err({
+      duplicate_binding: { name, existing: binding, incoming: binding },
+    });
+
+  return ok({ ctx: [...state.ctx, binding], meta: state.meta });
+}
+
+export function addTerm(
+  state: TypeCheckerState,
+  name: string,
+  term: Term,
+): Result<TypingError, TypeCheckerState> {
+  const inferred = inferType(state, term);
+  if ("err" in inferred) return inferred;
+
+  const binding = termBinding(name, inferred.ok);
+  return addBinding(state, binding);
+}
+
+export function addType(
+  state: TypeCheckerState,
+  name: string,
+  kind: Kind,
+): Result<TypingError, TypeCheckerState> {
+  // No type-level kindchecking required beyond duplicate check
+  const binding = typeBinding(name, kind);
+  return addBinding(state, binding);
+}
+
+export function addTypeAlias(
+  state: TypeCheckerState,
+  name: string,
+  params: string[],
+  kinds: Kind[],
+  body: Type,
+): Result<TypingError, TypeCheckerState> {
+  const extendedCtx: Context = [
+    ...params.map((p, i) => typeBinding(p, kinds[i]!)),
+    ...state.ctx,
+  ];
+
+  const kindRes = checkKind({ ctx: extendedCtx, meta: state.meta }, body);
+  if ("err" in kindRes) return kindRes;
+
+  const binding = typeAliasBinding(name, params, kinds, body);
+  return addBinding(state, binding);
+}
+
+export function addEnum(
+  state: TypeCheckerState,
+  name: string,
+  params: string[],
+  kinds: Kind[],
+  variants: [string, FieldScheme][],
+  recursive: boolean = true, // Optional flag: treat as recursive ADT (default: true)
+): Result<TypingError, TypeCheckerState> {
+  const extendedCtx: Context = [
+    ...params.map((p, i) => typeBinding(p, kinds[i]!)),
+    ...state.ctx,
+  ];
+
+  // Check kind of each variant's field (must be *)
+  let hasSelfReference = false;
+  for (let i = 0; i < variants.length; i++) {
+    const [label, field] = variants[i]!;
+    const kindRes = checkKind({ ctx: extendedCtx, meta: state.meta }, field);
+    if ("err" in kindRes) return kindRes;
+    if (!isStarKind(kindRes.ok)) {
+      return err({
+        kind_mismatch: {
+          expected: starKind,
+          actual: kindRes.ok,
+          context: `in enum ${name} variant ${label}`,
+        },
+      });
+    }
+
+    // Detect self-reference if recursive mode
+    if (recursive) {
+      const free = computeFreeTypes(
+        { ctx: extendedCtx, meta: state.meta },
+        field,
+      );
+      if (free.typeCons.has(name)) {
+        hasSelfReference = true;
+      }
+    }
+  }
+
+  // Only set recursive if flag + self-reference found
+  const effectiveRecursive = recursive && hasSelfReference;
+
+  // Compute enum kind (unchanged: params → *)
+  let enumKind: Kind = starKind;
+  for (let i = params.length - 1; i >= 0; i--) {
+    enumKind = arrowKind(kinds[i]!, enumKind);
+  }
+
+  // Bind with recursive flag
+  const binding = enumDefBinding(
+    name,
+    enumKind,
+    params,
+    variants,
+    effectiveRecursive,
+  );
+  return addBinding(state, binding);
+}
+
+export function addTraitDef(
+  state: TypeCheckerState,
+  name: string,
+  typeParam: string,
+  kind: Kind,
+  methods: [string, Type][],
+): Result<TypingError, TypeCheckerState> {
+  const extendedCtx: Context = [typeBinding(typeParam, kind), ...state.ctx];
+
+  for (const [, ty] of methods) {
+    const kindRes = checkKind({ ctx: extendedCtx, meta: state.meta }, ty);
+    if ("err" in kindRes) return kindRes;
+    if (!isStarKind(kindRes.ok))
+      return err({
+        kind_mismatch: { expected: starKind, actual: kindRes.ok },
+      });
+  }
+
+  const binding = traitDefBinding(name, typeParam, kind, methods);
+  return addBinding(state, binding);
+}
+
+export function addTraitImpl(
+  state: TypeCheckerState,
+  trait: string,
+  type: Type,
+  dict: Term, // DictTerm
+): Result<TypingError, TypeCheckerState> {
+  // Validate the actual dictionary implementation
+  const dictType = inferDictType(state, dict as DictTerm);
+  if ("err" in dictType) return dictType;
+
+  // Install trait impl binding
+  const binding = traitImplBinding(trait, type, dict);
+  return addBinding(state, binding);
+}
+export function addDict(
+  state: TypeCheckerState,
+  name: string,
+  dict: DictTerm,
+): Result<TypingError, TypeCheckerState> {
+  const ty = inferType(state, dict);
+  if ("err" in ty) return ty;
+
+  const binding = dictBinding(name, dict.dict.trait, dict.dict.type);
+  return addBinding(state, binding);
 }
