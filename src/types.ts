@@ -202,8 +202,14 @@ export type TypeCheckerState = {
   meta: MetaEnv;
   ctx: Context;
 };
+export type ImportAliases = {
+  traits?: Record<string, string>;
+  types?: Record<string, string>;
+  terms?: Record<string, string>;
+  labels?: Record<string, string>;
+};
 
-export const state = (ctx: Context = []) =>
+export const state = (ctx: Context = []): TypeCheckerState =>
   ({
     ctx,
     meta: {
@@ -249,8 +255,20 @@ export type WrongNumberOfDictsError = {
 export type UnexpectedKindError = {
   unexpected_kind: { name: string; kind: Kind };
 };
+export type CircularImportError = {
+  circular_import: { name: string; cycle: string[] };
+};
+export type DuplicateBindingError = {
+  duplicate_binding: {
+    name: string;
+    existing: Binding;
+    incoming: Binding;
+  };
+};
 export type TypingError =
+  | CircularImportError
   | CyclicTypeError
+  | DuplicateBindingError
   | ExtraCaseTypeError
   | InvalidVariantTypeError
   | KindMismatchTypeError
@@ -307,6 +325,30 @@ export type EvalConfig = {
 };
 
 export type Result<TErr, TOk> = { ok: TOk } | { err: TErr };
+
+export type FreeTypeNames = {
+  typeVars: Set<string>;
+  typeCons: Set<string>;
+  traits: Set<string>;
+  labels: Set<string>; // variant or record labels
+};
+export type FreePatternNames = {
+  vars: Set<string>;
+  constructors: Set<string>;
+  labels: Set<string>;
+};
+export type FreeTermNames = {
+  terms: Set<string>;
+  constructors: Set<string>;
+  traits: Set<string>;
+  dicts: Set<string>;
+  labels: Set<string>;
+  typeVars: Set<string>;
+  typeCons: Set<string>;
+};
+
+export type Worklist = Constraint[];
+export type Substitution = Map<string, Type>;
 
 export const ok = <T>(val: T) => ({ ok: val });
 export const err = <T>(val: T) => ({ err: val });

@@ -13,6 +13,10 @@ import type {
   FieldScheme,
   FoldTerm,
   ForallType,
+  FreePatternNames,
+  FreeTermNames,
+  FreeTypeNames,
+  ImportAliases,
   InjectTerm,
   Kind,
   KindEqConstraint,
@@ -29,6 +33,7 @@ import type {
   RecordTerm,
   RecordType,
   Result,
+  Substitution,
   Term,
   TraitAppTerm,
   TraitConstraint,
@@ -49,6 +54,7 @@ import type {
   VariantType,
   VarTerm,
   VarType,
+  Worklist,
 } from "./types.js";
 import { err, ok } from "./types.js";
 
@@ -64,9 +70,6 @@ export const hasKind = (ty: Type, kind: Kind, state: TypeCheckerState) => ({
 export const hasType = (term: Term, ty: Type, state: TypeCheckerState) => ({
   has_type: { term, ty, state },
 });
-
-export type Worklist = Constraint[];
-export type Substitution = Map<string, Type>;
 
 export type InferMode =
   | { infer: null } // Infer type arguments
@@ -85,8 +88,6 @@ export function inferTypeWithMode(
   }
   return inferType(state, term);
 }
-
-export type MetaVar = { meta: number };
 
 export const starKind: Kind = { star: null };
 export const neverType = { never: null };
@@ -4733,3 +4734,1088 @@ export const enumDefBinding = (
 ) => ({
   enum: { name, kind, params, variants },
 });
+
+export function renameType(
+  state: TypeCheckerState,
+  ty: Type,
+  ren: Map<string, string>,
+  bound: Set<string> = new Set(),
+): Type {
+  // Variable type: rename unless bound
+  if ("var" in ty) {
+    const v = ty.var;
+    return bound.has(v) ? ty : varType(ren.get(v) ?? v);
+  }
+
+  // Constructor type
+  if ("con" in ty) {
+    const c = ty.con;
+    return conType(ren.get(c) ?? c);
+  }
+
+  if ("evar" in ty) return ty; // Never rename meta-vars
+
+  if ("never" in ty) return ty;
+
+  // Arrow
+  if ("arrow" in ty) {
+    return arrowType(
+      renameType(state, ty.arrow.from, ren, bound),
+      renameType(state, ty.arrow.to, ren, bound),
+    );
+  }
+
+  // Application
+  if ("app" in ty) {
+    return appType(
+      renameType(state, ty.app.func, ren, bound),
+      renameType(state, ty.app.arg, ren, bound),
+    );
+  }
+
+  // Forall: introduce new bound type variable
+  if ("forall" in ty) {
+    const v = ty.forall.var;
+    const newBound = new Set(bound);
+    newBound.add(v);
+
+    return forallType(
+      v,
+      ty.forall.kind,
+      renameType(state, ty.forall.body, ren, newBound),
+    );
+  }
+
+  // Bounded forall
+  if ("bounded_forall" in ty) {
+    const v = ty.bounded_forall.var;
+    const newBound = new Set(bound);
+    newBound.add(v);
+
+    const newConstraints = ty.bounded_forall.constraints.map((c) => ({
+      trait: ren.get(c.trait) ?? c.trait,
+      type: renameType(state, c.type, ren, newBound),
+    }));
+
+    return boundedForallType(
+      v,
+      ty.bounded_forall.kind,
+      newConstraints,
+      renameType(state, ty.bounded_forall.body, ren, newBound),
+    );
+  }
+
+  // Lambda type
+  if ("lam" in ty) {
+    const v = ty.lam.var;
+    const newBound = new Set(bound);
+    newBound.add(v);
+
+    return lamType(
+      v,
+      ty.lam.kind,
+      renameType(state, ty.lam.body, ren, newBound),
+    );
+  }
+
+  // Record
+  if ("record" in ty) {
+    return recordType(
+      ty.record.map(([label, field]) => [
+        ren.get(label) ?? label,
+        renameType(state, field, ren, bound),
+      ]),
+    );
+  }
+
+  // Variant
+  if ("variant" in ty) {
+    return variantType(
+      ty.variant.map(([label, field]) => [
+        ren.get(label) ?? label,
+        renameType(state, field, ren, bound),
+      ]),
+    );
+  }
+
+  // Tuple
+  if ("tuple" in ty) {
+    return tupleType(ty.tuple.map((t) => renameType(state, t, ren, bound)));
+  }
+
+  // Mu
+  if ("mu" in ty) {
+    const v = ty.mu.var;
+    const newBound = new Set(bound);
+    newBound.add(v);
+
+    return muType(v, renameType(state, ty.mu.body, ren, newBound));
+  }
+
+  return ty;
+}
+
+export function renameTerm(
+  state: TypeCheckerState,
+  term: Term,
+  ren: Map<string, string>,
+  bound: Set<string> = new Set(),
+): Term {
+  // Term variables
+  if ("var" in term) {
+    const v = term.var;
+    return bound.has(v) ? term : varTerm(ren.get(v) ?? v);
+  }
+
+  // Lambda
+  if ("lam" in term) {
+    const v = term.lam.arg;
+    const newBound = new Set(bound);
+    newBound.add(v);
+
+    return lamTerm(
+      v,
+      renameType(state, term.lam.type, ren),
+      renameTerm(state, term.lam.body, ren, newBound),
+    );
+  }
+
+  // Application
+  if ("app" in term) {
+    return appTerm(
+      renameTerm(state, term.app.callee, ren, bound),
+      renameTerm(state, term.app.arg, ren, bound),
+    );
+  }
+
+  // Type lambda
+  if ("tylam" in term) {
+    const v = term.tylam.var;
+    const newBound = new Set(bound);
+    newBound.add(v);
+
+    return tylamTerm(
+      v,
+      term.tylam.kind,
+      renameTerm(state, term.tylam.body, ren, newBound),
+    );
+  }
+
+  // Type application
+  if ("tyapp" in term) {
+    return tyappTerm(
+      renameTerm(state, term.tyapp.term, ren, bound),
+      renameType(state, term.tyapp.type, ren),
+    );
+  }
+
+  // Constant constructor
+  if ("con" in term) {
+    const name = term.con.name;
+    return conTerm(
+      ren.get(name) ?? name,
+      renameType(state, term.con.type, ren),
+    );
+  }
+
+  // Record
+  if ("record" in term) {
+    return recordTerm(
+      term.record.map(([label, f]) => [
+        ren.get(label) ?? label,
+        renameTerm(state, f, ren, bound),
+      ]),
+    );
+  }
+
+  // Projection
+  if ("project" in term) {
+    return projectTerm(
+      renameTerm(state, term.project.record, ren, bound),
+      ren.get(term.project.label) ?? term.project.label,
+    );
+  }
+
+  // Variant injection
+  if ("inject" in term) {
+    return injectTerm(
+      ren.get(term.inject.label) ?? term.inject.label,
+      renameTerm(state, term.inject.value, ren, bound),
+      renameType(state, term.inject.variant_type, ren),
+    );
+  }
+
+  // Tuple
+  if ("tuple" in term) {
+    return tupleTerm(term.tuple.map((t) => renameTerm(state, t, ren, bound)));
+  }
+
+  // Tuple projection
+  if ("tuple_project" in term) {
+    return tupleProjectTerm(
+      renameTerm(state, term.tuple_project.tuple, ren, bound),
+      term.tuple_project.index,
+    );
+  }
+
+  // Let binding
+  if ("let" in term) {
+    const v = term.let.name;
+    const newBound = new Set(bound);
+    newBound.add(v);
+
+    return letTerm(
+      v,
+      renameTerm(state, term.let.value, ren, bound),
+      renameTerm(state, term.let.body, ren, newBound),
+    );
+  }
+
+  // Match
+  if ("match" in term) {
+    return matchTerm(
+      renameTerm(state, term.match.scrutinee, ren, bound),
+      term.match.cases.map(([pat, body]) => [
+        renamePattern(state, pat, ren, bound),
+        renameTerm(state, body, ren, bound),
+      ]),
+    );
+  }
+
+  // Fold
+  if ("fold" in term) {
+    return foldTerm(
+      renameType(state, term.fold.type, ren),
+      renameTerm(state, term.fold.term, ren, bound),
+    );
+  }
+
+  // Unfold
+  if ("unfold" in term) {
+    return unfoldTerm(renameTerm(state, term.unfold, ren, bound));
+  }
+
+  // Dictionary term
+  if ("dict" in term) {
+    return dictTerm(
+      ren.get(term.dict.trait) ?? term.dict.trait,
+      renameType(state, term.dict.type, ren),
+      term.dict.methods.map(([name, impl]) => [
+        ren.get(name) ?? name,
+        renameTerm(state, impl, ren, bound),
+      ]),
+    );
+  }
+
+  // Trait lambda
+  if ("trait_lam" in term) {
+    const vType = term.trait_lam.type_var;
+    const vDict = term.trait_lam.trait_var;
+
+    const newBound = new Set(bound);
+    newBound.add(vType);
+    newBound.add(vDict);
+
+    return traitLamTerm(
+      ren.get(vDict) ?? vDict,
+      ren.get(term.trait_lam.trait) ?? term.trait_lam.trait,
+      ren.get(vType) ?? vType,
+      term.trait_lam.kind,
+      term.trait_lam.constraints.map((c) => ({
+        trait: ren.get(c.trait) ?? c.trait,
+        type: renameType(state, c.type, ren, newBound),
+      })),
+      renameTerm(state, term.trait_lam.body, ren, newBound),
+    );
+  }
+
+  // Trait app
+  if ("trait_app" in term) {
+    return traitAppTerm(
+      renameTerm(state, term.trait_app.term, ren, bound),
+      renameType(state, term.trait_app.type, ren),
+      term.trait_app.dicts.map((d) => renameTerm(state, d, ren, bound)),
+    );
+  }
+
+  // Trait method
+  if ("trait_method" in term) {
+    return traitMethodTerm(
+      renameTerm(state, term.trait_method.dict, ren, bound),
+      ren.get(term.trait_method.method) ?? term.trait_method.method,
+    );
+  }
+
+  return term;
+}
+
+export function renamePattern(
+  state: TypeCheckerState,
+  pat: Pattern,
+  ren: Map<string, string>,
+  bound: Set<string>,
+): Pattern {
+  if ("var" in pat) {
+    // Pattern variable becomes bound
+    const v = pat.var;
+    const newName = ren.get(v) ?? v;
+    bound.add(v);
+    return varPattern(newName);
+  }
+
+  if ("wildcard" in pat) return pat;
+
+  if ("con" in pat) {
+    return conPattern(
+      ren.get(pat.con.name) ?? pat.con.name,
+      renameType(state, pat.con.type, ren, bound),
+    );
+  }
+
+  if ("record" in pat) {
+    return recordPattern(
+      pat.record.map(([label, p]) => [
+        ren.get(label) ?? label,
+        renamePattern(state, p, ren, bound),
+      ]),
+    );
+  }
+
+  if ("variant" in pat) {
+    return variantPattern(
+      ren.get(pat.variant.label) ?? pat.variant.label,
+      renamePattern(state, pat.variant.pattern, ren, bound),
+    );
+  }
+
+  if ("tuple" in pat) {
+    return tuplePattern(
+      pat.tuple.map((p) => renamePattern(state, p, ren, bound)),
+    );
+  }
+
+  return pat;
+}
+
+export function renameBinding(
+  state: TypeCheckerState,
+  b: Binding,
+  ren: Map<string, string>,
+): Binding {
+  if ("term" in b) {
+    return termBinding(
+      ren.get(b.term.name) ?? b.term.name,
+      renameType(state, b.term.type, ren),
+    );
+  }
+
+  if ("type" in b) {
+    return typeBinding(ren.get(b.type.name) ?? b.type.name, b.type.kind);
+  }
+
+  if ("trait_def" in b) {
+    return traitDefBinding(
+      ren.get(b.trait_def.name) ?? b.trait_def.name,
+      b.trait_def.type_param,
+      b.trait_def.kind,
+      b.trait_def.methods.map(([m, t]) => [
+        ren.get(m) ?? m,
+        renameType(state, t, ren),
+      ]),
+    );
+  }
+
+  if ("trait_impl" in b) {
+    return traitImplBinding(
+      ren.get(b.trait_impl.trait) ?? b.trait_impl.trait,
+      renameType(state, b.trait_impl.type, ren),
+      renameTerm(state, b.trait_impl.dict, ren),
+    );
+  }
+
+  if ("dict" in b) {
+    return dictBinding(
+      ren.get(b.dict.name) ?? b.dict.name,
+      ren.get(b.dict.trait) ?? b.dict.trait,
+      renameType(state, b.dict.type, ren),
+    );
+  }
+
+  if ("enum" in b) {
+    return enumDefBinding(
+      ren.get(b.enum.name) ?? b.enum.name,
+      b.enum.kind,
+      b.enum.params,
+      b.enum.variants.map(([l, t]) => [
+        ren.get(l) ?? l,
+        renameType(state, t, ren),
+      ]),
+    );
+  }
+
+  if ("type_alias" in b) {
+    return typeAliasBinding(
+      ren.get(b.type_alias.name) ?? b.type_alias.name,
+      b.type_alias.params,
+      b.type_alias.kinds,
+      renameType(state, b.type_alias.body, ren),
+    );
+  }
+
+  return b;
+}
+
+export function computeFreeTypes(
+  _state: TypeCheckerState,
+  ty: Type,
+  bound: Set<string> = new Set(),
+): FreeTypeNames {
+  const out: FreeTypeNames = {
+    typeVars: new Set(),
+    typeCons: new Set(),
+    traits: new Set(),
+    labels: new Set(),
+  };
+
+  function go(t: Type, boundVars: Set<string>) {
+    if ("var" in t) {
+      if (!boundVars.has(t.var)) out.typeVars.add(t.var);
+      return;
+    }
+
+    if ("con" in t) {
+      out.typeCons.add(t.con);
+      return;
+    }
+
+    if ("evar" in t || "never" in t) return;
+
+    if ("arrow" in t) {
+      go(t.arrow.from, boundVars);
+      go(t.arrow.to, boundVars);
+      return;
+    }
+
+    if ("app" in t) {
+      go(t.app.func, boundVars);
+      go(t.app.arg, boundVars);
+      return;
+    }
+
+    if ("forall" in t) {
+      const newBound = new Set(boundVars);
+      newBound.add(t.forall.var);
+      go(t.forall.body, newBound);
+      return;
+    }
+
+    if ("bounded_forall" in t) {
+      const newBound = new Set(boundVars);
+      newBound.add(t.bounded_forall.var);
+
+      for (const c of t.bounded_forall.constraints) {
+        out.traits.add(c.trait);
+        go(c.type, newBound);
+      }
+
+      go(t.bounded_forall.body, newBound);
+      return;
+    }
+
+    if ("lam" in t) {
+      const newBound = new Set(boundVars);
+      newBound.add(t.lam.var);
+      go(t.lam.body, newBound);
+      return;
+    }
+
+    if ("record" in t) {
+      for (const [label, field] of t.record) {
+        out.labels.add(label);
+        go(field, boundVars);
+      }
+      return;
+    }
+
+    if ("variant" in t) {
+      for (const [label, caseType] of t.variant) {
+        out.labels.add(label);
+        go(caseType, boundVars);
+      }
+      return;
+    }
+
+    if ("tuple" in t) {
+      for (const e of t.tuple) go(e, boundVars);
+      return;
+    }
+
+    if ("mu" in t) {
+      const newBound = new Set(boundVars);
+      newBound.add(t.mu.var);
+      go(t.mu.body, newBound);
+      return;
+    }
+  }
+
+  go(ty, bound);
+  return out;
+}
+
+export function computeFreePatterns(
+  _state: TypeCheckerState,
+  pat: Pattern,
+): FreePatternNames {
+  const out: FreePatternNames = {
+    vars: new Set(),
+    constructors: new Set(),
+    labels: new Set(),
+  };
+
+  function go(p: Pattern) {
+    if ("var" in p) {
+      out.vars.add(p.var);
+      return;
+    }
+
+    if ("wildcard" in p) return;
+
+    if ("con" in p) {
+      out.constructors.add(p.con.name);
+      return;
+    }
+
+    if ("record" in p) {
+      for (const [label, sub] of p.record) {
+        out.labels.add(label);
+        go(sub);
+      }
+      return;
+    }
+
+    if ("variant" in p) {
+      out.labels.add(p.variant.label);
+      go(p.variant.pattern);
+      return;
+    }
+
+    if ("tuple" in p) {
+      for (const sub of p.tuple) go(sub);
+      return;
+    }
+  }
+
+  go(pat);
+  return out;
+}
+
+export function computeFreeTerms(
+  state: TypeCheckerState,
+  term: Term,
+  bound: Set<string> = new Set(),
+): FreeTermNames {
+  const out: FreeTermNames = {
+    terms: new Set(),
+    constructors: new Set(),
+    traits: new Set(),
+    dicts: new Set(),
+    labels: new Set(),
+    typeVars: new Set(),
+    typeCons: new Set(),
+  };
+
+  function mergeTypeNames(t: Type) {
+    const r = computeFreeTypes(state, t);
+    for (const x of r.typeVars) out.typeVars.add(x);
+    for (const x of r.typeCons) out.typeCons.add(x);
+    for (const x of r.traits) out.traits.add(x);
+    for (const x of r.labels) out.labels.add(x);
+  }
+
+  function go(e: Term, boundNames: Set<string>) {
+    if ("var" in e) {
+      if (!boundNames.has(e.var)) out.terms.add(e.var);
+      return;
+    }
+
+    if ("con" in e) {
+      out.constructors.add(e.con.name);
+      mergeTypeNames(e.con.type);
+      return;
+    }
+
+    if ("lam" in e) {
+      mergeTypeNames(e.lam.type);
+      const newBound = new Set(boundNames).add(e.lam.arg);
+      go(e.lam.body, newBound);
+      return;
+    }
+
+    if ("app" in e) {
+      go(e.app.callee, boundNames);
+      go(e.app.arg, boundNames);
+      return;
+    }
+
+    if ("tylam" in e) {
+      const newBound = new Set(boundNames).add(e.tylam.var);
+      go(e.tylam.body, newBound);
+      return;
+    }
+
+    if ("tyapp" in e) {
+      mergeTypeNames(e.tyapp.type);
+      go(e.tyapp.term, boundNames);
+      return;
+    }
+
+    if ("let" in e) {
+      go(e.let.value, boundNames);
+      const newBound = new Set(boundNames).add(e.let.name);
+      go(e.let.body, newBound);
+      return;
+    }
+
+    if ("record" in e) {
+      for (const [label, field] of e.record) {
+        out.labels.add(label);
+        go(field, boundNames);
+      }
+      return;
+    }
+
+    if ("project" in e) {
+      out.labels.add(e.project.label);
+      go(e.project.record, boundNames);
+      return;
+    }
+
+    if ("inject" in e) {
+      out.labels.add(e.inject.label);
+      mergeTypeNames(e.inject.variant_type);
+      go(e.inject.value, boundNames);
+      return;
+    }
+
+    if ("match" in e) {
+      go(e.match.scrutinee, boundNames);
+      for (const [pat, body] of e.match.cases) {
+        const pFree = computeFreePatterns(state, pat);
+        for (const c of pFree.constructors) out.constructors.add(c);
+        for (const l of pFree.labels) out.labels.add(l);
+
+        const newBound = new Set(boundNames);
+        for (const v of pFree.vars) newBound.add(v);
+
+        go(body, newBound);
+      }
+      return;
+    }
+
+    if ("trait_method" in e) {
+      go(e.trait_method.dict, boundNames);
+      out.labels.add(e.trait_method.method);
+      return;
+    }
+
+    if ("dict" in e) {
+      out.traits.add(e.dict.trait);
+      mergeTypeNames(e.dict.type);
+      for (const [m, impl] of e.dict.methods) {
+        out.labels.add(m);
+        go(impl, boundNames);
+      }
+      return;
+    }
+
+    if ("trait_lam" in e) {
+      out.traits.add(e.trait_lam.trait);
+
+      const newBound = new Set(boundNames);
+      newBound.add(e.trait_lam.type_var);
+      newBound.add(e.trait_lam.trait_var);
+
+      for (const c of e.trait_lam.constraints) {
+        out.traits.add(c.trait);
+        mergeTypeNames(c.type);
+      }
+
+      go(e.trait_lam.body, newBound);
+      return;
+    }
+
+    if ("trait_app" in e) {
+      mergeTypeNames(e.trait_app.type);
+      go(e.trait_app.term, boundNames);
+      for (const d of e.trait_app.dicts) go(d, boundNames);
+      return;
+    }
+
+    if ("tuple" in e) {
+      for (const t of e.tuple) go(t, boundNames);
+      return;
+    }
+
+    if ("tuple_project" in e) {
+      go(e.tuple_project.tuple, boundNames);
+      return;
+    }
+
+    if ("fold" in e) {
+      mergeTypeNames(e.fold.type);
+      go(e.fold.term, boundNames);
+      return;
+    }
+
+    if ("unfold" in e) {
+      go(e.unfold, boundNames);
+      return;
+    }
+  }
+
+  go(term, bound);
+  return out;
+}
+
+export function importModule(args: {
+  from: TypeCheckerState;
+  into: TypeCheckerState;
+  roots: string[];
+  aliases?: ImportAliases;
+  allowOverrides?: boolean;
+}): Result<TypingError, TypeCheckerState> {
+  const { from, into, roots, aliases = {}, allowOverrides = false } = args;
+
+  // Build user rename map
+  const userRen = buildRenameMap(aliases);
+
+  // Step 1: Collect all dependencies (roots + transitive)
+  const depResult = collectDependencies(from, roots);
+  if ("err" in depResult) return depResult;
+
+  const allDeps = depResult.ok;
+
+  // Step 2: Check ROOT names for direct conflicts (before any renaming)
+  // Roots must not conflict unless allowOverrides
+  for (const root of roots) {
+    // Apply user rename to root if provided
+    const rootRenamed = userRen.get(root) ?? root;
+
+    // Check if it conflicts in target
+    const existing = into.ctx.find((b) => bindingName(b) === rootRenamed);
+    if (existing && !allowOverrides) {
+      const incoming = from.ctx.find((b) => bindingName(b) === root)!;
+      if (!incoming) continue; // Should never happen
+
+      return err({
+        duplicate_binding: {
+          name: rootRenamed,
+          existing,
+          incoming,
+        },
+      });
+    }
+  }
+
+  // Step 3: Compute full rename map
+  // - User renames apply to everything
+  // - Auto-renames ONLY for NON-ROOT dependencies
+  const finalRen = new Map(userRen);
+
+  for (const dep of allDeps) {
+    // Skip roots (we already checked them above)
+    if (roots.includes(dep)) continue;
+
+    // Skip if user already renamed it
+    if (userRen.has(dep)) continue;
+
+    // Check for conflict and auto-rename ONLY if it would conflict
+    const depRenamed = finalRen.get(dep) ?? dep;
+    const exists = into.ctx.some((b) => bindingName(b) === depRenamed);
+    if (exists) {
+      // Generate fresh name for this hidden dependency
+      const fresh = freshName(into, depRenamed);
+      finalRen.set(dep, fresh);
+    }
+  }
+
+  // Step 4: Topo-sort ALL deps (roots + renamed deps)
+  const ordered = topoSortBindings(from, allDeps);
+
+  // Step 5: Import using final renames
+  const newCtx = [...into.ctx];
+
+  for (const name of ordered) {
+    const original = from.ctx.find((b) => bindingName(b) === name);
+    if (!original) continue;
+
+    const renamed = renameBinding(from, original, finalRen);
+    const newName = bindingName(renamed);
+
+    // No need to check roots again (we did it in Step 2)
+    // For deps, we've already auto-renamed, so no conflicts here
+    if (allowOverrides) {
+      // If overrides allowed, replace if exists
+      const idx = newCtx.findIndex((b) => bindingName(b) === newName);
+      if (idx !== -1) newCtx.splice(idx, 1, renamed);
+      else newCtx.push(renamed);
+    } else {
+      // Just append (deps shouldn't conflict due to auto-rename)
+      newCtx.push(renamed);
+    }
+  }
+
+  return ok({ ctx: newCtx, meta: into.meta });
+}
+
+export function collectDependencies(
+  state: TypeCheckerState,
+  roots: string[],
+): Result<TypingError, Set<string>> {
+  const visited = new Set<string>();
+  const visiting: string[] = []; // stack for cycle detection
+  const deps = new Set<string>();
+
+  function dfs(name: string): Result<TypingError, null> {
+    if (visited.has(name)) return ok(null);
+
+    if (visiting.includes(name)) {
+      // cycle detected
+      const cycleStart = visiting.indexOf(name);
+      const cycle = visiting.slice(cycleStart).concat([name]);
+
+      return err({
+        circular_import: { name, cycle },
+      });
+    }
+
+    visiting.push(name);
+
+    const binding = state.ctx.find((b) => bindingName(b) === name);
+    if (!binding) {
+      visiting.pop();
+      return ok(null); // silently ignore missing for now
+    }
+
+    deps.add(name);
+
+    const directDeps = bindingDependencies(state, binding);
+    for (const d of directDeps) {
+      const r = dfs(d);
+      if ("err" in r) return r;
+    }
+
+    visiting.pop();
+    visited.add(name);
+    return ok(null);
+  }
+
+  for (const root of roots) {
+    const r = dfs(root);
+    if ("err" in r) return r;
+  }
+
+  return ok(deps);
+}
+
+function bindingDependencies(state: TypeCheckerState, b: Binding): Set<string> {
+  const out = new Set<string>();
+
+  if ("term" in b) {
+    const f = computeFreeTypes(state, b.term.type);
+    for (const x of f.typeVars) out.add(x);
+    for (const x of f.typeCons) out.add(x);
+    return out;
+  }
+
+  if ("type" in b) return out;
+
+  if ("type_alias" in b) {
+    const f = computeFreeTypes(state, b.type_alias.body);
+    for (const x of f.typeCons) out.add(x);
+    return out;
+  }
+
+  if ("enum" in b) {
+    for (const [, field] of b.enum.variants) {
+      const f = computeFreeTypes(state, field);
+      for (const x of f.typeCons) out.add(x);
+    }
+    return out;
+  }
+
+  if ("trait_def" in b) {
+    for (const [, ty] of b.trait_def.methods) {
+      const f = computeFreeTypes(state, ty);
+      for (const x of f.typeCons) out.add(x);
+    }
+    return out;
+  }
+
+  if ("trait_impl" in b) {
+    out.add(b.trait_impl.trait);
+    const f = computeFreeTypes(state, b.trait_impl.type);
+    for (const x of f.typeCons) out.add(x);
+    return out;
+  }
+
+  if ("dict" in b) {
+    out.add(b.dict.trait);
+    return out;
+  }
+
+  return out;
+}
+
+function buildRenameMap(a: ImportAliases): Map<string, string> {
+  const ren = new Map<string, string>();
+
+  for (const [k, v] of Object.entries(a.types ?? {})) ren.set(k, v);
+  for (const [k, v] of Object.entries(a.traits ?? {})) ren.set(k, v);
+  for (const [k, v] of Object.entries(a.terms ?? {})) ren.set(k, v);
+  for (const [k, v] of Object.entries(a.labels ?? {})) ren.set(k, v);
+
+  return ren;
+}
+
+function topoSortBindings(
+  state: TypeCheckerState,
+  selected: Set<string>,
+): string[] {
+  const out: string[] = [];
+  const visited = new Set<string>();
+
+  function dfs(name: string) {
+    if (visited.has(name)) return;
+    visited.add(name);
+
+    const b = state.ctx.find((bb) => bindingName(bb) === name);
+    if (!b) return;
+
+    const deps = bindingDependencies(state, b);
+    for (const d of deps) if (selected.has(d)) dfs(d);
+
+    out.push(name);
+  }
+
+  for (const r of selected) dfs(r);
+
+  return out;
+}
+
+function freshName(state: TypeCheckerState, base: string): string {
+  let i = 1;
+  let name = `${base}_${i}`;
+  while (state.ctx.some((b) => bindingName(b) === name)) {
+    i++;
+    name = `${base}_${i}`;
+  }
+  return name;
+}
+
+function bindingName(b: Binding): string {
+  if ("type" in b) return b.type.name;
+  if ("term" in b) return b.term.name;
+  if ("dict" in b) return b.dict.name;
+  if ("trait_def" in b) return b.trait_def.name;
+  if ("trait_impl" in b) return b.trait_impl.trait;
+  if ("type_alias" in b) return b.type_alias.name;
+  if ("enum" in b) return b.enum.name;
+  return "<unknown>";
+}
+
+export function showError(err: TypingError): string {
+  if ("unbound" in err) return `Unbound identifier: ${err.unbound}`;
+
+  if ("kind_mismatch" in err) {
+    return `Kind mismatch:\n  Expected: ${showKind(err.kind_mismatch.expected)}\n  Actual:   ${showKind(err.kind_mismatch.actual)}`;
+  }
+
+  if ("type_mismatch" in err) {
+    return `Type mismatch:\n  Expected: ${showType(err.type_mismatch.expected)}\n  Actual:   ${showType(err.type_mismatch.actual)}`;
+  }
+
+  if ("not_a_function" in err) {
+    return `Not a function:\n  ${showType(err.not_a_function)}`;
+  }
+
+  if ("not_a_type_function" in err) {
+    return `Not a type-level function:\n  ${showType(err.not_a_type_function)}`;
+  }
+
+  if ("cyclic" in err) {
+    return `Cyclic type detected involving: ${err.cyclic}`;
+  }
+
+  if ("not_a_record" in err) {
+    return `Not a record type:\n  ${showType(err.not_a_record)}`;
+  }
+
+  if ("missing_field" in err) {
+    return `Missing field '${err.missing_field.label}' in record:\n  ${showType(err.missing_field.record)}`;
+  }
+
+  if ("not_a_variant" in err) {
+    return `Not a variant type:\n  ${showType(err.not_a_variant)}`;
+  }
+
+  if ("invalid_variant_label" in err) {
+    return `Invalid variant label '${err.invalid_variant_label.label}' for:\n  ${showType(err.invalid_variant_label.variant)}`;
+  }
+
+  if ("missing_case" in err) {
+    return `Non-exhaustive match: missing case '${err.missing_case.label}'`;
+  }
+
+  if ("extra_case" in err) {
+    return `Unreachable case in match: '${err.extra_case.label}'`;
+  }
+
+  if ("not_a_tuple" in err) {
+    return `Not a tuple type:\n  ${showType(err.not_a_tuple)}`;
+  }
+
+  if ("tuple_index_out_of_bounds" in err) {
+    const { tuple, index } = err.tuple_index_out_of_bounds;
+    return `Tuple index out of bounds:\n  Tuple: ${showType(tuple)}\n  Index: ${index}`;
+  }
+
+  if ("missing_trait_impl" in err) {
+    const { trait, type } = err.missing_trait_impl;
+    return `Missing trait implementation:\n  Trait: ${trait}\n  Type:  ${showType(type)}`;
+  }
+
+  if ("missing_method" in err) {
+    const { trait, method } = err.missing_method;
+    return `Missing method '${method}' in trait '${trait}'`;
+  }
+
+  if ("wrong_number_of_dicts" in err) {
+    const { expected, actual } = err.wrong_number_of_dicts;
+    return `Wrong number of dictionaries provided:\n  Expected: ${expected}\n  Actual:   ${actual}`;
+  }
+
+  if ("unexpected_kind" in err) {
+    const { name, kind } = err.unexpected_kind;
+    return `Unexpected kind assigned to '${name}': ${showKind(kind)}`;
+  }
+
+  if ("duplicate_binding" in err) {
+    const { name, existing, incoming } = err.duplicate_binding;
+    return (
+      `Duplicate binding for '${name}':\n` +
+      `  Existing: ${showBinding(existing)}\n` +
+      `  Incoming: ${showBinding(incoming)}`
+    );
+  }
+
+  if ("circular_import" in err) {
+    const { name, cycle } = err.circular_import;
+    return (
+      `Circular import detected involving '${name}':\n` +
+      `  Cycle: ${cycle.join(" → ")}`
+    );
+  }
+
+  return "Unknown type error";
+}
