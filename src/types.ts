@@ -10,8 +10,8 @@
  *
  * @example Basic constraint
  * ```ts
- * import { type TraitConstraint } from "./typechecker.js";
- * import { varType } from "./typechecker.js";
+ * import { type TraitConstraint } from "system-f-omega";
+ * import { varType } from "system-f-omega";
  *
  * const eqSelf: TraitConstraint = { trait: "Eq", type: varType("Self") };
  * console.log("Eq<Self>");  // Eq<Self>
@@ -19,8 +19,8 @@
  *
  * @example Bounded forall
  * ```ts
- * import { boundedForallType, starKind, varType } from "./typechecker.js";
- * import type { TraitConstraint } from "./typechecker.js";
+ * import { boundedForallType, starKind, varType } from "system-f-omega";
+ * import type { TraitConstraint } from "system-f-omega";
  *
  * const constraint: TraitConstraint = { trait: "Eq", type: varType("Self") };
  * const bounded = boundedForallType("Self", starKind, [constraint], varType("Self"));
@@ -29,8 +29,8 @@
  *
  * @example Trait lambda
  * ```ts
- * import { traitLamTerm, starKind } from "./typechecker.js";
- * import type { TraitConstraint } from "./typechecker.js";
+ * import { traitLamTerm, starKind } from "system-f-omega";
+ * import type { TraitConstraint } from "system-f-omega";
  *
  * const constraint: TraitConstraint = { trait: "Eq", type: { var: "Self" } };
  * const traitLam = traitLamTerm("d", "Eq", "Self", starKind, [constraint], { var: "body" });
@@ -39,8 +39,8 @@
  *
  * @example Resolution
  * ```ts
- * import { checkTraitConstraints } from "./typechecker.js";
- * import type { TraitConstraint } from "./typechecker.js";
+ * import { checkTraitConstraints } from "system-f-omega";
+ * import type { TraitConstraint } from "system-f-omega";
  * // Assume state + impls
  *
  * const constraints: TraitConstraint[] = [{ trait: "Eq", type: conType("Int") }];
@@ -71,7 +71,7 @@ export type TraitConstraint = {
  *
  * @example Construction
  * ```ts
- * import { boundedForallType, starKind, varType, showType } from "./typechecker.js";
+ * import { boundedForallType, starKind, varType, showType } from "system-f-omega";
  *
  * const eqSelf = boundedForallType("Self", starKind, [{ trait: "Eq", type: varType("Self") }], varType("Self"));
  * console.log(showType(eqSelf));  // "∀Self::* where Eq<Self>. Self"
@@ -79,7 +79,7 @@ export type TraitConstraint = {
  *
  * @example Trait lambda inference
  * ```ts
- * import { freshState, inferType, traitLamTerm, boundedForallType, starKind, varType, arrowType, showType } from "./typechecker.js";
+ * import { freshState, inferType, traitLamTerm, boundedForallType, starKind, varType, arrowType, showType } from "system-f-omega";
  *
  * const state = freshState();
  * const traitLam = traitLamTerm("d", "Eq", "Self", starKind, [{ trait: "Eq", type: varType("Self") }], arrowType(varType("Self"), varType("Self")));
@@ -89,7 +89,7 @@ export type TraitConstraint = {
  *
  * @example Checking
  * ```ts
- * import { freshState, checkType, traitLamTerm, boundedForallType, starKind, varType, arrowType } from "./typechecker.js";
+ * import { freshState, checkType, traitLamTerm, boundedForallType, starKind, varType, arrowType } from "system-f-omega";
  *
  * const state = freshState();
  * const traitLam = traitLamTerm("d", "Eq", "Self", starKind, [{ trait: "Eq", type: varType("Self") }], arrowType(varType("Self"), varType("Self")));
@@ -100,7 +100,7 @@ export type TraitConstraint = {
  *
  * @example Trait app resolution
  * ```ts
- * import { freshState, instantiateWithTraits, boundedForallType, starKind, varType } from "./typechecker.js";
+ * import { freshState, instantiateWithTraits, boundedForallType, starKind, varType } from "system-f-omega";
  * // Assume Eq<Int> impls
  *
  * const state = freshState();
@@ -134,14 +134,14 @@ export type BoundedForallType = {
  *
  * @example Singleton usage
  * ```ts
- * import { starKind, showKind } from "./typechecker.js";
+ * import { starKind, showKind } from "system-f-omega";
  *
  * console.log("*:", showKind(starKind));  // "*"
  * ```
  *
  * @example addType primitive
  * ```ts
- * import { freshState, addType, starKind, showContext } from "./typechecker.js";
+ * import { freshState, addType, starKind, showContext } from "system-f-omega";
  *
  * let state = freshState();
  * state = addType(state, "Int", starKind).ok;
@@ -150,7 +150,7 @@ export type BoundedForallType = {
  *
  * @example Forall binder
  * ```ts
- * import { forallType, starKind, varType, showType } from "./typechecker.js";
+ * import { forallType, starKind, varType, showType } from "system-f-omega";
  *
  * const poly = forallType("a", starKind, varType("a"));
  * console.log("∀a::*.:", showType(poly));  // "∀a::*. a"
@@ -175,7 +175,7 @@ export type StarKind = { star: null };
  *
  * @example Basic arrow
  * ```ts
- * import { arrowKind, starKind, showKind } from "./typechecker.js";
+ * import { arrowKind, starKind, showKind } from "system-f-omega";
  *
  * const listKind = { arrow: { from: starKind, to: starKind } };
  * console.log("(*→*):", showKind(listKind));  // "(* → *)"
@@ -183,7 +183,7 @@ export type StarKind = { star: null };
  *
  * @example Nested HKT
  * ```ts
- * import { arrowKind, starKind, showKind } from "./typechecker.js";
+ * import { arrowKind, starKind, showKind } from "system-f-omega";
  *
  * const nested = {
  *   arrow: {
@@ -196,7 +196,7 @@ export type StarKind = { star: null };
  *
  * @example addType HKT
  * ```ts
- * import { freshState, addType, arrowKind, starKind, showContext } from "./typechecker.js";
+ * import { freshState, addType, arrowKind, starKind, showContext } from "system-f-omega";
  *
  * let state = freshState();
  * state = addType(state, "List", arrowKind(starKind, starKind)).ok;
@@ -226,14 +226,14 @@ export type ArrowKind = { arrow: { from: Kind; to: Kind } };
  *
  * @example Star kind (concrete)
  * ```ts
- * import { starKind, showKind } from "./typechecker.js";
+ * import { starKind, showKind } from "system-f-omega";
  *
  * console.log("*:", showKind(starKind));  // "*"
  * ```
  *
  * @example Arrow kind (HKT)
  * ```ts
- * import { arrowKind, starKind, showKind } from "./typechecker.js";
+ * import { arrowKind, starKind, showKind } from "system-f-omega";
  *
  * const listKind = arrowKind(starKind, starKind);  // * → *
  * console.log("(*→*):", showKind(listKind));  // "(* → *)"
@@ -241,7 +241,7 @@ export type ArrowKind = { arrow: { from: Kind; to: Kind } };
  *
  * @example Nested kinds
  * ```ts
- * import { arrowKind, starKind, showKind } from "./typechecker.js";
+ * import { arrowKind, starKind, showKind } from "system-f-omega";
  *
  * const nested = arrowKind(starKind, arrowKind(starKind, starKind));  // * → (* → *)
  * console.log("nested:", showKind(nested));  // "(* → ((* → *) → *))"
@@ -249,7 +249,7 @@ export type ArrowKind = { arrow: { from: Kind; to: Kind } };
  *
  * @example Usage: addType
  * ```ts
- * import { freshState, addType, starKind, arrowKind } from "./typechecker.js";
+ * import { freshState, addType, starKind, arrowKind } from "system-f-omega";
  *
  * let state = freshState();
  * state = addType(state, "Int", starKind).ok;  // Int :: *
@@ -259,7 +259,7 @@ export type ArrowKind = { arrow: { from: Kind; to: Kind } };
  *
  * @example Kind checking
  * ```ts
- * import { freshState, addType, checkKind, appType, conType, starKind, arrowKind } from "./typechecker.js";
+ * import { freshState, addType, checkKind, appType, conType, starKind, arrowKind } from "system-f-omega";
  *
  * let state = freshState();
  * state = addType(state, "List", arrowKind(starKind, starKind)).ok;
@@ -288,14 +288,14 @@ export type Kind =
  *
  * @example Construction
  * ```ts
- * import { varPattern, showPattern } from "./typechecker.js";
+ * import { varPattern, showPattern } from "system-f-omega";
  *
  * console.log("x:", showPattern(varPattern("x")));  // "x"
  * ```
  *
  * @example Check/bind
  * ```ts
- * import { freshState, addType, checkPattern, varPattern, conType, starKind } from "./typechecker.js";
+ * import { freshState, addType, checkPattern, varPattern, conType, starKind } from "system-f-omega";
  *
  * let state = freshState();
  * state = addType(state, "Int", starKind).ok;
@@ -318,14 +318,14 @@ export type VarPattern = { var: string };
  *
  * @example Construction
  * ```ts
- * import { wildcardPattern, showPattern } from "./typechecker.js";
+ * import { wildcardPattern, showPattern } from "system-f-omega";
  *
  * console.log("_:", showPattern(wildcardPattern()));  // "_"
  * ```
  *
  * @example Check (empty bindings)
  * ```ts
- * import { freshState, addType, checkPattern, wildcardPattern, conType, starKind } from "./typechecker.js";
+ * import { freshState, addType, checkPattern, wildcardPattern, conType, starKind } from "system-f-omega";
  *
  * let state = freshState();
  * state = addType(state, "Int", starKind).ok;
@@ -350,14 +350,14 @@ export type WildcardPattern = { wildcard: null };
 
  * @example Construction
  * ```ts
- * import { conPattern, conType, showPattern } from "./typechecker.js";
+ * import { conPattern, conType, showPattern } from "system-f-omega";
  *
  * console.log("None:", showPattern(conPattern("None", conType("Unit"))));  // "None"
  * ```
  *
  * @example Check success
  * ```ts
- * import { freshState, addType, checkPattern, conPattern, conType, starKind } from "./typechecker.js";
+ * import { freshState, addType, checkPattern, conPattern, conType, starKind } from "system-f-omega";
  *
  * let state = freshState();
  * state = addType(state, "Bool", starKind).ok;
@@ -368,8 +368,8 @@ export type WildcardPattern = { wildcard: null };
  *
  * @example Match inference
  * ```ts
- * import { freshState, addType, addEnum, inferType, matchTerm, conPattern, conTerm, appType, conType, starKind, showType } from "./typechecker.js";
- * import { tupleType } from "./typechecker.js";
+ * import { freshState, addType, addEnum, inferType, matchTerm, conPattern, conTerm, appType, conType, starKind, showType } from "system-f-omega";
+ * import { tupleType } from "system-f-omega";
  *
  * let state = freshState();
  * state = addEnum(state, "Option", ["T"], [starKind], [["None", tupleType([])]]).ok;
@@ -382,7 +382,7 @@ export type WildcardPattern = { wildcard: null };
  *
  * @example Failure: Type mismatch
  * ```ts
- * import { freshState, addType, checkPattern, conPattern, conType, starKind } from "./typechecker.js";
+ * import { freshState, addType, checkPattern, conPattern, conType, starKind } from "system-f-omega";
  *
  * let state = freshState();
  * state = addType(state, "Bool", starKind).ok;
@@ -409,7 +409,7 @@ export type ConPattern = { con: { name: string; type: Type } };
  *
  * @example Construction
  * ```ts
- * import { recordPattern, varPattern, showPattern } from "./typechecker.js";
+ * import { recordPattern, varPattern, showPattern } from "system-f-omega";
  *
  * const pat = recordPattern([["x", varPattern("a")], ["y", varPattern("b")]]);
  * console.log("{x:a, y:b}:", showPattern(pat));  // "{x: a, y: b}"
@@ -417,7 +417,7 @@ export type ConPattern = { con: { name: string; type: Type } };
  *
  * @example Check/bind (flattens nested)
  * ```ts
- * import { freshState, addType, checkPattern, recordPattern, varPattern, recordType, conType, starKind } from "./typechecker.js";
+ * import { freshState, addType, checkPattern, recordPattern, varPattern, recordType, conType, starKind } from "system-f-omega";
  *
  * let state = freshState();
  * state = addType(state, "Int", starKind).ok;
@@ -437,7 +437,7 @@ export type ConPattern = { con: { name: string; type: Type } };
  *
  * @example Width subtyping (extra fields OK)
  * ```ts
- * import { freshState, addType, checkPattern, recordPattern, varPattern, recordType, conType, starKind } from "./typechecker.js";
+ * import { freshState, addType, checkPattern, recordPattern, varPattern, recordType, conType, starKind } from "system-f-omega";
  *
  * let state = freshState();
  * state = addType(state, "Int", starKind).ok;
@@ -453,7 +453,7 @@ export type ConPattern = { con: { name: string; type: Type } };
  *
  * @example Match inference
  * ```ts
- * import { freshState, addType, inferType, matchTerm, recordPattern, varPattern, recordTerm, conTerm, recordType, conType, starKind, showType } from "./typechecker.js";
+ * import { freshState, addType, inferType, matchTerm, recordPattern, varPattern, recordTerm, conTerm, recordType, conType, starKind, showType } from "system-f-omega";
  *
  * let state = freshState();
  * state = addType(state, "Int", starKind).ok;
@@ -468,7 +468,7 @@ export type ConPattern = { con: { name: string; type: Type } };
  *
  * @example Failure: Missing field
  * ```ts
- * import { freshState, addType, checkPattern, recordPattern, varPattern, recordType, conType, starKind } from "./typechecker.js";
+ * import { freshState, addType, checkPattern, recordPattern, varPattern, recordType, conType, starKind } from "system-f-omega";
  *
  * let state = freshState();
  * state = addType(state, "Int", starKind).ok;
@@ -503,15 +503,15 @@ export type RecordPattern = { record: [string, Pattern][] };
  *
  * @example Construction
  * ```ts
- * import { variantPattern, varPattern, showPattern } from "./typechecker.js";
+ * import { variantPattern, varPattern, showPattern } from "system-f-omega";
  *
  * console.log("Some(x):", showPattern(variantPattern("Some", varPattern("x"))));  // "Some(x)"
  * ```
  *
  * @example Nominal enum check (Option<Bool>)
  * ```ts
- * import { freshState, addType, addEnum, checkPattern, variantPattern, varPattern, appType, conType, starKind } from "./typechecker.js";
- * import { tupleType } from "./typechecker.js";
+ * import { freshState, addType, addEnum, checkPattern, variantPattern, varPattern, appType, conType, starKind } from "system-f-omega";
+ * import { tupleType } from "system-f-omega";
  *
  * let state = freshState();
  * state = addType(state, "Bool", starKind).ok;
@@ -526,7 +526,7 @@ export type RecordPattern = { record: [string, Pattern][] };
  *
  * @example Structural variant check
  * ```ts
- * import { freshState, checkPattern, variantPattern, varPattern, variantType, conType } from "./typechecker.js";
+ * import { freshState, checkPattern, variantPattern, varPattern, variantType, conType } from "system-f-omega";
  *
  * const state = freshState();
  * const pat = variantPattern("Left", varPattern("x"));
@@ -537,8 +537,8 @@ export type RecordPattern = { record: [string, Pattern][] };
  *
  * @example Match inference
  * ```ts
- * import { freshState, addType, addEnum, inferType, matchTerm, variantPattern, varPattern, conTerm, appType, conType, starKind, showType } from "./typechecker.js";
- * import { tupleType } from "./typechecker.js";
+ * import { freshState, addType, addEnum, inferType, matchTerm, variantPattern, varPattern, conTerm, appType, conType, starKind, showType } from "system-f-omega";
+ * import { tupleType } from "system-f-omega";
  *
  * let state = freshState();
  * state = addType(state, "Int", starKind).ok;
@@ -557,7 +557,7 @@ export type RecordPattern = { record: [string, Pattern][] };
  *
  * @example Failure: Invalid label
  * ```ts
- * import { freshState, addEnum, checkPattern, variantPattern, varPattern, appType, conType, starKind } from "./typechecker.js";
+ * import { freshState, addEnum, checkPattern, variantPattern, varPattern, appType, conType, starKind } from "system-f-omega";
  *
  * let state = freshState();
  * state = addEnum(state, "Option", ["T"], [starKind], [["None", { tuple: [] }]]).ok;
@@ -588,7 +588,7 @@ export type VariantPattern = { variant: { label: string; pattern: Pattern } };
  *
  * @example Construction
  * ```ts
- * import { tuplePattern, varPattern, showPattern } from "./typechecker.js";
+ * import { tuplePattern, varPattern, showPattern } from "system-f-omega";
  *
  * console.log("(a, b):", showPattern(tuplePattern([varPattern("a"), varPattern("b")])));  // "(a, b)"
  * console.log("unit():", showPattern(tuplePattern([])));  // "()"
@@ -596,7 +596,7 @@ export type VariantPattern = { variant: { label: string; pattern: Pattern } };
  *
  * @example Check/bind (flattens nested)
  * ```ts
- * import { freshState, addType, checkPattern, tuplePattern, varPattern, tupleType, conType, starKind } from "./typechecker.js";
+ * import { freshState, addType, checkPattern, tuplePattern, varPattern, tupleType, conType, starKind } from "system-f-omega";
  *
  * let state = freshState();
  * state = addType(state, "Int", starKind).ok;
@@ -616,7 +616,7 @@ export type VariantPattern = { variant: { label: string; pattern: Pattern } };
  *
  * @example Unit pattern (empty)
  * ```ts
- * import { freshState, checkPattern, tuplePattern, tupleType } from "./typechecker.js";
+ * import { freshState, checkPattern, tuplePattern, tupleType } from "system-f-omega";
  *
  * const state = freshState();
  * const unitPat = tuplePattern([]);
@@ -627,7 +627,7 @@ export type VariantPattern = { variant: { label: string; pattern: Pattern } };
  *
  * @example Match inference
  * ```ts
- * import { freshState, addType, inferType, matchTerm, tuplePattern, varPattern, tupleTerm, conTerm, tupleType, conType, starKind, showType } from "./typechecker.js";
+ * import { freshState, addType, inferType, matchTerm, tuplePattern, varPattern, tupleTerm, conTerm, tupleType, conType, starKind, showType } from "system-f-omega";
  *
  * let state = freshState();
  * state = addType(state, "Int", starKind).ok;
@@ -642,7 +642,7 @@ export type VariantPattern = { variant: { label: string; pattern: Pattern } };
  *
  * @example Failure: Length mismatch
  * ```ts
- * import { freshState, addType, checkPattern, tuplePattern, varPattern, tupleType, conType, starKind } from "./typechecker.js";
+ * import { freshState, addType, checkPattern, tuplePattern, varPattern, tupleType, conType, starKind } from "system-f-omega";
  *
  * let state = freshState();
  * state = addType(state, "Int", starKind).ok;
@@ -694,7 +694,7 @@ export type TuplePattern = { tuple: Pattern[] };
  *   varPattern, wildcardPattern, conPattern,
  *   recordPattern, variantPattern, tuplePattern,
  *   showPattern
- * } from "./typechecker.js";
+ * } from "system-f-omega";
  *
  * console.log("x:", showPattern(varPattern("x")));              // "x"
  * console.log("_:", showPattern(wildcardPattern()));            // "_"
@@ -706,7 +706,7 @@ export type TuplePattern = { tuple: Pattern[] };
  *
  * @example Pattern checking + bindings
  * ```ts
- * import { freshState, addType, checkPattern, varPattern, recordPattern, variantPattern, tuplePattern, recordType, variantType, tupleType, conType, starKind } from "./typechecker.js";
+ * import { freshState, addType, checkPattern, varPattern, recordPattern, variantPattern, tuplePattern, recordType, variantType, tupleType, conType, starKind } from "system-f-omega";
  *
  * let state = freshState();
  * state = addType(state, "Int", starKind).ok;
@@ -731,8 +731,8 @@ export type TuplePattern = { tuple: Pattern[] };
  *
  * @example Match inference + exhaustiveness
  * ```ts
- * import { freshState, addType, addEnum, inferType, checkExhaustive, matchTerm, variantPattern, varPattern, conTerm, appType, conType, starKind, showType } from "./typechecker.js";
- * import { tupleType } from "./typechecker.js";
+ * import { freshState, addType, addEnum, inferType, checkExhaustive, matchTerm, variantPattern, varPattern, conTerm, appType, conType, starKind, showType } from "system-f-omega";
+ * import { tupleType } from "system-f-omega";
  *
  * let state = freshState();
  * state = addType(state, "Int", starKind).ok;
@@ -757,7 +757,7 @@ export type TuplePattern = { tuple: Pattern[] };
  *
  * @example Failure cases
  * ```ts
- * import { freshState, addType, addEnum, checkPattern, variantPattern, varPattern, appType, conType, starKind } from "./typechecker.js";
+ * import { freshState, addType, addEnum, checkPattern, variantPattern, varPattern, appType, conType, starKind } from "system-f-omega";
  *
  * let state = freshState();
  * state = addEnum(state, "Option", ["T"], [starKind], [["None", { tuple: [] }]]).ok;
@@ -800,7 +800,7 @@ export type Pattern =
  *
  * @example Construction
  * ```ts
- * import { varType, showType } from "./typechecker.js";
+ * import { varType, showType } from "system-f-omega";
  *
  * console.log("a:", showType(varType("a")));     // "a"
  * console.log("Self:", showType(varType("Self"))); // "Self"
@@ -808,7 +808,7 @@ export type Pattern =
  *
  * @example Polymorphism (bound in forall)
  * ```ts
- * import { forallType, arrowType, varType, starKind, showType } from "./typechecker.js";
+ * import { forallType, arrowType, varType, starKind, showType } from "system-f-omega";
  *
  * const polyId = forallType("a", starKind, arrowType(varType("a"), varType("a")));
  * console.log("∀a.a→a:", showType(polyId));  // "∀a::*. (a → a)"
@@ -816,7 +816,7 @@ export type Pattern =
  *
  * @example HKT usage (free in app)
  * ```ts
- * import { appType, conType, varType, showType } from "./typechecker.js";
+ * import { appType, conType, varType, showType } from "system-f-omega";
  *
  * const listA = appType(conType("List"), varType("a"));
  * console.log("List<a>:", showType(listA));  // "List<a>"
@@ -824,7 +824,7 @@ export type Pattern =
  *
  * @example Inference unification (solved)
  * ```ts
- * import { freshState, inferType, lamTerm, varTerm, unifyTypes, varType, conType, starKind, showType } from "./typechecker.js";
+ * import { freshState, inferType, lamTerm, varTerm, unifyTypes, varType, conType, starKind, showType } from "system-f-omega";
  *
  * let state = freshState();
  * state = addType(state, "Int", starKind).ok;
@@ -857,7 +857,7 @@ export type VarType = { var: string };
  *
  * @example Construction
  * ```ts
- * import { arrowType, conType, varType, showType } from "./typechecker.js";
+ * import { arrowType, conType, varType, showType } from "system-f-omega";
  *
  * console.log("Int→Bool:", showType(arrowType(conType("Int"), conType("Bool"))));  // "(Int → Bool)"
  * console.log("a→b:", showType(arrowType(varType("a"), varType("b"))));          // "(a → b)"
@@ -865,7 +865,7 @@ export type VarType = { var: string };
  *
  * @example Lambda inference
  * ```ts
- * import { freshState, addType, inferType, lamTerm, varTerm, arrowType, conType, varType, starKind, showType } from "./typechecker.js";
+ * import { freshState, addType, inferType, lamTerm, varTerm, arrowType, conType, varType, starKind, showType } from "system-f-omega";
  *
  * let state = freshState();
  * state = addType(state, "Int", starKind).ok;
@@ -876,7 +876,7 @@ export type VarType = { var: string };
  *
  * @example Checking (domain unify)
  * ```ts
- * import { freshState, addType, checkType, lamTerm, varTerm, arrowType, conType, starKind, showType } from "./typechecker.js";
+ * import { freshState, addType, checkType, lamTerm, varTerm, arrowType, conType, starKind, showType } from "system-f-omega";
  *
  * let state = freshState();
  * state = addType(state, "Int", starKind).ok;
@@ -889,7 +889,7 @@ export type VarType = { var: string };
  *
  * @example Bottom domain subtyping
  * ```ts
- * import { freshState, isAssignableTo, neverType, arrowType, conType, showType } from "./typechecker.js";
+ * import { freshState, isAssignableTo, neverType, arrowType, conType, showType } from "system-f-omega";
  *
  * const state = freshState();
  * const bottomFn = arrowType(neverType, conType("Int"));  // ⊥ → Int
@@ -899,7 +899,7 @@ export type VarType = { var: string };
  *
  * @example Unification (structural)
  * ```ts
- * import { freshState, unifyTypes, arrowType, varType, conType, showType } from "./typechecker.js";
+ * import { freshState, unifyTypes, arrowType, varType, conType, showType } from "system-f-omega";
  *
  * const state = freshState();
  * const worklist: Constraint[] = [];
@@ -935,7 +935,7 @@ export type ArrowType = { arrow: { from: Type; to: Type } };
  *
  * @example Construction
  * ```ts
- * import { forallType, varType, arrowType, starKind, showType } from "./typechecker.js";
+ * import { forallType, varType, arrowType, starKind, showType } from "system-f-omega";
  *
  * const polyId = forallType("a", starKind, arrowType(varType("a"), varType("a")));
  * console.log("∀a.a→a:", showType(polyId));  // "∀a::*. (a → a)"
@@ -943,7 +943,7 @@ export type ArrowType = { arrow: { from: Type; to: Type } };
  *
  * @example Tylam inference
  * ```ts
- * import { freshState, inferType, tylamTerm, lamTerm, varTerm, varType, starKind, showType } from "./typechecker.js";
+ * import { freshState, inferType, tylamTerm, lamTerm, varTerm, varType, starKind, showType } from "system-f-omega";
  *
  * const state = freshState();
  * const polyId = tylamTerm("a", starKind, lamTerm("x", varType("a"), varTerm("x")));
@@ -953,7 +953,7 @@ export type ArrowType = { arrow: { from: Type; to: Type } };
  *
  * @example Checking (tylam)
  * ```ts
- * import { freshState, checkType, tylamTerm, lamTerm, varTerm, varType, forallType, arrowType, starKind } from "./typechecker.js";
+ * import { freshState, checkType, tylamTerm, lamTerm, varTerm, varType, forallType, arrowType, starKind } from "system-f-omega";
  *
  * const state = freshState();
  * const polyId = tylamTerm("a", starKind, lamTerm("x", varType("a"), varTerm("x")));
@@ -964,7 +964,7 @@ export type ArrowType = { arrow: { from: Type; to: Type } };
  *
  * @example Instantiation (subsumption)
  * ```ts
- * import { freshState, instantiateType, forallType, arrowType, varType, starKind, conType, showType } from "./typechecker.js";
+ * import { freshState, instantiateType, forallType, arrowType, varType, starKind, conType, showType } from "system-f-omega";
  *
  * const state = freshState();
  * const poly = forallType("a", starKind, arrowType(varType("a"), varType("a")));
@@ -974,7 +974,7 @@ export type ArrowType = { arrow: { from: Type; to: Type } };
  *
  * @example HKT polymorphism
  * ```ts
- * import { forallType, arrowKind, starKind, appType, conType, varType, showType } from "./typechecker.js";
+ * import { forallType, arrowKind, starKind, appType, conType, varType, showType } from "system-f-omega";
  *
  * const listPoly = forallType("F", arrowKind(starKind, starKind), appType(varType("F"), conType("Int")));
  * console.log("∀F.F<Int>:", showType(listPoly));  // "∀F::(* → *). F<Int>"
@@ -1006,7 +1006,7 @@ export type ForallType = { forall: { var: string; kind: Kind; body: Type } };
  *
  * @example Construction (nested spine)
  * ```ts
- * import { appType, conType, showType } from "./typechecker.js";
+ * import { appType, conType, showType } from "system-f-omega";
  *
  * const listInt = appType(conType("List"), conType("Int"));
  * console.log("List<Int>:", showType(listInt));  // "List<Int>"
@@ -1017,7 +1017,7 @@ export type ForallType = { forall: { var: string; kind: Kind; body: Type } };
  *
  * @example Kind checking (HKT)
  * ```ts
- * import { freshState, addType, checkKind, appType, conType, starKind, arrowKind, showKind } from "./typechecker.js";
+ * import { freshState, addType, checkKind, appType, conType, starKind, arrowKind, showKind } from "system-f-omega";
  *
  * let state = freshState();
  * state = addType(state, "List", arrowKind(starKind, starKind)).ok;
@@ -1029,7 +1029,7 @@ export type ForallType = { forall: { var: string; kind: Kind; body: Type } };
  *
  * @example Normalization (beta-reduce)
  * ```ts
- * import { freshState, normalizeType, lamType, appType, varType, starKind, conType, showType } from "./typechecker.js";
+ * import { freshState, normalizeType, lamType, appType, varType, starKind, conType, showType } from "system-f-omega";
  *
  * const state = freshState();
  * const idLam = lamType("t", starKind, varType("t"));
@@ -1040,7 +1040,7 @@ export type ForallType = { forall: { var: string; kind: Kind; body: Type } };
  *
  * @example Unification (spine pairwise)
  * ```ts
- * import { freshState, addType, unifyTypes, appType, conType, varType, starKind } from "./typechecker.js";
+ * import { freshState, addType, unifyTypes, appType, conType, varType, starKind } from "system-f-omega";
  *
  * let state = freshState();
  * state = addType(state, "Either", starKind).ok;
@@ -1057,7 +1057,7 @@ export type ForallType = { forall: { var: string; kind: Kind; body: Type } };
  *
  * @example Spine extraction
  * ```ts
- * import { getSpineArgs, getSpineHead, appType, conType, showType } from "./typechecker.js";
+ * import { getSpineArgs, getSpineHead, appType, conType, showType } from "system-f-omega";
  *
  * const either = appType(appType(conType("Either"), conType("Int")), conType("Bool"));
  * console.log("head:", showType(getSpineHead(either)));  // "Either"
@@ -1091,7 +1091,7 @@ export type AppType = { app: { func: Type; arg: Type } };
  *
  * @example Construction
  * ```ts
- * import { lamType, varType, starKind, showType } from "./typechecker.js";
+ * import { lamType, varType, starKind, showType } from "system-f-omega";
  *
  * const idLam = lamType("α", starKind, varType("α"));
  * console.log("λα.α:", showType(idLam));  // "λα::*. α"
@@ -1099,7 +1099,7 @@ export type AppType = { app: { func: Type; arg: Type } };
  *
  * @example Nested HKT kind
  * ```ts
- * import { lamType, arrowKind, starKind, varType, showType } from "./typechecker.js";
+ * import { lamType, arrowKind, starKind, varType, showType } from "system-f-omega";
  *
  * // λF::(*→*). λa::*. F<a>  ::  (* → *) → * → *
  * const mapLam = lamType("F", arrowKind(starKind, starKind),
@@ -1109,7 +1109,7 @@ export type AppType = { app: { func: Type; arg: Type } };
  *
  * @example Kind checking
  * ```ts
- * import { freshState, checkKind, lamType, arrowKind, starKind, varType, showKind } from "./typechecker.js";
+ * import { freshState, checkKind, lamType, arrowKind, starKind, varType, showKind } from "system-f-omega";
  *
  * const state = freshState();
  * const listLam = lamType("t", starKind, varType("List"));  // Dummy body
@@ -1119,7 +1119,7 @@ export type AppType = { app: { func: Type; arg: Type } };
  *
  * @example Beta-reduction (normalize)
  * ```ts
- * import { freshState, normalizeType, lamType, appType, varType, starKind, conType, showType } from "./typechecker.js";
+ * import { freshState, normalizeType, lamType, appType, varType, starKind, conType, showType } from "system-f-omega";
  *
  * const state = freshState();
  * const idLam = lamType("α", starKind, varType("α"));
@@ -1152,7 +1152,7 @@ export type LamType = { lam: { var: string; kind: Kind; body: Type } };
  *
  * @example Construction
  * ```ts
- * import { conType, showType } from "./typechecker.js";
+ * import { conType, showType } from "system-f-omega";
  *
  * console.log("Int:", showType(conType("Int")));      // "Int"
  * console.log("List:", showType(conType("List")));    // "List"
@@ -1160,7 +1160,7 @@ export type LamType = { lam: { var: string; kind: Kind; body: Type } };
  *
  * @example Context binding (addType)
  * ```ts
- * import { freshState, addType, starKind, arrowKind, showContext } from "./typechecker.js";
+ * import { freshState, addType, starKind, arrowKind, showContext } from "system-f-omega";
  *
  * let state = freshState();
  * state = addType(state, "Int", starKind).ok;                    // Primitive
@@ -1171,7 +1171,7 @@ export type LamType = { lam: { var: string; kind: Kind; body: Type } };
  *
  * @example Kind checking
  * ```ts
- * import { freshState, addType, checkKind, conType, starKind, arrowKind } from "./typechecker.js";
+ * import { freshState, addType, checkKind, conType, starKind, arrowKind } from "system-f-omega";
  *
  * let state = freshState();
  * state = addType(state, "List", arrowKind(starKind, starKind)).ok;
@@ -1182,7 +1182,7 @@ export type LamType = { lam: { var: string; kind: Kind; body: Type } };
  *
  * @example HKT application
  * ```ts
- * import { freshState, addType, checkKind, appType, conType, starKind, arrowKind, showKind } from "./typechecker.js";
+ * import { freshState, addType, checkKind, appType, conType, starKind, arrowKind, showKind } from "system-f-omega";
  *
  * let state = freshState();
  * state = addType(state, "List", arrowKind(starKind, starKind)).ok;
@@ -1195,7 +1195,7 @@ export type LamType = { lam: { var: string; kind: Kind; body: Type } };
  *
  * @example Alias expansion
  * ```ts
- * import { freshState, addType, addTypeAlias, normalizeType, appType, conType, varType, starKind, showType } from "./typechecker.js";
+ * import { freshState, addType, addTypeAlias, normalizeType, appType, conType, varType, starKind, showType } from "system-f-omega";
  *
  * let state = freshState();
  * state = addType(state, "Int", starKind).ok;
@@ -1231,7 +1231,7 @@ export type ConType = { con: string };
  *
  * @example Construction
  * ```ts
- * import { recordType, conType, showType } from "./typechecker.js";
+ * import { recordType, conType, showType } from "system-f-omega";
  *
  * const person = recordType([
  *   ["name", conType("String")],
@@ -1242,7 +1242,7 @@ export type ConType = { con: string };
  *
  * @example Inference (recordTerm)
  * ```ts
- * import { freshState, addType, inferType, recordTerm, conTerm, recordType, conType, starKind, showType } from "./typechecker.js";
+ * import { freshState, addType, inferType, recordTerm, conTerm, recordType, conType, starKind, showType } from "system-f-omega";
  *
  * let state = freshState();
  * state = addType(state, "Int", starKind).ok;
@@ -1258,7 +1258,7 @@ export type ConType = { con: string };
  *
  * @example Width subtyping
  * ```ts
- * import { freshState, isAssignableTo, recordType, conType } from "./typechecker.js";
+ * import { freshState, isAssignableTo, recordType, conType } from "system-f-omega";
  *
  * const state = freshState();
  * const narrow = recordType([["x", conType("Int")]]);
@@ -1271,7 +1271,7 @@ export type ConType = { con: string };
  *
  * @example Projection
  * ```ts
- * import { freshState, addType, inferType, recordTerm, projectTerm, conTerm, recordType, conType, starKind, showType } from "./typechecker.js";
+ * import { freshState, addType, inferType, recordTerm, projectTerm, conTerm, recordType, conType, starKind, showType } from "system-f-omega";
  *
  * let state = freshState();
  * state = addType(state, "Int", starKind).ok;
@@ -1308,7 +1308,7 @@ export type RecordType = { record: [string, Type][] };
  *
  * @example Construction
  * ```ts
- * import { variantType, conType, showType } from "./typechecker.js";
+ * import { variantType, conType, showType } from "system-f-omega";
  *
  * const either = variantType([
  *   ["Left", conType("Int")],
@@ -1319,7 +1319,7 @@ export type RecordType = { record: [string, Type][] };
  *
  * @example Empty variant (bottom)
  * ```ts
- * import { freshState, isBottom, variantType } from "./typechecker.js";
+ * import { freshState, isBottom, variantType } from "system-f-omega";
  *
  * const state = freshState();
  * const empty = variantType([]);
@@ -1328,7 +1328,7 @@ export type RecordType = { record: [string, Type][] };
  *
  * @example Injection inference
  * ```ts
- * import { freshState, inferType, injectTerm, conTerm, variantType, conType, showType } from "./typechecker.js";
+ * import { freshState, inferType, injectTerm, conTerm, variantType, conType, showType } from "system-f-omega";
  *
  * const state = freshState();
  * const leftVal = injectTerm("Left", conTerm("42", conType("Int")), variantType([["Left", conType("Int")]]));
@@ -1338,7 +1338,7 @@ export type RecordType = { record: [string, Type][] };
  *
  * @example Match inference
  * ```ts
- * import { freshState, inferType, matchTerm, variantPattern, varPattern, injectTerm, conTerm, variantType, conType, showType } from "./typechecker.js";
+ * import { freshState, inferType, matchTerm, variantPattern, varPattern, injectTerm, conTerm, variantType, conType, showType } from "system-f-omega";
  *
  * const state = freshState();
  * const scrut = injectTerm("Left", conTerm("42", conType("Int")), variantType([
@@ -1381,7 +1381,7 @@ export type VariantType = { variant: [string, Type][] };
  *
  * @example Construction
  * ```ts
- * import { muType, varType, showType } from "./typechecker.js";
+ * import { muType, varType, showType } from "system-f-omega";
  *
  * const degenerate = muType("X", varType("X"));
  * console.log("μX.X:", showType(degenerate));  // "μX.X"
@@ -1389,7 +1389,7 @@ export type VariantType = { variant: [string, Type][] };
  *
  * @example Recursive list
  * ```ts
- * import { muType, tupleType, conType, varType, showType } from "./typechecker.js";
+ * import { muType, tupleType, conType, varType, showType } from "system-f-omega";
  *
  * const listMu = muType("L", tupleType([conType("Int"), varType("L")]));
  * console.log("μL.(Int,L):", showType(listMu));  // "μL.(Int, L)"
@@ -1397,8 +1397,8 @@ export type VariantType = { variant: [string, Type][] };
  *
  * @example Enum expansion (recursive → μ)
  * ```ts
- * import { freshState, addType, addEnum, normalizeType, appType, conType, starKind, showType } from "./typechecker.js";
- * import { tupleType, varType } from "./typechecker.js";
+ * import { freshState, addType, addEnum, normalizeType, appType, conType, starKind, showType } from "system-f-omega";
+ * import { tupleType, varType } from "system-f-omega";
  *
  * let state = freshState();
  * state = addType(state, "Int", starKind).ok;
@@ -1414,7 +1414,7 @@ export type VariantType = { variant: [string, Type][] };
  *
  * @example Fold/unfold typing
  * ```ts
- * import { freshState, addEnum, inferType, foldTerm, unfoldTerm, injectTerm, appType, conType, starKind, tupleType, showType } from "./typechecker.js";
+ * import { freshState, addEnum, inferType, foldTerm, unfoldTerm, injectTerm, appType, conType, starKind, tupleType, showType } from "system-f-omega";
  *
  * let state = freshState();
  * state = addEnum(state, "List", ["T"], [starKind], [
@@ -1457,7 +1457,7 @@ export type MuType = { mu: { var: string; body: Type } };
  *
  * @example Construction
  * ```ts
- * import { tupleType, conType, showType } from "./typechecker.js";
+ * import { tupleType, conType, showType } from "system-f-omega";
  *
  * console.log("unit ():", showType(tupleType([])));                    // "()"
  * console.log("pair (Int,Bool):", showType(tupleType([conType("Int"), conType("Bool")])));  // "(Int, Bool)"
@@ -1465,7 +1465,7 @@ export type MuType = { mu: { var: string; body: Type } };
  *
  * @example Nested tuples
  * ```ts
- * import { tupleType, conType, showType } from "./typechecker.js";
+ * import { tupleType, conType, showType } from "system-f-omega";
  *
  * const nested = tupleType([
  *   conType("Int"),
@@ -1476,7 +1476,7 @@ export type MuType = { mu: { var: string; body: Type } };
  *
  * @example Inference (tupleTerm)
  * ```ts
- * import { freshState, addType, inferType, tupleTerm, conTerm, tupleType, conType, starKind, showType } from "./typechecker.js";
+ * import { freshState, addType, inferType, tupleTerm, conTerm, tupleType, conType, starKind, showType } from "system-f-omega";
  *
  * let state = freshState();
  * state = addType(state, "Int", starKind).ok;
@@ -1492,7 +1492,7 @@ export type MuType = { mu: { var: string; body: Type } };
  *
  * @example Projection
  * ```ts
- * import { freshState, addType, inferType, tupleTerm, tupleProjectTerm, conTerm, tupleType, conType, starKind, showType } from "./typechecker.js";
+ * import { freshState, addType, inferType, tupleTerm, tupleProjectTerm, conTerm, tupleType, conType, starKind, showType } from "system-f-omega";
  *
  * let state = freshState();
  * state = addType(state, "Int", starKind).ok;
@@ -1531,14 +1531,14 @@ export type TupleType = { tuple: Type[] };
  *
  * @example Construction
  * ```ts
- * import { neverType, showType } from "./typechecker.js";
+ * import { neverType, showType } from "system-f-omega";
  *
  * console.log("⊥:", showType(neverType));  // "⊥"
  * ```
  *
  * @example Subtyping (⊥ <: anything)
  * ```ts
- * import { freshState, isAssignableTo, neverType, conType } from "./typechecker.js";
+ * import { freshState, isAssignableTo, neverType, conType } from "system-f-omega";
  *
  * const state = freshState();
  * console.log("⊥ <: Int:", isAssignableTo(state, neverType, conType("Int")));  // true
@@ -1547,7 +1547,7 @@ export type TupleType = { tuple: Type[] };
  *
  * @example Unification (asymmetric)
  * ```ts
- * import { freshState, unifyTypes, neverType, conType } from "./typechecker.js";
+ * import { freshState, unifyTypes, neverType, conType } from "system-f-omega";
  *
  * const state = freshState();
  * const subst = new Map<string, Type>();
@@ -1561,7 +1561,7 @@ export type TupleType = { tuple: Type[] };
  *
  * @example Normalization (empty variant → ⊥)
  * ```ts
- * import { freshState, normalizeType, variantType, isBottom } from "./typechecker.js";
+ * import { freshState, normalizeType, variantType, isBottom } from "system-f-omega";
  *
  * const state = freshState();
  * const emptyVar = variantType([]);
@@ -1571,7 +1571,7 @@ export type TupleType = { tuple: Type[] };
  *
  * @example Bottom-domain functions
  * ```ts
- * import { freshState, isAssignableTo, neverType, arrowType, conType } from "./typechecker.js";
+ * import { freshState, isAssignableTo, neverType, arrowType, conType } from "system-f-omega";
  *
  * const state = freshState();
  * const bottomFn = arrowType(neverType, conType("Int"));  // ⊥ → Int
@@ -1609,8 +1609,8 @@ export type NeverType = { never: null };
  *
  * @example Fresh meta-var
  * ```ts
- * import { freshState, freshMetaVar, showType } from "./typechecker.js";
- * import { starKind } from "./typechecker.js";
+ * import { freshState, freshMetaVar, showType } from "system-f-omega";
+ * import { starKind } from "system-f-omega";
  *
  * const state = freshState();
  * const meta = freshMetaVar(state.meta, starKind);
@@ -1620,7 +1620,7 @@ export type NeverType = { never: null };
  *
  * @example Solving (unification)
  * ```ts
- * import { freshState, freshMetaVar, solveMetaVar, conType } from "./typechecker.js";
+ * import { freshState, freshMetaVar, solveMetaVar, conType } from "system-f-omega";
  *
  * const state = freshState();
  * const meta = freshMetaVar(state.meta);
@@ -1631,7 +1631,7 @@ export type NeverType = { never: null };
  *
  * @example Flex-rigid unification
  * ```ts
- * import { freshState, freshMetaVar, unifyTypes, arrowType, conType } from "./typechecker.js";
+ * import { freshState, freshMetaVar, unifyTypes, arrowType, conType } from "system-f-omega";
  *
  * const state = freshState();
  * const meta = freshMetaVar(state.meta);
@@ -1643,7 +1643,7 @@ export type NeverType = { never: null };
  *
  * @example Resolution (applySubstitution)
  * ```ts
- * import { freshState, freshMetaVar, applySubstitution, conType, arrowType } from "./typechecker.js";
+ * import { freshState, freshMetaVar, applySubstitution, conType, arrowType } from "system-f-omega";
  *
  * const state = freshState();
  * const meta = freshMetaVar(state.meta);
@@ -1654,7 +1654,7 @@ export type NeverType = { never: null };
  *
  * @example Cycle rejection (occurs check)
  * ```ts
- * import { freshState, freshMetaVar, occursCheckEvar, arrowType, varType } from "./typechecker.js";
+ * import { freshState, freshMetaVar, occursCheckEvar, arrowType, varType } from "system-f-omega";
  *
  * const state = freshState();
  * const meta = freshMetaVar(state.meta);
@@ -1720,8 +1720,8 @@ export type MetaType = { evar: string };
  *   varType, arrowType, forallType, appType, lamType, conType,
  *   recordType, variantType, muType, tupleType, neverType,
  *   showType
- * } from "./typechecker.js";
- * import { starKind } from "./typechecker.js";
+ * } from "system-f-omega";
+ * import { starKind } from "system-f-omega";
  *
  * console.log("α:", showType(varType("a")));                    // "a"
  * console.log("→:", showType(arrowType(conType("Int"), conType("Bool")))); // "(Int → Bool)"
@@ -1737,8 +1737,8 @@ export type MetaType = { evar: string };
  *
  * @example Inference (λ + poly + data + traits)
  * ```ts
- * import { freshState, addType, addTraitDef, traitImplBinding, dictTerm, inferType, lamTerm, tylamTerm, recordTerm, injectTerm, traitLamTerm, showType, starKind } from "./typechecker.js";
- * import { conType, varType, arrowType, conTerm, lamTerm as tlam } from "./typechecker.js";
+ * import { freshState, addType, addTraitDef, traitImplBinding, dictTerm, inferType, lamTerm, tylamTerm, recordTerm, injectTerm, traitLamTerm, showType, starKind } from "system-f-omega";
+ * import { conType, varType, arrowType, conTerm, lamTerm as tlam } from "system-f-omega";
  *
  * let state = freshState();
  * state = addType(state, "Int", starKind).ok;
@@ -1765,8 +1765,8 @@ export type MetaType = { evar: string };
  *
  * @example Key operations
  * ```ts
- * import { freshState, normalizeType, checkKind, unifyTypes, subsumes, isBottom, showType } from "./typechecker.js";
- * import { conType, appType, neverType, starKind } from "./typechecker.js";
+ * import { freshState, normalizeType, checkKind, unifyTypes, subsumes, isBottom, showType } from "system-f-omega";
+ * import { conType, appType, neverType, starKind } from "system-f-omega";
  *
  * const state = freshState();
  * state = addType(state, "List", starKind).ok;
@@ -1817,14 +1817,14 @@ export type Type =
  *
  * @example Construction
  * ```ts
- * import { varTerm, showTerm } from "./typechecker.js";
+ * import { varTerm, showTerm } from "system-f-omega";
  *
  * console.log("x:", showTerm(varTerm("x")));  // "x"
  * ```
  *
  * @example Inference (lookup)
  * ```ts
- * import { freshState, addType, addTerm, inferType, varTerm, conTerm, conType, starKind, showType } from "./typechecker.js";
+ * import { freshState, addType, addTerm, inferType, varTerm, conTerm, conType, starKind, showType } from "system-f-omega";
  *
  * let state = freshState();
  * state = addType(state, "Int", starKind).ok;
@@ -1836,7 +1836,7 @@ export type Type =
  *
  * @example Dict lookup
  * ```ts
- * import { freshState, addDict, dictTerm, inferType, varTerm, conType, showType } from "./typechecker.js";
+ * import { freshState, addDict, dictTerm, inferType, varTerm, conType, showType } from "system-f-omega";
  *
  * let state = freshState();
  * state = addDict(state, "eqInt", dictTerm("Eq", conType("Int"), [])).ok;
@@ -1847,7 +1847,7 @@ export type Type =
  *
  * @example Failure: Unbound
  * ```ts
- * import { freshState, inferType, varTerm, showError } from "./typechecker.js";
+ * import { freshState, inferType, varTerm, showError } from "system-f-omega";
  *
  * const state = freshState();
  * const result = inferType(state, varTerm("missing"));
@@ -1878,7 +1878,7 @@ export type VarTerm = { var: string };
  *
  * @example Construction
  * ```ts
- * import { lamTerm, varTerm, conType, showTerm } from "./typechecker.js";
+ * import { lamTerm, varTerm, conType, showTerm } from "system-f-omega";
  *
  * const id = lamTerm("x", conType("Int"), varTerm("x"));
  * console.log("λx:Int.x:", showTerm(id));  // "λx:Int. x"
@@ -1886,7 +1886,7 @@ export type VarTerm = { var: string };
  *
  * @example Inference
  * ```ts
- * import { freshState, addType, inferType, lamTerm, varTerm, conType, starKind, showType } from "./typechecker.js";
+ * import { freshState, addType, inferType, lamTerm, varTerm, conType, starKind, showType } from "system-f-omega";
  *
  * let state = freshState();
  * state = addType(state, "Int", starKind).ok;
@@ -1897,7 +1897,7 @@ export type VarTerm = { var: string };
  *
  * @example Checking (domain unification)
  * ```ts
- * import { freshState, addType, checkType, lamTerm, varTerm, arrowType, conType, starKind, showType } from "./typechecker.js";
+ * import { freshState, addType, checkType, lamTerm, varTerm, arrowType, conType, starKind, showType } from "system-f-omega";
  *
  * let state = freshState();
  * state = addType(state, "Int", starKind).ok;
@@ -1910,7 +1910,7 @@ export type VarTerm = { var: string };
  *
  * @example Bottom domain (meta unification)
  * ```ts
- * import { freshState, inferType, lamTerm, varTerm, neverType, showType } from "./typechecker.js";
+ * import { freshState, inferType, lamTerm, varTerm, neverType, showType } from "system-f-omega";
  *
  * const state = freshState();
  * const bottomLam = lamTerm("x", neverType, varTerm("x"));  // Domain ⊥
@@ -1943,7 +1943,7 @@ export type LamTerm = { lam: { arg: string; type: Type; body: Term } };
  *
  * @example Construction
  * ```ts
- * import { appTerm, varTerm, showTerm } from "./typechecker.js";
+ * import { appTerm, varTerm, showTerm } from "system-f-omega";
  *
  * const app = appTerm(varTerm("f"), varTerm("x"));
  * console.log("(f x):", showTerm(app));  // "(f x)"
@@ -1951,7 +1951,7 @@ export type LamTerm = { lam: { arg: string; type: Type; body: Term } };
  *
  * @example Lambda application
  * ```ts
- * import { freshState, addType, addTerm, inferType, appTerm, varTerm, lamTerm, conTerm, conType, starKind, showType } from "./typechecker.js";
+ * import { freshState, addType, addTerm, inferType, appTerm, varTerm, lamTerm, conTerm, conType, starKind, showType } from "system-f-omega";
  *
  * let state = freshState();
  * state = addType(state, "Int", starKind).ok;
@@ -1964,7 +1964,7 @@ export type LamTerm = { lam: { arg: string; type: Type; body: Term } };
  *
  * @example Polymorphic instantiation
  * ```ts
- * import { freshState, addType, inferType, appTerm, varTerm, tylamTerm, lamTerm, conType, starKind, showType } from "./typechecker.js";
+ * import { freshState, addType, inferType, appTerm, varTerm, tylamTerm, lamTerm, conType, starKind, showType } from "system-f-omega";
  *
  * let state = freshState();
  * state = addType(state, "Int", starKind).ok;
@@ -1978,7 +1978,7 @@ export type LamTerm = { lam: { arg: string; type: Type; body: Term } };
  *
  * @example Failure: Not a function
  * ```ts
- * import { freshState, addType, inferType, appTerm, varTerm, conTerm, conType, starKind, showError } from "./typechecker.js";
+ * import { freshState, addType, inferType, appTerm, varTerm, conTerm, conType, starKind, showError } from "system-f-omega";
  *
  * let state = freshState();
  * state = addType(state, "Int", starKind).ok;
@@ -2012,7 +2012,7 @@ export type AppTerm = { app: { callee: Term; arg: Term } };
  *
  * @example Construction
  * ```ts
- * import { tylamTerm, starKind, showTerm } from "./typechecker.js";
+ * import { tylamTerm, starKind, showTerm } from "system-f-omega";
  *
  * const polyId = tylamTerm("a", starKind, { var: "x" });
  * console.log("Λa.x:", showTerm(polyId));  // "Λa::*. x"
@@ -2020,7 +2020,7 @@ export type AppTerm = { app: { callee: Term; arg: Term } };
  *
  * @example Inference (→ forall)
  * ```ts
- * import { freshState, inferType, tylamTerm, lamTerm, varTerm, varType, starKind, showType } from "./typechecker.js";
+ * import { freshState, inferType, tylamTerm, lamTerm, varTerm, varType, starKind, showType } from "system-f-omega";
  *
  * const state = freshState();
  * const polyId = tylamTerm("a", starKind, lamTerm("x", varType("a"), varTerm("x")));
@@ -2030,7 +2030,7 @@ export type AppTerm = { app: { callee: Term; arg: Term } };
  *
  * @example Checking (vs forall)
  * ```ts
- * import { freshState, checkType, tylamTerm, lamTerm, varTerm, varType, forallType, arrowType, starKind } from "./typechecker.js";
+ * import { freshState, checkType, tylamTerm, lamTerm, varTerm, varType, forallType, arrowType, starKind } from "system-f-omega";
  *
  * const state = freshState();
  * const polyId = tylamTerm("a", starKind, lamTerm("x", varType("a"), varTerm("x")));
@@ -2041,7 +2041,7 @@ export type AppTerm = { app: { callee: Term; arg: Term } };
  *
  * @example HKT type lambda
  * ```ts
- * import { freshState, inferType, tylamTerm, arrowKind, starKind, appType, varType, showType } from "./typechecker.js";
+ * import { freshState, inferType, tylamTerm, arrowKind, starKind, appType, varType, showType } from "system-f-omega";
  *
  * const state = freshState();
  * const hktLam = tylamTerm("F", arrowKind(starKind, starKind), appType(varType("F"), varType("Int")));
@@ -2074,8 +2074,8 @@ export type TyLamTerm = { tylam: { var: string; kind: Kind; body: Term } };
  *
  * @example Construction
  * ```ts
- * import { tyappTerm, showTerm } from "./typechecker.js";
- * import { conType } from "./typechecker.js";
+ * import { tyappTerm, showTerm } from "system-f-omega";
+ * import { conType } from "system-f-omega";
  *
  * const app = tyappTerm({ var: "polyId" }, conType("Int"));
  * console.log("polyId[Int]:", showTerm(app));  // "polyId [Int]"
@@ -2083,7 +2083,7 @@ export type TyLamTerm = { tylam: { var: string; kind: Kind; body: Term } };
  *
  * @example Inference
  * ```ts
- * import { freshState, addType, inferType, tyappTerm, tylamTerm, lamTerm, varTerm, varType, conType, starKind, showType } from "./typechecker.js";
+ * import { freshState, addType, inferType, tyappTerm, tylamTerm, lamTerm, varTerm, varType, conType, starKind, showType } from "system-f-omega";
  *
  * let state = freshState();
  * state = addType(state, "Int", starKind).ok;
@@ -2097,7 +2097,7 @@ export type TyLamTerm = { tylam: { var: string; kind: Kind; body: Term } };
  *
  * @example Checking
  * ```ts
- * import { freshState, checkType, tyappTerm, tylamTerm, lamTerm, varTerm, varType, arrowType, conType, starKind } from "./typechecker.js";
+ * import { freshState, checkType, tyappTerm, tylamTerm, lamTerm, varTerm, varType, arrowType, conType, starKind } from "system-f-omega";
  *
  * const state = freshState();
  * const polyId = tylamTerm("a", starKind, lamTerm("x", varType("a"), varTerm("x")));
@@ -2109,7 +2109,7 @@ export type TyLamTerm = { tylam: { var: string; kind: Kind; body: Term } };
  *
  * @example Failure: Not forall
  * ```ts
- * import { freshState, addType, inferType, tyappTerm, conTerm, conType, starKind, showError } from "./typechecker.js";
+ * import { freshState, addType, inferType, tyappTerm, conTerm, conType, starKind, showError } from "system-f-omega";
  *
  * let state = freshState();
  * state = addType(state, "Int", starKind).ok;
@@ -2142,7 +2142,7 @@ export type TyAppTerm = { tyapp: { term: Term; type: Type } };
  *
  * @example Construction
  * ```ts
- * import { conTerm, conType, showTerm } from "./typechecker.js";
+ * import { conTerm, conType, showTerm } from "system-f-omega";
  *
  * const num = conTerm("42", conType("Int"));
  * console.log("42:", showTerm(num));  // "42"
@@ -2150,7 +2150,7 @@ export type TyAppTerm = { tyapp: { term: Term; type: Type } };
  *
  * @example Inference
  * ```ts
- * import { freshState, addType, inferType, conTerm, conType, starKind, showType } from "./typechecker.js";
+ * import { freshState, addType, inferType, conTerm, conType, starKind, showType } from "system-f-omega";
  *
  * let state = freshState();
  * state = addType(state, "Int", starKind).ok;
@@ -2161,7 +2161,7 @@ export type TyAppTerm = { tyapp: { term: Term; type: Type } };
  *
  * @example Record field
  * ```ts
- * import { freshState, addType, inferType, recordTerm, conTerm, conType, starKind, showType } from "./typechecker.js";
+ * import { freshState, addType, inferType, recordTerm, conTerm, conType, starKind, showType } from "system-f-omega";
  *
  * let state = freshState();
  * state = addType(state, "Int", starKind).ok;
@@ -2172,8 +2172,8 @@ export type TyAppTerm = { tyapp: { term: Term; type: Type } };
  *
  * @example Enum injection payload
  * ```ts
- * import { freshState, addType, addEnum, inferType, injectTerm, conTerm, appType, conType, starKind, showType } from "./typechecker.js";
- * import { tupleType } from "./typechecker.js";
+ * import { freshState, addType, addEnum, inferType, injectTerm, conTerm, appType, conType, starKind, showType } from "system-f-omega";
+ * import { tupleType } from "system-f-omega";
  *
  * let state = freshState();
  * state = addType(state, "Int", starKind).ok;
@@ -2209,7 +2209,7 @@ export type ConTerm = { con: { name: string; type: Type } };
  *
  * @example Construction
  * ```ts
- * import { letTerm, conTerm, varTerm, conType, showTerm } from "./typechecker.js";
+ * import { letTerm, conTerm, varTerm, conType, showTerm } from "system-f-omega";
  *
  * const letX = letTerm("x", conTerm("42", conType("Int")), varTerm("x"));
  * console.log("let x=42 in x:", showTerm(letX));  // "let x = 42 in x"
@@ -2217,7 +2217,7 @@ export type ConTerm = { con: { name: string; type: Type } };
  *
  * @example Inference
  * ```ts
- * import { freshState, addType, inferType, letTerm, conTerm, varTerm, conType, starKind, showType } from "./typechecker.js";
+ * import { freshState, addType, inferType, letTerm, conTerm, varTerm, conType, starKind, showType } from "system-f-omega";
  *
  * let state = freshState();
  * state = addType(state, "Int", starKind).ok;
@@ -2228,7 +2228,7 @@ export type ConTerm = { con: { name: string; type: Type } };
  *
  * @example Nested let
  * ```ts
- * import { freshState, addType, inferType, letTerm, conTerm, appTerm, varTerm, conType, starKind, showType } from "./typechecker.js";
+ * import { freshState, addType, inferType, letTerm, conTerm, appTerm, varTerm, conType, starKind, showType } from "system-f-omega";
  *
  * let state = freshState();
  * state = addType(state, "Int", starKind).ok;
@@ -2257,7 +2257,7 @@ export type LetTerm = { let: { name: string; value: Term; body: Term } };
  *
  * @example Construction
  * ```ts
- * import { recordTerm, conTerm, conType, showTerm } from "./typechecker.js";
+ * import { recordTerm, conTerm, conType, showTerm } from "system-f-omega";
  *
  * const person = recordTerm([
  *   ["name", conTerm("Alice", conType("String"))],
@@ -2268,7 +2268,7 @@ export type LetTerm = { let: { name: string; value: Term; body: Term } };
  *
  * @example Inference
  * ```ts
- * import { freshState, addType, inferType, recordTerm, conTerm, conType, starKind, showType } from "./typechecker.js";
+ * import { freshState, addType, inferType, recordTerm, conTerm, conType, starKind, showType } from "system-f-omega";
  *
  * let state = freshState();
  * state = addType(state, "Int", starKind).ok;
@@ -2283,7 +2283,7 @@ export type LetTerm = { let: { name: string; value: Term; body: Term } };
  *
  * @example Projection
  * ```ts
- * import { freshState, addType, inferType, recordTerm, projectTerm, conTerm, conType, starKind, showType } from "./typechecker.js";
+ * import { freshState, addType, inferType, recordTerm, projectTerm, conTerm, conType, starKind, showType } from "system-f-omega";
  *
  * let state = freshState();
  * state = addType(state, "Int", starKind).ok;
@@ -2315,7 +2315,7 @@ export type RecordTerm = { record: [string, Term][] };
  *
  * @example Construction
  * ```ts
- * import { projectTerm, recordTerm, conTerm, conType, showTerm } from "./typechecker.js";
+ * import { projectTerm, recordTerm, conTerm, conType, showTerm } from "system-f-omega";
  *
  * const rec = recordTerm([["x", conTerm("1", conType("Int"))]]);
  * const proj = projectTerm(rec, "x");
@@ -2324,7 +2324,7 @@ export type RecordTerm = { record: [string, Term][] };
  *
  * @example Inference
  * ```ts
- * import { freshState, addType, inferType, recordTerm, projectTerm, conTerm, conType, starKind, showType } from "./typechecker.js";
+ * import { freshState, addType, inferType, recordTerm, projectTerm, conTerm, conType, starKind, showType } from "system-f-omega";
  *
  * let state = freshState();
  * state = addType(state, "Int", starKind).ok;
@@ -2341,7 +2341,7 @@ export type RecordTerm = { record: [string, Term][] };
  *
  * @example Failure: Missing field
  * ```ts
- * import { freshState, addType, inferType, recordTerm, projectTerm, conTerm, conType, starKind, showError } from "./typechecker.js";
+ * import { freshState, addType, inferType, recordTerm, projectTerm, conTerm, conType, starKind, showError } from "system-f-omega";
  *
  * let state = freshState();
  * state = addType(state, "Int", starKind).ok;
@@ -2377,7 +2377,7 @@ export type ProjectTerm = { project: { record: Term; label: string } };
  *
  * @example Construction
  * ```ts
- * import { injectTerm, conTerm, conType, showTerm } from "./typechecker.js";
+ * import { injectTerm, conTerm, conType, showTerm } from "system-f-omega";
  *
  * const leftVal = injectTerm("Left", conTerm("42", conType("Int")), { variant: [["Left", { con: "Int" }]] });
  * console.log("<Left=42>:", showTerm(leftVal));  // "<Left=42> as <Left: Int | ...>"
@@ -2385,8 +2385,8 @@ export type ProjectTerm = { project: { record: Term; label: string } };
  *
  * @example Nominal enum inference
  * ```ts
- * import { freshState, addType, addEnum, inferType, injectTerm, conTerm, appType, conType, starKind, showType } from "./typechecker.js";
- * import { tupleType } from "./typechecker.js";
+ * import { freshState, addType, addEnum, inferType, injectTerm, conTerm, appType, conType, starKind, showType } from "system-f-omega";
+ * import { tupleType } from "system-f-omega";
  *
  * let state = freshState();
  * state = addType(state, "Int", starKind).ok;
@@ -2402,8 +2402,8 @@ export type ProjectTerm = { project: { record: Term; label: string } };
  *
  * @example Unit variant (None)
  * ```ts
- * import { freshState, addEnum, inferType, injectTerm, appType, conType, starKind, showType } from "./typechecker.js";
- * import { tupleType } from "./typechecker.js";
+ * import { freshState, addEnum, inferType, injectTerm, appType, conType, starKind, showType } from "system-f-omega";
+ * import { tupleType } from "system-f-omega";
  *
  * let state = freshState();
  * state = addEnum(state, "Option", ["T"], [starKind], [["None", tupleType([])]]).ok;
@@ -2415,7 +2415,7 @@ export type ProjectTerm = { project: { record: Term; label: string } };
  *
  * @example Failure: Invalid label
  * ```ts
- * import { freshState, addEnum, inferType, injectTerm, appType, conType, starKind, showError } from "./typechecker.js";
+ * import { freshState, addEnum, inferType, injectTerm, appType, conType, starKind, showError } from "system-f-omega";
  *
  * let state = freshState();
  * state = addEnum(state, "Option", ["T"], [starKind], [["None", { tuple: [] }]]).ok;
@@ -2452,7 +2452,7 @@ export type InjectTerm = {
  *
  * @example Construction
  * ```ts
- * import { matchTerm, varPattern, showTerm } from "./typechecker.js";
+ * import { matchTerm, varPattern, showTerm } from "system-f-omega";
  *
  * const match = matchTerm({ var: "xs" }, [[varPattern("x"), { var: "x" }]]);
  * console.log("match xs { x => x }:", showTerm(match));  // "match xs { x => x }"
@@ -2460,8 +2460,8 @@ export type InjectTerm = {
  *
  * @example Enum inference (Option)
  * ```ts
- * import { freshState, addType, addEnum, inferType, matchTerm, variantPattern, varPattern, conTerm, appType, conType, starKind, showType } from "./typechecker.js";
- * import { tupleType } from "./typechecker.js";
+ * import { freshState, addType, addEnum, inferType, matchTerm, variantPattern, varPattern, conTerm, appType, conType, starKind, showType } from "system-f-omega";
+ * import { tupleType } from "system-f-omega";
  *
  * let state = freshState();
  * state = addType(state, "Int", starKind).ok;
@@ -2481,7 +2481,7 @@ export type InjectTerm = {
  *
  * @example Record/tuple destructuring
  * ```ts
- * import { freshState, addType, inferType, matchTerm, recordPattern, tuplePattern, varPattern, recordTerm, tupleTerm, conTerm, conType, starKind, showType } from "./typechecker.js";
+ * import { freshState, addType, inferType, matchTerm, recordPattern, tuplePattern, varPattern, recordTerm, tupleTerm, conTerm, conType, starKind, showType } from "system-f-omega";
  *
  * let state = freshState();
  * state = addType(state, "Int", starKind).ok;
@@ -2497,8 +2497,8 @@ export type InjectTerm = {
  *
  * @example Exhaustiveness check
  * ```ts
- * import { freshState, addEnum, checkExhaustive, variantPattern, varPattern, appType, conType, starKind } from "./typechecker.js";
- * import { tupleType } from "./typechecker.js";
+ * import { freshState, addEnum, checkExhaustive, variantPattern, varPattern, appType, conType, starKind } from "system-f-omega";
+ * import { tupleType } from "system-f-omega";
  *
  * let state = freshState();
  * state = addEnum(state, "Option", ["T"], [starKind], [
@@ -2535,8 +2535,8 @@ export type MatchTerm = {
  *
  * @example Construction
  * ```ts
- * import { foldTerm, showTerm } from "./typechecker.js";
- * import { muType, tupleType, conType } from "./typechecker.js";
+ * import { foldTerm, showTerm } from "system-f-omega";
+ * import { muType, tupleType, conType } from "system-f-omega";
  *
  * const listMu = muType("L", tupleType([conType("Int"), { var: "L" }]));
  * const foldVal = foldTerm(listMu, { tuple: [{ con: { name: "1", type: conType("Int") } }, { var: "prev" }] });
@@ -2545,8 +2545,8 @@ export type MatchTerm = {
  *
  * @example Inference (recursive enum)
  * ```ts
- * import { freshState, addType, addEnum, inferType, foldTerm, injectTerm, appType, conType, starKind, showType } from "./typechecker.js";
- * import { tupleType } from "./typechecker.js";
+ * import { freshState, addType, addEnum, inferType, foldTerm, injectTerm, appType, conType, starKind, showType } from "system-f-omega";
+ * import { tupleType } from "system-f-omega";
  *
  * let state = freshState();
  * state = addType(state, "Int", starKind).ok;
@@ -2582,7 +2582,7 @@ export type FoldTerm = { fold: { type: Type; term: Term } };
  *
  * @example Construction
  * ```ts
- * import { unfoldTerm, showTerm } from "./typechecker.js";
+ * import { unfoldTerm, showTerm } from "system-f-omega";
  *
  * const unfolded = unfoldTerm({ var: "foldedList" });
  * console.log("unfold:", showTerm(unfolded));  // "unfold(foldedList)"
@@ -2590,8 +2590,8 @@ export type FoldTerm = { fold: { type: Type; term: Term } };
  *
  * @example Inference (recursive enum)
  * ```ts
- * import { freshState, addEnum, inferType, unfoldTerm, foldTerm, injectTerm, appType, conType, starKind, showType } from "./typechecker.js";
- * import { tupleType } from "./typechecker.js";
+ * import { freshState, addEnum, inferType, unfoldTerm, foldTerm, injectTerm, appType, conType, starKind, showType } from "system-f-omega";
+ * import { tupleType } from "system-f-omega";
  *
  * let state = freshState();
  * state = addEnum(state, "List", ["T"], [starKind], [
@@ -2628,7 +2628,7 @@ export type UnfoldTerm = { unfold: Term };
  *
  * @example Construction
  * ```ts
- * import { tupleTerm, conTerm, conType, showTerm } from "./typechecker.js";
+ * import { tupleTerm, conTerm, conType, showTerm } from "system-f-omega";
  *
  * const pair = tupleTerm([
  *   conTerm("1", conType("Int")),
@@ -2640,7 +2640,7 @@ export type UnfoldTerm = { unfold: Term };
  *
  * @example Inference
  * ```ts
- * import { freshState, addType, inferType, tupleTerm, conTerm, conType, starKind, showType } from "./typechecker.js";
+ * import { freshState, addType, inferType, tupleTerm, conTerm, conType, starKind, showType } from "system-f-omega";
  *
  * let state = freshState();
  * state = addType(state, "Int", starKind).ok;
@@ -2656,7 +2656,7 @@ export type UnfoldTerm = { unfold: Term };
  *
  * @example Nested tuples
  * ```ts
- * import { freshState, addType, inferType, tupleTerm, conTerm, conType, starKind, showType } from "./typechecker.js";
+ * import { freshState, addType, inferType, tupleTerm, conTerm, conType, starKind, showType } from "system-f-omega";
  *
  * let state = freshState();
  * state = addType(state, "Int", starKind).ok;
@@ -2693,7 +2693,7 @@ export type TupleTerm = { tuple: Term[] };
  *
  * @example Construction
  * ```ts
- * import { tupleProjectTerm, tupleTerm, conTerm, conType, showTerm } from "./typechecker.js";
+ * import { tupleProjectTerm, tupleTerm, conTerm, conType, showTerm } from "system-f-omega";
  *
  * const tup = tupleTerm([conTerm("1", conType("Int")), conTerm("true", conType("Bool"))]);
  * const proj0 = tupleProjectTerm(tup, 0);
@@ -2702,7 +2702,7 @@ export type TupleTerm = { tuple: Term[] };
  *
  * @example Inference
  * ```ts
- * import { freshState, addType, inferType, tupleTerm, tupleProjectTerm, conTerm, conType, starKind, showType } from "./typechecker.js";
+ * import { freshState, addType, inferType, tupleTerm, tupleProjectTerm, conTerm, conType, starKind, showType } from "system-f-omega";
  *
  * let state = freshState();
  * state = addType(state, "Int", starKind).ok;
@@ -2719,7 +2719,7 @@ export type TupleTerm = { tuple: Term[] };
  *
  * @example Failure: Out-of-bounds
  * ```ts
- * import { freshState, addType, inferType, tupleTerm, tupleProjectTerm, conTerm, conType, starKind, showError } from "./typechecker.js";
+ * import { freshState, addType, inferType, tupleTerm, tupleProjectTerm, conTerm, conType, starKind, showError } from "system-f-omega";
  *
  * let state = freshState();
  * state = addType(state, "Int", starKind).ok;
@@ -2757,8 +2757,8 @@ export type TupleProjectTerm = {
  *
  * @example Construction
  * ```ts
- * import { dictTerm, conType, showTerm } from "./typechecker.js";
- * import { lamTerm, varTerm } from "./typechecker.js";
+ * import { dictTerm, conType, showTerm } from "system-f-omega";
+ * import { lamTerm, varTerm } from "system-f-omega";
  *
  * const eqInt = dictTerm("Eq", conType("Int"), [
  *   ["eq", lamTerm("x", conType("Int"), varTerm("x"))]
@@ -2768,7 +2768,7 @@ export type TupleProjectTerm = {
  *
  * @example Inference (requires trait def)
  * ```ts
- * import { freshState, addType, addTraitDef, inferType, dictTerm, conType, starKind, arrowType, varType, lamTerm, varTerm, showType } from "./typechecker.js";
+ * import { freshState, addType, addTraitDef, inferType, dictTerm, conType, starKind, arrowType, varType, lamTerm, varTerm, showType } from "system-f-omega";
  *
  * let state = freshState();
  * state = addType(state, "Int", starKind).ok;
@@ -2786,7 +2786,7 @@ export type TupleProjectTerm = {
  *
  * @example Trait impl binding
  * ```ts
- * import { freshState, addType, addTraitDef, traitImplBinding, dictTerm, conType, starKind, arrowType, lamTerm, varTerm, conTerm, showContext } from "./typechecker.js";
+ * import { freshState, addType, addTraitDef, traitImplBinding, dictTerm, conType, starKind, arrowType, lamTerm, varTerm, conTerm, showContext } from "system-f-omega";
  *
  * let state = freshState();
  * state = addType(state, "Int", starKind).ok;
@@ -2826,7 +2826,7 @@ export type DictTerm = {
  *
  * @example Construction (var dict)
  * ```ts
- * import { traitMethodTerm, showTerm } from "./typechecker.js";
+ * import { traitMethodTerm, showTerm } from "system-f-omega";
  *
  * const eqMethod = traitMethodTerm({ var: "eqInt" }, "eq");
  * console.log("eqInt.eq:", showTerm(eqMethod));  // "eqInt.eq"
@@ -2834,7 +2834,7 @@ export type DictTerm = {
  *
  * @example Inference (ctx dict var)
  * ```ts
- * import { freshState, addType, addTraitDef, addDict, dictTerm, inferType, traitMethodTerm, varTerm, conType, starKind, arrowType, lamTerm, conTerm, showType } from "./typechecker.js";
+ * import { freshState, addType, addTraitDef, addDict, dictTerm, inferType, traitMethodTerm, varTerm, conType, starKind, arrowType, lamTerm, conTerm, showType } from "system-f-omega";
  *
  * let state = freshState();
  * state = addType(state, "Int", starKind).ok;
@@ -2850,7 +2850,7 @@ export type DictTerm = {
  *
  * @example Inference (concrete dict)
  * ```ts
- * import { freshState, addType, addTraitDef, inferType, traitMethodTerm, dictTerm, conType, starKind, arrowType, lamTerm, conTerm, showType } from "./typechecker.js";
+ * import { freshState, addType, addTraitDef, inferType, traitMethodTerm, dictTerm, conType, starKind, arrowType, lamTerm, conTerm, showType } from "system-f-omega";
  *
  * let state = freshState();
  * state = addType(state, "Int", starKind).ok;
@@ -2895,8 +2895,8 @@ export type TraitMethodTerm = {
  *
  * @example Construction
  * ```ts
- * import { traitLamTerm, starKind, showTerm } from "./typechecker.js";
- * import { varType } from "./typechecker.js";
+ * import { traitLamTerm, starKind, showTerm } from "system-f-omega";
+ * import { varType } from "system-f-omega";
  *
  * const eqLam = traitLamTerm("d", "Eq", "Self", starKind, [{ trait: "Eq", type: varType("Self") }], { var: "body" });
  * console.log("trait lam:", showTerm(eqLam));  // "ΛSelf::* where Eq<Self>. body"
@@ -2904,7 +2904,7 @@ export type TraitMethodTerm = {
  *
  * @example Inference (→ bounded forall)
  * ```ts
- * import { freshState, addType, addTraitDef, inferType, traitLamTerm, starKind, varType, arrowType, showType } from "./typechecker.js";
+ * import { freshState, addType, addTraitDef, inferType, traitLamTerm, starKind, varType, arrowType, showType } from "system-f-omega";
  *
  * let state = freshState();
  * state = addType(state, "Int", starKind).ok;
@@ -2917,7 +2917,7 @@ export type TraitMethodTerm = {
  *
  * @example Checking
  * ```ts
- * import { freshState, addTraitDef, checkType, traitLamTerm, boundedForallType, starKind, varType, arrowType } from "./typechecker.js";
+ * import { freshState, addTraitDef, checkType, traitLamTerm, boundedForallType, starKind, varType, arrowType } from "system-f-omega";
  *
  * const state = freshState();
  * state = addTraitDef(state, "Eq", "A", starKind, [["eq", arrowType(varType("A"), varType("Bool"))]]).ok;
@@ -2962,8 +2962,8 @@ export type TraitLamTerm = {
  *
  * @example Construction
  * ```ts
- * import { traitAppTerm, showTerm } from "./typechecker.js";
- * import { conType } from "./typechecker.js";
+ * import { traitAppTerm, showTerm } from "system-f-omega";
+ * import { conType } from "system-f-omega";
  *
  * const app = traitAppTerm({ var: "traitLam" }, conType("Int"), [{ var: "eqDict" }]);
  * console.log("trait app:", showTerm(app));  // "traitLam [Int] with dicts {eqDict}"
@@ -2971,7 +2971,7 @@ export type TraitLamTerm = {
  *
  * @example Inference (with resolution)
  * ```ts
- * import { freshState, addType, addTraitDef, traitImplBinding, dictTerm, inferType, traitAppTerm, traitLamTerm, conType, starKind, varType, arrowType, lamTerm, conTerm, showType } from "./typechecker.js";
+ * import { freshState, addType, addTraitDef, traitImplBinding, dictTerm, inferType, traitAppTerm, traitLamTerm, conType, starKind, varType, arrowType, lamTerm, conTerm, showType } from "system-f-omega";
  *
  * let state = freshState();
  * state = addType(state, "Int", starKind).ok;
@@ -2987,8 +2987,8 @@ export type TraitLamTerm = {
  *
  * @example Failure: Wrong dict count
  * ```ts
- * import { freshState, inferType, traitAppTerm, traitLamTerm, conType, starKind, showError } from "./typechecker.js";
- * import { varType } from "./typechecker.js";
+ * import { freshState, inferType, traitAppTerm, traitLamTerm, conType, starKind, showError } from "system-f-omega";
+ * import { varType } from "system-f-omega";
  *
  * const state = freshState();
  * const traitLam = traitLamTerm("d", "Eq", "Self", starKind, [{ trait: "Eq", type: varType("Self") }], conType("Int"));
@@ -3067,7 +3067,7 @@ export type TraitAppTerm = {
  *
  * @example Core λ-calculus
  * ```ts
- * import { freshState, addType, inferType, lamTerm, appTerm, varTerm, conTerm, conType, starKind, showTerm, showType } from "./typechecker.js";
+ * import { freshState, addType, inferType, lamTerm, appTerm, varTerm, conTerm, conType, starKind, showTerm, showType } from "system-f-omega";
  *
  * let state = freshState();
  * state = addType(state, "Int", starKind).ok;
@@ -3083,8 +3083,8 @@ export type TraitAppTerm = {
  *
  * @example Polymorphism + data
  * ```ts
- * import { freshState, addType, inferType, tylamTerm, tyappTerm, recordTerm, injectTerm, matchTerm, variantPattern, varPattern, projectTerm, tupleTerm, tupleProjectTerm, showType, starKind } from "./typechecker.js";
- * import { lamTerm, varTerm, conTerm, conType, recordType, variantType } from "./typechecker.js";
+ * import { freshState, addType, inferType, tylamTerm, tyappTerm, recordTerm, injectTerm, matchTerm, variantPattern, varPattern, projectTerm, tupleTerm, tupleProjectTerm, showType, starKind } from "system-f-omega";
+ * import { lamTerm, varTerm, conTerm, conType, recordType, variantType } from "system-f-omega";
  *
  * let state = freshState();
  * state = addType(state, "Int", starKind).ok;
@@ -3112,8 +3112,8 @@ export type TraitAppTerm = {
  *
  * @example Traits + recursion
  * ```ts
- * import { freshState, addType, addTraitDef, traitImplBinding, dictTerm, inferType, traitLamTerm, traitAppTerm, traitMethodTerm, foldTerm, unfoldTerm, showType, starKind } from "./typechecker.js";
- * import { conType, varType, arrowType, lamTerm, conTerm, appType } from "./typechecker.js";
+ * import { freshState, addType, addTraitDef, traitImplBinding, dictTerm, inferType, traitLamTerm, traitAppTerm, traitMethodTerm, foldTerm, unfoldTerm, showType, starKind } from "system-f-omega";
+ * import { conType, varType, arrowType, lamTerm, conTerm, appType } from "system-f-omega";
  *
  * let state = freshState();
  * state = addType(state, "Int", starKind).ok;
@@ -3134,8 +3134,8 @@ export type TraitAppTerm = {
  *
  * @example Key operations
  * ```ts
- * import { freshState, inferType, checkType, showType, showError } from "./typechecker.js";
- * import { lamTerm, varTerm, conTerm, conType, arrowType, starKind } from "./typechecker.js";
+ * import { freshState, inferType, checkType, showType, showError } from "system-f-omega";
+ * import { lamTerm, varTerm, conTerm, conType, arrowType, starKind } from "system-f-omega";
  *
  * let state = freshState();
  * state = addType(state, "Int", starKind).ok;
@@ -3190,7 +3190,7 @@ export type Term =
  *
  * @example Construction
  * ```ts
- * import { termBinding, conType, showBinding } from "./typechecker.js";
+ * import { termBinding, conType, showBinding } from "system-f-omega";
  *
  * const bind = termBinding("x", conType("Int"));
  * console.log("Term: x = Int");  // "Term: x = Int"
@@ -3198,7 +3198,7 @@ export type Term =
  *
  * @example Context lookup
  * ```ts
- * import { freshState, addType, addTerm, inferType, varTerm, conTerm, conType, starKind, showType } from "./typechecker.js";
+ * import { freshState, addType, addTerm, inferType, varTerm, conTerm, conType, starKind, showType } from "system-f-omega";
  *
  * let state = freshState();
  * state = addType(state, "Int", starKind).ok;
@@ -3230,7 +3230,7 @@ export type TermBinding = { term: { name: string; type: Type } };
  *
  * @example Construction
  * ```ts
- * import { typeBinding, starKind, showBinding } from "./typechecker.js";
+ * import { typeBinding, starKind, showBinding } from "system-f-omega";
  *
  * const bind = typeBinding("Int", starKind);
  * console.log("Type: Int = *");  // "Type: Int = *"
@@ -3238,7 +3238,7 @@ export type TermBinding = { term: { name: string; type: Type } };
  *
  * @example Context lookup (kind)
  * ```ts
- * import { freshState, addType, checkKind, conType, starKind, arrowKind } from "./typechecker.js";
+ * import { freshState, addType, checkKind, conType, starKind, arrowKind } from "system-f-omega";
  *
  * let state = freshState();
  * state = addType(state, "List", arrowKind(starKind, starKind)).ok;
@@ -3271,7 +3271,7 @@ export type TypeBinding = { type: { name: string; kind: Kind } };
  *
  * @example Construction
  * ```ts
- * import { typeAliasBinding, varType, starKind, showBinding } from "./typechecker.js";
+ * import { typeAliasBinding, varType, starKind, showBinding } from "system-f-omega";
  *
  * const idAlias = typeAliasBinding("Id", ["A"], [starKind], varType("A"));
  * console.log("Id<A> = A");  // "Type Alias: Id<A::*> = A"
@@ -3279,8 +3279,8 @@ export type TypeBinding = { type: { name: string; kind: Kind } };
  *
  * @example Expansion
  * ```ts
- * import { freshState, addType, addTypeAlias, normalizeType, appType, conType, starKind, showType } from "./typechecker.js";
- * import { varType } from "./typechecker.js";
+ * import { freshState, addType, addTypeAlias, normalizeType, appType, conType, starKind, showType } from "system-f-omega";
+ * import { varType } from "system-f-omega";
  *
  * let state = freshState();
  * state = addType(state, "Int", starKind).ok;
@@ -3318,7 +3318,7 @@ export type TypeAliasBinding = {
  *
  * @example Construction
  * ```ts
- * import { TraitDef, starKind, arrowType, varType } from "./typechecker.js";
+ * import { TraitDef, starKind, arrowType, varType } from "system-f-omega";
  *
  * const eqDef: TraitDef = {
  *   name: "Eq",
@@ -3331,7 +3331,7 @@ export type TypeAliasBinding = {
  *
  * @example addTraitDef (ctx binding)
  * ```ts
- * import { freshState, addType, addTraitDef, starKind, arrowType, varType, showContext } from "./typechecker.js";
+ * import { freshState, addType, addTraitDef, starKind, arrowType, varType, showContext } from "system-f-omega";
  *
  * let state = freshState();
  * state = addType(state, "Bool", starKind).ok;
@@ -3343,7 +3343,7 @@ export type TypeAliasBinding = {
  *
  * @example HKT trait
  * ```ts
- * import { freshState, addTraitDef, arrowKind, starKind, arrowType, varType, showContext } from "./typechecker.js";
+ * import { freshState, addTraitDef, arrowKind, starKind, arrowType, varType, showContext } from "system-f-omega";
  *
  * let state = freshState();
  * state = addTraitDef(state, "Functor", "F", arrowKind(starKind, starKind), [
@@ -3376,7 +3376,7 @@ export type TraitDef = {
  *
  * @example Construction
  * ```ts
- * import { TraitDefBinding, starKind, arrowType, varType } from "./typechecker.js";
+ * import { TraitDefBinding, starKind, arrowType, varType } from "system-f-omega";
  *
  * const eqBinding: TraitDefBinding = {
  *   trait_def: {
@@ -3391,7 +3391,7 @@ export type TraitDef = {
  *
  * @example Context display
  * ```ts
- * import { freshState, addTraitDef, showContext, starKind, arrowType, varType } from "./typechecker.js";
+ * import { freshState, addTraitDef, showContext, starKind, arrowType, varType } from "system-f-omega";
  *
  * let state = freshState();
  * state = addTraitDef(state, "Eq", "Self", starKind, [["eq", arrowType(varType("Self"), varType("Bool"))]]).ok;
@@ -3423,8 +3423,8 @@ export type TraitDefBinding = {
  *
  * @example Construction
  * ```ts
- * import { traitImplBinding, dictTerm, conType } from "./typechecker.js";
- * import { lamTerm, varTerm, conTerm } from "./typechecker.js";
+ * import { traitImplBinding, dictTerm, conType } from "system-f-omega";
+ * import { lamTerm, varTerm, conTerm } from "system-f-omega";
  *
  * const eqDict = dictTerm("Eq", conType("Int"), [
  *   ["eq", lamTerm("x", conType("Int"), conTerm("true", conType("Bool")))]
@@ -3435,7 +3435,7 @@ export type TraitDefBinding = {
  *
  * @example Context binding (addTraitImpl)
  * ```ts
- * import { freshState, addType, addTraitDef, addTraitImpl, dictTerm, conType, starKind, arrowType, lamTerm, varTerm, conTerm, showContext } from "./typechecker.js";
+ * import { freshState, addType, addTraitDef, addTraitImpl, dictTerm, conType, starKind, arrowType, lamTerm, varTerm, conTerm, showContext } from "system-f-omega";
  *
  * let state = freshState();
  * state = addType(state, "Int", starKind).ok;
@@ -3448,7 +3448,7 @@ export type TraitDefBinding = {
  *
  * @example Resolution usage
  * ```ts
- * import { freshState, addType, addTraitDef, traitImplBinding, dictTerm, checkTraitImplementation, conType, starKind, arrowType, lamTerm, varTerm, conTerm } from "./typechecker.js";
+ * import { freshState, addType, addTraitDef, traitImplBinding, dictTerm, checkTraitImplementation, conType, starKind, arrowType, lamTerm, varTerm, conTerm } from "system-f-omega";
  *
  * let state = freshState();
  * state = addType(state, "Int", starKind).ok;
@@ -3489,7 +3489,7 @@ export type TraitImplBinding = {
  *
  * @example Construction
  * ```ts
- * import { dictBinding, conType } from "./typechecker.js";
+ * import { dictBinding, conType } from "system-f-omega";
  *
  * const eqBind = dictBinding("eqInt", "Eq", conType("Int"));
  * console.log("dict bind:", JSON.stringify(eqBind));
@@ -3497,7 +3497,7 @@ export type TraitImplBinding = {
  *
  * @example Context binding (addDict)
  * ```ts
- * import { freshState, addType, addTraitDef, addDict, dictTerm, conType, starKind, arrowType, lamTerm, varTerm, conTerm, showContext } from "./typechecker.js";
+ * import { freshState, addType, addTraitDef, addDict, dictTerm, conType, starKind, arrowType, lamTerm, varTerm, conTerm, showContext } from "system-f-omega";
  *
  * let state = freshState();
  * state = addType(state, "Int", starKind).ok;
@@ -3510,7 +3510,7 @@ export type TraitImplBinding = {
  *
  * @example Trait method lookup
  * ```ts
- * import { freshState, addType, addTraitDef, addDict, dictTerm, inferType, traitMethodTerm, varTerm, conType, starKind, arrowType, lamTerm, conTerm, showType } from "./typechecker.js";
+ * import { freshState, addType, addTraitDef, addDict, dictTerm, inferType, traitMethodTerm, varTerm, conType, starKind, arrowType, lamTerm, conTerm, showType } from "system-f-omega";
  *
  * let state = freshState();
  * state = addType(state, "Int", starKind).ok;
@@ -3558,7 +3558,7 @@ export type DictBinding = {
  *
  * @example Construction
  * ```ts
- * import { EnumDef, starKind, arrowKind, varType, tupleType } from "./typechecker.js";
+ * import { EnumDef, starKind, arrowKind, varType, tupleType } from "system-f-omega";
  *
  * const optionDef: EnumDef = {
  *   name: "Option",
@@ -3575,8 +3575,8 @@ export type DictBinding = {
  *
  * @example addEnum (ctx binding)
  * ```ts
- * import { freshState, addType, addEnum, starKind, showContext } from "./typechecker.js";
- * import { tupleType } from "./typechecker.js";
+ * import { freshState, addType, addEnum, starKind, showContext } from "system-f-omega";
+ * import { tupleType } from "system-f-omega";
  *
  * let state = freshState();
  * state = addEnum(state, "Color", [], [], [
@@ -3588,8 +3588,8 @@ export type DictBinding = {
  *
  * @example Normalization (non-recursive)
  * ```ts
- * import { freshState, addType, addEnum, normalizeType, appType, conType, starKind, showType } from "./typechecker.js";
- * import { tupleType } from "./typechecker.js";
+ * import { freshState, addType, addEnum, normalizeType, appType, conType, starKind, showType } from "system-f-omega";
+ * import { tupleType } from "system-f-omega";
  *
  * let state = freshState();
  * state = addType(state, "Int", starKind).ok;
@@ -3605,8 +3605,8 @@ export type DictBinding = {
  *
  * @example Recursive normalization (→ μ)
  * ```ts
- * import { freshState, addType, addEnum, normalizeType, appType, conType, starKind, showType } from "./typechecker.js";
- * import { tupleType, varType } from "./typechecker.js";
+ * import { freshState, addType, addEnum, normalizeType, appType, conType, starKind, showType } from "system-f-omega";
+ * import { tupleType, varType } from "system-f-omega";
  *
  * let state = freshState();
  * state = addType(state, "Int", starKind).ok;
@@ -3644,7 +3644,7 @@ export type EnumDef = {
  *
  * @example Usage in variants
  * ```ts
- * import { FieldScheme, varType, tupleType } from "./typechecker.js";
+ * import { FieldScheme, varType, tupleType } from "system-f-omega";
  *
  * const noneField: FieldScheme = tupleType([]);        // ()
  * const someField: FieldScheme = varType("T");         // T
@@ -3669,7 +3669,7 @@ export type FieldScheme = Type; // e.g., { var: "t" } for Left, unit for None
  *
  * @example Construction
  * ```ts
- * import { EnumDefBinding, starKind, tupleType } from "./typechecker.js";
+ * import { EnumDefBinding, starKind, tupleType } from "system-f-omega";
  *
  * const colorBinding: EnumDefBinding = {
  *   enum: {
@@ -3685,7 +3685,7 @@ export type FieldScheme = Type; // e.g., { var: "t" } for Left, unit for None
  *
  * @example Context display
  * ```ts
- * import { freshState, addEnum, showContext, starKind, tupleType } from "./typechecker.js";
+ * import { freshState, addEnum, showContext, starKind, tupleType } from "system-f-omega";
  *
  * let state = freshState();
  * state = addEnum(state, "Color", [], [], [["Red", tupleType([])]]).ok;
@@ -3735,7 +3735,7 @@ export type EnumDefBinding = { enum: EnumDef };
  *   termBinding, typeBinding, traitDefBinding, traitImplBinding,
  *   dictBinding, enumDefBinding, typeAliasBinding,
  *   starKind, conType, varType, arrowType
- * } from "./typechecker.js";
+ * } from "system-f-omega";
  *
  * // Term
  * const termB = termBinding("x", conType("Int"));
@@ -3761,8 +3761,8 @@ export type EnumDefBinding = { enum: EnumDef };
  *
  * @example Context building (add*)
  * ```ts
- * import { freshState, addType, addTerm, addTraitDef, addTraitImpl, addDict, addEnum, addTypeAlias, dictTerm, showContext, starKind } from "./typechecker.js";
- * import { conType, conTerm, arrowType, varType, lamTerm, conTerm as cTerm } from "./typechecker.js";
+ * import { freshState, addType, addTerm, addTraitDef, addTraitImpl, addDict, addEnum, addTypeAlias, dictTerm, showContext, starKind } from "system-f-omega";
+ * import { conType, conTerm, arrowType, varType, lamTerm, conTerm as cTerm } from "system-f-omega";
  *
  * let state = freshState();
  *
@@ -3792,7 +3792,7 @@ export type EnumDefBinding = { enum: EnumDef };
  *
  * @example Inference lookups
  * ```ts
- * import { freshState, addType, addTerm, inferType, varTerm, conTerm, conType, starKind, showType } from "./typechecker.js";
+ * import { freshState, addType, addTerm, inferType, varTerm, conTerm, conType, starKind, showType } from "system-f-omega";
  *
  * let state = freshState();
  * state = addType(state, "Int", starKind).ok;  // TypeBinding
@@ -3833,7 +3833,7 @@ export type Binding =
  *
  * @example Empty context
  * ```ts
- * import { freshState, showContext } from "./typechecker.js";
+ * import { freshState, showContext } from "system-f-omega";
  *
  * const state = freshState();
  * console.log(showContext(state.ctx));  // ""
@@ -3841,8 +3841,8 @@ export type Binding =
  *
  * @example Building context (add*)
  * ```ts
- * import { freshState, addType, addTerm, addTraitDef, showContext, starKind } from "./typechecker.js";
- * import { conType, conTerm } from "./typechecker.js";
+ * import { freshState, addType, addTerm, addTraitDef, showContext, starKind } from "system-f-omega";
+ * import { conType, conTerm } from "system-f-omega";
  *
  * let state = freshState();
  * state = addType(state, "Int", starKind).ok;                    // TypeBinding
@@ -3855,7 +3855,7 @@ export type Binding =
  *
  * @example Extension (lambda ctx)
  * ```ts
- * import { freshState, addType, inferType, lamTerm, varTerm, conType, starKind, showContext } from "./typechecker.js";
+ * import { freshState, addType, inferType, lamTerm, varTerm, conType, starKind, showContext } from "system-f-omega";
  *
  * let state = freshState();
  * state = addType(state, "Int", starKind).ok;
@@ -3867,7 +3867,7 @@ export type Binding =
  *
  * @example Pattern bindings (match ctx)
  * ```ts
- * import { freshState, addType, checkPattern, recordPattern, varPattern, recordType, conType, starKind } from "./typechecker.js";
+ * import { freshState, addType, checkPattern, recordPattern, varPattern, recordType, conType, starKind } from "system-f-omega";
  *
  * let state = freshState();
  * state = addType(state, "Int", starKind).ok;
@@ -3908,7 +3908,7 @@ export type Context = Binding[];
  *
  * @example Fresh state (empty)
  * ```ts
- * import { freshState } from "./typechecker.js";
+ * import { freshState } from "system-f-omega";
  *
  * const state = freshState();
  * console.log("empty:", state.meta.solutions.size === 0);  // true
@@ -3917,8 +3917,8 @@ export type Context = Binding[];
  *
  * @example Fresh meta-var
  * ```ts
- * import { freshState, freshMetaVar } from "./typechecker.js";
- * import { starKind } from "./typechecker.js";
+ * import { freshState, freshMetaVar } from "system-f-omega";
+ * import { starKind } from "system-f-omega";
  *
  * const state = freshState();
  * const meta = freshMetaVar(state.meta, starKind);
@@ -3929,7 +3929,7 @@ export type Context = Binding[];
  *
  * @example Solving meta-var
  * ```ts
- * import { freshState, freshMetaVar, solveMetaVar, conType } from "./typechecker.js";
+ * import { freshState, freshMetaVar, solveMetaVar, conType } from "system-f-omega";
  *
  * const state = freshState();
  * const meta = freshMetaVar(state.meta);
@@ -3940,7 +3940,7 @@ export type Context = Binding[];
  *
  * @example Resolution (applySubstitution)
  * ```ts
- * import { freshState, freshMetaVar, applySubstitution, conType } from "./typechecker.js";
+ * import { freshState, freshMetaVar, applySubstitution, conType } from "system-f-omega";
  *
  * const state = freshState();
  * const meta = freshMetaVar(state.meta);
@@ -3983,7 +3983,7 @@ export type MetaEnv = {
  *
  * @example Fresh state
  * ```ts
- * import { freshState, showContext } from "./typechecker.js";
+ * import { freshState, showContext } from "system-f-omega";
  *
  * const state = freshState();
  * console.log("empty ctx:", showContext(state.ctx));  // ""
@@ -3992,8 +3992,8 @@ export type MetaEnv = {
  *
  * @example Building state (add*)
  * ```ts
- * import { freshState, addType, addTerm, addTraitDef, showContext, starKind } from "./typechecker.js";
- * import { conTerm, conType } from "./typechecker.js";
+ * import { freshState, addType, addTerm, addTraitDef, showContext, starKind } from "system-f-omega";
+ * import { conTerm, conType } from "system-f-omega";
  *
  * let state = freshState();
  * state = addType(state, "Int", starKind).ok;
@@ -4006,7 +4006,7 @@ export type MetaEnv = {
  *
  * @example Inference (ctx/meta usage)
  * ```ts
- * import { freshState, addType, inferType, lamTerm, varTerm, conType, starKind, showType } from "./typechecker.js";
+ * import { freshState, addType, inferType, lamTerm, varTerm, conType, starKind, showType } from "system-f-omega";
  *
  * let state = freshState();
  * state = addType(state, "Int", starKind).ok;
@@ -4018,7 +4018,7 @@ export type MetaEnv = {
  *
  * @example Nested extension (lambda ctx)
  * ```ts
- * import { freshState, addType, inferType, lamTerm, varTerm, conType, starKind } from "./typechecker.js";
+ * import { freshState, addType, inferType, lamTerm, varTerm, conType, starKind } from "system-f-omega";
  *
  * let state = freshState();
  * state = addType(state, "Int", starKind).ok;
@@ -4030,7 +4030,7 @@ export type MetaEnv = {
  *
  * @example Meta solving
  * ```ts
- * import { freshState, freshMetaVar, solveMetaVar, conType } from "./typechecker.js";
+ * import { freshState, freshMetaVar, solveMetaVar, conType } from "system-f-omega";
  *
  * const state = freshState();
  * const meta = freshMetaVar(state.meta);
@@ -4072,7 +4072,7 @@ export type TypeCheckerState = {
  *
  * @example Basic aliases (types/traits)
  * ```ts
- * import { ImportAliases } from "./typechecker.js";
+ * import { ImportAliases } from "system-f-omega";
  *
  * const aliases: ImportAliases = {
  *   types: { "Int32": "Int" },
@@ -4083,7 +4083,7 @@ export type TypeCheckerState = {
  *
  * @example importModule with aliases
  * ```ts
- * import { freshState, addType, importModule, starKind, showContext } from "./typechecker.js";
+ * import { freshState, addType, importModule, starKind, showContext } from "system-f-omega";
  *
  * let from = freshState();
  * from = addType(from, "Int32", starKind).ok;  // Will rename
@@ -4101,7 +4101,7 @@ export type TypeCheckerState = {
  *
  * @example Labels (records/variants)
  * ```ts
- * import { freshState, addType, importModule, starKind, recordType, showContext } from "./typechecker.js";
+ * import { freshState, addType, importModule, starKind, recordType, showContext } from "system-f-omega";
  *
  * let from = freshState();
  * from.ctx.push({ type: { name: "Point", kind: starKind } });  // Assume Point def
@@ -4118,7 +4118,7 @@ export type TypeCheckerState = {
  *
  * @example Full multi-category
  * ```ts
- * import { ImportAliases } from "./typechecker.js";
+ * import { ImportAliases } from "system-f-omega";
  *
  * const fullAliases: ImportAliases = {
  *   traits: { "Eq": "PartialEq", "Ord": "Compare" },
@@ -4154,7 +4154,7 @@ export type ImportAliases = {
  *
  * @example Empty state
  * ```ts
- * import { freshState, showContext } from "./typechecker.js";
+ * import { freshState, showContext } from "system-f-omega";
  *
  * const state = freshState();
  * console.log(showContext(state.ctx));  // ""
@@ -4162,7 +4162,7 @@ export type ImportAliases = {
  *
  * @example Seeded
  * ```ts
- * import { freshState, typeBinding, starKind } from "./typechecker.js";
+ * import { freshState, typeBinding, starKind } from "system-f-omega";
  *
  * const seeded = freshState([{ type: { name: "Int", kind: starKind } }]);
  * console.log("seeded Int");
@@ -4194,7 +4194,7 @@ export const freshState = (ctx: Context = []): TypeCheckerState =>
  *
  * @example Construction
  * ```ts
- * import { UnboundTypeError } from "./typechecker.js";
+ * import { UnboundTypeError } from "system-f-omega";
  *
  * const err: UnboundTypeError = { unbound: "Missing" };
  * console.log(JSON.stringify(err));  // { "unbound": "Missing" }
@@ -4202,7 +4202,7 @@ export const freshState = (ctx: Context = []): TypeCheckerState =>
  *
  * @example checkKind failure (unbound var)
  * ```ts
- * import { freshState, checkKind, varType, showError } from "./typechecker.js";
+ * import { freshState, checkKind, varType, showError } from "system-f-omega";
  *
  * const state = freshState();
  * const result = checkKind(state, { var: "a" });  // No binding
@@ -4212,7 +4212,7 @@ export const freshState = (ctx: Context = []): TypeCheckerState =>
  *
  * @example checkKind failure (unbound con)
  * ```ts
- * import { freshState, checkKind, conType, showError } from "./typechecker.js";
+ * import { freshState, checkKind, conType, showError } from "system-f-omega";
  *
  * const state = freshState();
  * const result = checkKind(state, { con: "Foo" });  // No addType("Foo")
@@ -4222,7 +4222,7 @@ export const freshState = (ctx: Context = []): TypeCheckerState =>
  *
  * @example Lenient unbound (assumes *)
  * ```ts
- * import { freshState, checkKind, varType, starKind, showKind } from "./typechecker.js";
+ * import { freshState, checkKind, varType, starKind, showKind } from "system-f-omega";
  *
  * const state = freshState();
  * const result = checkKind(state, { var: "a" }, true);  // lenient=true
@@ -4231,7 +4231,7 @@ export const freshState = (ctx: Context = []): TypeCheckerState =>
  *
  * @example Real inference failure
  * ```ts
- * import { freshState, inferType, lamTerm, varTerm, varType, showError } from "./typechecker.js";
+ * import { freshState, inferType, lamTerm, varTerm, varType, showError } from "system-f-omega";
  *
  * const state = freshState();
  * const badLam = lamTerm("x", { var: "Missing" }, varTerm("x"));  // Unbound domain
@@ -4264,7 +4264,7 @@ export type UnboundTypeError = { unbound: string };
  *
  * @example Construction
  * ```ts
- * import { KindMismatchTypeError, starKind, arrowKind } from "./typechecker.js";
+ * import { KindMismatchTypeError, starKind, arrowKind } from "system-f-omega";
  *
  * const err: KindMismatchTypeError = {
  *   kind_mismatch: { expected: starKind, actual: arrowKind(starKind, starKind) }
@@ -4274,7 +4274,7 @@ export type UnboundTypeError = { unbound: string };
  *
  * @example HKT application (wrong arity)
  * ```ts
- * import { freshState, addType, checkKind, appType, conType, starKind, arrowKind, showError, showKind } from "./typechecker.js";
+ * import { freshState, addType, checkKind, appType, conType, starKind, arrowKind, showError, showKind } from "system-f-omega";
  *
  * let state = freshState();
  * state = addType(state, "List", arrowKind(starKind, starKind)).ok;  // * → *
@@ -4287,7 +4287,7 @@ export type UnboundTypeError = { unbound: string };
  *
  * @example Record field not concrete
  * ```ts
- * import { freshState, checkKind, recordType, arrowKind, starKind, conType, showError } from "./typechecker.js";
+ * import { freshState, checkKind, recordType, arrowKind, starKind, conType, showError } from "system-f-omega";
  *
  * const state = freshState();
  * const badRec = recordType([["f", arrowKind(starKind, starKind)]]);  // Field not *
@@ -4297,7 +4297,7 @@ export type UnboundTypeError = { unbound: string };
  *
  * @example Wrong binder kind (forall body)
  * ```ts
- * import { freshState, checkKind, forallType, arrowKind, starKind, varType, showError } from "./typechecker.js";
+ * import { freshState, checkKind, forallType, arrowKind, starKind, varType, showError } from "system-f-omega";
  *
  * const state = freshState();
  * const badForall = forallType("a", starKind, arrowKind(starKind, starKind));  // Body not *
@@ -4307,7 +4307,7 @@ export type UnboundTypeError = { unbound: string };
  *
  * @example User-facing via inference
  * ```ts
- * import { freshState, addType, inferType, lamTerm, varTerm, varType, starKind, arrowKind, showError } from "./typechecker.js";
+ * import { freshState, addType, inferType, lamTerm, varTerm, varType, starKind, arrowKind, showError } from "system-f-omega";
  *
  * let state = freshState();
  * state = addType(state, "List", arrowKind(starKind, starKind)).ok;  // HKT
@@ -4345,7 +4345,7 @@ export type KindMismatchTypeError = {
  *
  * @example Construction
  * ```ts
- * import { TypeMismatchTypeError, conType } from "./typechecker.js";
+ * import { TypeMismatchTypeError, conType } from "system-f-omega";
  *
  * const err: TypeMismatchTypeError = {
  *   type_mismatch: { expected: conType("Int"), actual: conType("Bool") }
@@ -4355,7 +4355,7 @@ export type KindMismatchTypeError = {
  *
  * @example Unification failure (rigid-rigid)
  * ```ts
- * import { freshState, unifyTypes, conType, showError } from "./typechecker.js";
+ * import { freshState, unifyTypes, conType, showError } from "system-f-omega";
  *
  * const state = freshState();
  * const worklist: any[] = [];
@@ -4369,7 +4369,7 @@ export type KindMismatchTypeError = {
  *
  * @example Lambda checking (domain mismatch)
  * ```ts
- * import { freshState, addType, checkType, lamTerm, varTerm, arrowType, conType, starKind, showError } from "./typechecker.js";
+ * import { freshState, addType, checkType, lamTerm, varTerm, arrowType, conType, starKind, showError } from "system-f-omega";
  *
  * let state = freshState();
  * state = addType(state, "Int", starKind).ok;
@@ -4386,7 +4386,7 @@ export type KindMismatchTypeError = {
  *
  * @example Record pattern mismatch
  * ```ts
- * import { freshState, addType, checkPattern, recordPattern, varPattern, recordType, conType, starKind, showError } from "./typechecker.js";
+ * import { freshState, addType, checkPattern, recordPattern, varPattern, recordType, conType, starKind, showError } from "system-f-omega";
  *
  * let state = freshState();
  * state = addType(state, "Int", starKind).ok;
@@ -4400,7 +4400,7 @@ export type KindMismatchTypeError = {
  *
  * @example Function app arg mismatch
  * ```ts
- * import { freshState, addType, addTerm, inferType, appTerm, varTerm, lamTerm, conTerm, conType, starKind, showError } from "./typechecker.js";
+ * import { freshState, addType, addTerm, inferType, appTerm, varTerm, lamTerm, conTerm, conType, starKind, showError } from "system-f-omega";
  *
  * let state = freshState();
  * state = addType(state, "Int", starKind).ok;
@@ -4439,7 +4439,7 @@ export type TypeMismatchTypeError = {
  *
  * @example Construction
  * ```ts
- * import { NotAFunctionTypeError, conType } from "./typechecker.js";
+ * import { NotAFunctionTypeError, conType } from "system-f-omega";
  *
  * const err: NotAFunctionTypeError = { not_a_function: conType("Int") };
  * console.log(JSON.stringify(err));
@@ -4447,7 +4447,7 @@ export type TypeMismatchTypeError = {
  *
  * @example App on constant
  * ```ts
- * import { freshState, addType, inferType, appTerm, conTerm, varTerm, conType, starKind, showError } from "./typechecker.js";
+ * import { freshState, addType, inferType, appTerm, conTerm, varTerm, conType, starKind, showError } from "system-f-omega";
  *
  * let state = freshState();
  * state = addType(state, "Int", starKind).ok;
@@ -4458,7 +4458,7 @@ export type TypeMismatchTypeError = {
  *
  * @example App on record
  * ```ts
- * import { freshState, addType, inferType, appTerm, recordTerm, conTerm, varTerm, conType, starKind, showError } from "./typechecker.js";
+ * import { freshState, addType, inferType, appTerm, recordTerm, conTerm, varTerm, conType, starKind, showError } from "system-f-omega";
  *
  * let state = freshState();
  * state = addType(state, "Int", starKind).ok;
@@ -4470,7 +4470,7 @@ export type TypeMismatchTypeError = {
  *
  * @example App on variant
  * ```ts
- * import { freshState, inferType, appTerm, injectTerm, conTerm, varTerm, conType, variantType, showError } from "./typechecker.js";
+ * import { freshState, inferType, appTerm, injectTerm, conTerm, varTerm, conType, variantType, showError } from "system-f-omega";
  *
  * const state = freshState();
  * const inj = injectTerm("Left", conTerm("42", conType("Int")), variantType([["Left", conType("Int")]]));
@@ -4499,7 +4499,7 @@ export type NotAFunctionTypeError = { not_a_function: Type };
  *
  * @example Construction
  * ```ts
- * import { NotATypeFunctionTypeError, conType } from "./typechecker.js";
+ * import { NotATypeFunctionTypeError, conType } from "system-f-omega";
  *
  * const err: NotATypeFunctionTypeError = { not_a_type_function: conType("Int") };
  * console.log(JSON.stringify(err));
@@ -4507,7 +4507,7 @@ export type NotAFunctionTypeError = { not_a_function: Type };
  *
  * @example App on primitive (Int<Bool>)
  * ```ts
- * import { freshState, addType, checkKind, appType, conType, starKind, showError } from "./typechecker.js";
+ * import { freshState, addType, checkKind, appType, conType, starKind, showError } from "system-f-omega";
  *
  * let state = freshState();
  * state = addType(state, "Int", starKind).ok;  // Int :: * (not * → *)
@@ -4520,7 +4520,7 @@ export type NotAFunctionTypeError = { not_a_function: Type };
  *
  * @example App on var (non-arrow)
  * ```ts
- * import { freshState, checkKind, appType, varType, conType, showError } from "./typechecker.js";
+ * import { freshState, checkKind, appType, varType, conType, showError } from "system-f-omega";
  *
  * const state = freshState();
  * const badApp = appType(varType("a"), conType("Int"));  // a not arrow
@@ -4530,7 +4530,7 @@ export type NotAFunctionTypeError = { not_a_function: Type };
  *
  * @example Real inference failure (HKT misuse)
  * ```ts
- * import { freshState, addType, inferType, appTerm, varTerm, lamTerm, conType, starKind, showError } from "./typechecker.js";
+ * import { freshState, addType, inferType, appTerm, varTerm, lamTerm, conType, starKind, showError } from "system-f-omega";
  *
  * let state = freshState();
  * state = addType(state, "Int", starKind).ok;  // Primitive, not HKT
@@ -4561,7 +4561,7 @@ export type NotATypeFunctionTypeError = { not_a_type_function: Type };
  *
  * @example Construction
  * ```ts
- * import { CyclicTypeError } from "./typechecker.js";
+ * import { CyclicTypeError } from "system-f-omega";
  *
  * const err: CyclicTypeError = { cyclic: "?0" };
  * console.log(JSON.stringify(err));  // { "cyclic": "?0" }
@@ -4569,8 +4569,8 @@ export type NotATypeFunctionTypeError = { not_a_type_function: Type };
  *
  * @example Occurs check (meta cycle)
  * ```ts
- * import { freshState, freshMetaVar, occursCheckEvar, arrowType } from "./typechecker.js";
- * import { varType } from "./typechecker.js";
+ * import { freshState, freshMetaVar, occursCheckEvar, arrowType } from "system-f-omega";
+ * import { varType } from "system-f-omega";
  *
  * const state = freshState();
  * const meta = freshMetaVar(state.meta);
@@ -4580,8 +4580,8 @@ export type NotATypeFunctionTypeError = { not_a_type_function: Type };
  *
  * @example solveMetaVar rejection
  * ```ts
- * import { freshState, freshMetaVar, solveMetaVar, arrowType } from "./typechecker.js";
- * import { varType } from "./typechecker.js";
+ * import { freshState, freshMetaVar, solveMetaVar, arrowType } from "system-f-omega";
+ * import { varType } from "system-f-omega";
  *
  * const state = freshState();
  * const meta = freshMetaVar(state.meta);
@@ -4592,7 +4592,7 @@ export type NotATypeFunctionTypeError = { not_a_type_function: Type };
  *
  * @example Var occurs check (rigid cycle)
  * ```ts
- * import { occursCheck, arrowType, varType } from "./typechecker.js";
+ * import { occursCheck, arrowType, varType } from "system-f-omega";
  *
  * const cyclicTy = arrowType(varType("a"), varType("Int"));  // a → Int
  * console.log("a occurs:", occursCheck("a", cyclicTy));  // true
@@ -4600,7 +4600,7 @@ export type NotATypeFunctionTypeError = { not_a_type_function: Type };
  *
  * @example User-facing via unification
  * ```ts
- * import { freshState, unifyTypes, arrowType, varType, showError } from "./typechecker.js";
+ * import { freshState, unifyTypes, arrowType, varType, showError } from "system-f-omega";
  *
  * const state = freshState();
  * const subst = new Map<string, Type>();
@@ -4631,7 +4631,7 @@ export type CyclicTypeError = { cyclic: string };
  *
  * @example Construction
  * ```ts
- * import { NotARecordTypeError, conType } from "./typechecker.js";
+ * import { NotARecordTypeError, conType } from "system-f-omega";
  *
  * const err: NotARecordTypeError = { not_a_record: conType("Int") };
  * console.log(JSON.stringify(err));
@@ -4639,7 +4639,7 @@ export type CyclicTypeError = { cyclic: string };
  *
  * @example Projection on constant
  * ```ts
- * import { freshState, addType, inferType, projectTerm, conTerm, conType, starKind, showError } from "./typechecker.js";
+ * import { freshState, addType, inferType, projectTerm, conTerm, conType, starKind, showError } from "system-f-omega";
  *
  * let state = freshState();
  * state = addType(state, "Int", starKind).ok;
@@ -4651,7 +4651,7 @@ export type CyclicTypeError = { cyclic: string };
  *
  * @example Projection on variant
  * ```ts
- * import { freshState, inferType, projectTerm, injectTerm, conTerm, conType, variantType, showError } from "./typechecker.js";
+ * import { freshState, inferType, projectTerm, injectTerm, conTerm, conType, variantType, showError } from "system-f-omega";
  *
  * const state = freshState();
  * const varn = injectTerm("Left", conTerm("42", conType("Int")), variantType([["Left", conType("Int")]]));
@@ -4662,7 +4662,7 @@ export type CyclicTypeError = { cyclic: string };
  *
  * @example Record pattern on non-record
  * ```ts
- * import { freshState, addType, checkPattern, recordPattern, varPattern, conType, starKind, showError } from "./typechecker.js";
+ * import { freshState, addType, checkPattern, recordPattern, varPattern, conType, starKind, showError } from "system-f-omega";
  *
  * let state = freshState();
  * state = addType(state, "Int", starKind).ok;
@@ -4695,7 +4695,7 @@ export type NotARecordTypeError = { not_a_record: Type };
  *
  * @example Construction
  * ```ts
- * import { MissingFieldTypeError, recordType, conType } from "./typechecker.js";
+ * import { MissingFieldTypeError, recordType, conType } from "system-f-omega";
  *
  * const err: MissingFieldTypeError = {
  *   missing_field: { record: recordType([["x", conType("Int")]]), label: "y" }
@@ -4705,7 +4705,7 @@ export type NotARecordTypeError = { not_a_record: Type };
  *
  * @example Projection (missing field)
  * ```ts
- * import { freshState, addType, inferType, recordTerm, projectTerm, conTerm, conType, starKind, showError } from "./typechecker.js";
+ * import { freshState, addType, inferType, recordTerm, projectTerm, conTerm, conType, starKind, showError } from "system-f-omega";
  *
  * let state = freshState();
  * state = addType(state, "Int", starKind).ok;
@@ -4718,7 +4718,7 @@ export type NotARecordTypeError = { not_a_record: Type };
  *
  * @example Record pattern (label mismatch)
  * ```ts
- * import { freshState, addType, checkPattern, recordPattern, varPattern, recordType, conType, starKind, showError } from "./typechecker.js";
+ * import { freshState, addType, checkPattern, recordPattern, varPattern, recordType, conType, starKind, showError } from "system-f-omega";
  *
  * let state = freshState();
  * state = addType(state, "Int", starKind).ok;
@@ -4752,7 +4752,7 @@ export type MissingFieldTypeError = {
  *
  * @example Construction
  * ```ts
- * import { NotAVariantTypeError, conType } from "./typechecker.js";
+ * import { NotAVariantTypeError, conType } from "system-f-omega";
  *
  * const err: NotAVariantTypeError = { not_a_variant: conType("Int") };
  * console.log(JSON.stringify(err));
@@ -4760,7 +4760,7 @@ export type MissingFieldTypeError = {
  *
  * @example Injection on primitive
  * ```ts
- * import { freshState, inferType, injectTerm, conTerm, conType, showError } from "./typechecker.js";
+ * import { freshState, inferType, injectTerm, conTerm, conType, showError } from "system-f-omega";
  *
  * const state = freshState();
  * const badInject = injectTerm("Left", conTerm("42", conType("Int")), conType("Int"));  // Int not variant
@@ -4770,7 +4770,7 @@ export type MissingFieldTypeError = {
  *
  * @example Variant pattern on record
  * ```ts
- * import { freshState, addType, checkPattern, variantPattern, varPattern, recordType, conType, starKind, showError } from "./typechecker.js";
+ * import { freshState, addType, checkPattern, variantPattern, varPattern, recordType, conType, starKind, showError } from "system-f-omega";
  *
  * let state = freshState();
  * state = addType(state, "Int", starKind).ok;
@@ -4783,7 +4783,7 @@ export type MissingFieldTypeError = {
  *
  * @example Variant pattern on primitive
  * ```ts
- * import { freshState, addType, checkPattern, variantPattern, varPattern, conType, starKind, showError } from "./typechecker.js";
+ * import { freshState, addType, checkPattern, variantPattern, varPattern, conType, starKind, showError } from "system-f-omega";
  *
  * let state = freshState();
  * state = addType(state, "Int", starKind).ok;
@@ -4817,7 +4817,7 @@ export type NotAVariantTypeError = { not_a_variant: Type };
  *
  * @example Construction
  * ```ts
- * import { InvalidVariantTypeError, appType, conType } from "./typechecker.js";
+ * import { InvalidVariantTypeError, appType, conType } from "system-f-omega";
  *
  * const err: InvalidVariantTypeError = {
  *   invalid_variant_label: { variant: appType(conType("Option"), conType("Int")), label: "Bad" }
@@ -4827,8 +4827,8 @@ export type NotAVariantTypeError = { not_a_variant: Type };
  *
  * @example Pattern (nominal enum, missing label)
  * ```ts
- * import { freshState, addEnum, checkPattern, variantPattern, varPattern, appType, conType, starKind, showError } from "./typechecker.js";
- * import { tupleType } from "./typechecker.js";
+ * import { freshState, addEnum, checkPattern, variantPattern, varPattern, appType, conType, starKind, showError } from "system-f-omega";
+ * import { tupleType } from "system-f-omega";
  *
  * let state = freshState();
  * state = addEnum(state, "Option", ["T"], [starKind], [["None", tupleType([])]]).ok;  // Only None
@@ -4839,8 +4839,8 @@ export type NotAVariantTypeError = { not_a_variant: Type };
  *
  * @example Injection (wrong label)
  * ```ts
- * import { freshState, addEnum, inferType, injectTerm, conTerm, appType, conType, starKind, showError } from "./typechecker.js";
- * import { tupleType } from "./typechecker.js";
+ * import { freshState, addEnum, inferType, injectTerm, conTerm, appType, conType, starKind, showError } from "system-f-omega";
+ * import { tupleType } from "system-f-omega";
  *
  * let state = freshState();
  * state = addEnum(state, "Option", ["T"], [starKind], [["None", tupleType([])]]).ok;  // Only None
@@ -4852,7 +4852,7 @@ export type NotAVariantTypeError = { not_a_variant: Type };
  *
  * @example Structural variant (missing case)
  * ```ts
- * import { freshState, checkPattern, variantPattern, varPattern, variantType, conType, showError } from "./typechecker.js";
+ * import { freshState, checkPattern, variantPattern, varPattern, variantType, conType, showError } from "system-f-omega";
  *
  * const state = freshState();
  * const ty = variantType([["Left", conType("Int")]]);  // Only Left
@@ -4885,7 +4885,7 @@ export type InvalidVariantTypeError = {
  *
  * @example Construction
  * ```ts
- * import { MissingCaseTypeError } from "./typechecker.js";
+ * import { MissingCaseTypeError } from "system-f-omega";
  *
  * const err: MissingCaseTypeError = { missing_case: { label: "Blue" } };
  * console.log(JSON.stringify(err));
@@ -4893,7 +4893,7 @@ export type InvalidVariantTypeError = {
  *
  * @example Nominal enum (missing case)
  * ```ts
- * import { freshState, addEnum, checkExhaustive, variantPattern, varPattern, conType, starKind, showError } from "./typechecker.js";
+ * import { freshState, addEnum, checkExhaustive, variantPattern, varPattern, conType, starKind, showError } from "system-f-omega";
  *
  * let state = freshState();
  * state = addEnum(state, "Color", [], [], [
@@ -4908,7 +4908,7 @@ export type InvalidVariantTypeError = {
  *
  * @example Structural variant (missing case)
  * ```ts
- * import { freshState, checkExhaustive, variantPattern, varPattern, variantType, conType, showError } from "./typechecker.js";
+ * import { freshState, checkExhaustive, variantPattern, varPattern, variantType, conType, showError } from "system-f-omega";
  *
  * const state = freshState();
  * const patterns = [variantPattern("Left", varPattern("x"))];
@@ -4922,7 +4922,7 @@ export type InvalidVariantTypeError = {
  *
  * @example Match inference failure
  * ```ts
- * import { freshState, addEnum, inferType, matchTerm, variantPattern, varPattern, conTerm, appType, conType, starKind, showError } from "./typechecker.js";
+ * import { freshState, addEnum, inferType, matchTerm, variantPattern, varPattern, conTerm, appType, conType, starKind, showError } from "system-f-omega";
  *
  * let state = freshState();
  * state = addEnum(state, "Color", [], [], [
@@ -4957,7 +4957,7 @@ export type MissingCaseTypeError = { missing_case: { label: string } };
  *
  * @example Construction
  * ```ts
- * import { ExtraCaseTypeError } from "./typechecker.js";
+ * import { ExtraCaseTypeError } from "system-f-omega";
  *
  * const err: ExtraCaseTypeError = { extra_case: { label: "Extra" } };
  * console.log(JSON.stringify(err));
@@ -4965,7 +4965,7 @@ export type MissingCaseTypeError = { missing_case: { label: string } };
  *
  * @example Extra pattern label
  * ```ts
- * import { freshState, addEnum, checkExhaustive, variantPattern, varPattern, conType, starKind, showError } from "./typechecker.js";
+ * import { freshState, addEnum, checkExhaustive, variantPattern, varPattern, conType, starKind, showError } from "system-f-omega";
  *
  * let state = freshState();
  * state = addEnum(state, "Color", [], [], [["Red", { var: "Unit" }]]).ok;  // Only Red
@@ -4996,7 +4996,7 @@ export type ExtraCaseTypeError = { extra_case: { label: string } };
  *
  * @example Construction
  * ```ts
- * import { NotATupleTypeError, conType } from "./typechecker.js";
+ * import { NotATupleTypeError, conType } from "system-f-omega";
  *
  * const err: NotATupleTypeError = { not_a_tuple: conType("Int") };
  * console.log(JSON.stringify(err));
@@ -5004,7 +5004,7 @@ export type ExtraCaseTypeError = { extra_case: { label: string } };
  *
  * @example Projection on constant
  * ```ts
- * import { freshState, addType, inferType, tupleProjectTerm, conTerm, conType, starKind, showError } from "./typechecker.js";
+ * import { freshState, addType, inferType, tupleProjectTerm, conTerm, conType, starKind, showError } from "system-f-omega";
  *
  * let state = freshState();
  * state = addType(state, "Int", starKind).ok;
@@ -5016,7 +5016,7 @@ export type ExtraCaseTypeError = { extra_case: { label: string } };
  *
  * @example Tuple pattern on record
  * ```ts
- * import { freshState, addType, checkPattern, tuplePattern, varPattern, recordType, conType, starKind, showError } from "./typechecker.js";
+ * import { freshState, addType, checkPattern, tuplePattern, varPattern, recordType, conType, starKind, showError } from "system-f-omega";
  *
  * let state = freshState();
  * state = addType(state, "Int", starKind).ok;
@@ -5049,7 +5049,7 @@ export type NotATupleTypeError = { not_a_tuple: Type };
  *
  * @example Construction
  * ```ts
- * import { TupleIndexOutofBoundsTypeError, tupleType, conType } from "./typechecker.js";
+ * import { TupleIndexOutofBoundsTypeError, tupleType, conType } from "system-f-omega";
  *
  * const err: TupleIndexOutofBoundsTypeError = {
  *   tuple_index_out_of_bounds: { tuple: tupleType([conType("Int")]), index: 1 }
@@ -5059,7 +5059,7 @@ export type NotATupleTypeError = { not_a_tuple: Type };
  *
  * @example Projection out-of-bounds
  * ```ts
- * import { freshState, addType, inferType, tupleTerm, tupleProjectTerm, conTerm, conType, starKind, showError } from "./typechecker.js";
+ * import { freshState, addType, inferType, tupleTerm, tupleProjectTerm, conTerm, conType, starKind, showError } from "system-f-omega";
  *
  * let state = freshState();
  * state = addType(state, "Int", starKind).ok;
@@ -5093,7 +5093,7 @@ export type TupleIndexOutofBoundsTypeError = {
  *
  * @example Construction
  * ```ts
- * import { MissingTraitImplError, conType } from "./typechecker.js";
+ * import { MissingTraitImplError, conType } from "system-f-omega";
  *
  * const err: MissingTraitImplError = {
  *   missing_trait_impl: { trait: "Eq", type: conType("String") }
@@ -5103,7 +5103,7 @@ export type TupleIndexOutofBoundsTypeError = {
  *
  * @example No impl (exact)
  * ```ts
- * import { freshState, addType, addTraitDef, checkTraitImplementation, conType, starKind, showError } from "./typechecker.js";
+ * import { freshState, addType, addTraitDef, checkTraitImplementation, conType, starKind, showError } from "system-f-omega";
  *
  * let state = freshState();
  * state = addType(state, "String", starKind).ok;
@@ -5115,8 +5115,8 @@ export type TupleIndexOutofBoundsTypeError = {
  *
  * @example Poly impl mismatch
  * ```ts
- * import { freshState, addType, addTraitDef, traitImplBinding, dictTerm, checkTraitImplementation, forallType, appType, starKind, showError } from "./typechecker.js";
- * import { varType } from "./typechecker.js";
+ * import { freshState, addType, addTraitDef, traitImplBinding, dictTerm, checkTraitImplementation, forallType, appType, starKind, showError } from "system-f-omega";
+ * import { varType } from "system-f-omega";
  *
  * let state = freshState();
  * state = addType(state, "Int", starKind).ok;
@@ -5152,7 +5152,7 @@ export type MissingTraitImplError = {
  *
  * @example Construction
  * ```ts
- * import { MissingMethodError } from "./typechecker.js";
+ * import { MissingMethodError } from "system-f-omega";
  *
  * const err: MissingMethodError = {
  *   missing_method: { trait: "Eq", method: "lt" }
@@ -5162,7 +5162,7 @@ export type MissingTraitImplError = {
  *
  * @example Dict missing method
  * ```ts
- * import { freshState, addType, addTraitDef, inferType, dictTerm, conType, starKind, arrowType, varType, showError } from "./typechecker.js";
+ * import { freshState, addType, addTraitDef, inferType, dictTerm, conType, starKind, arrowType, varType, showError } from "system-f-omega";
  *
  * let state = freshState();
  * state = addType(state, "Int", starKind).ok;
@@ -5178,7 +5178,7 @@ export type MissingTraitImplError = {
  *
  * @example Trait method (missing in dict)
  * ```ts
- * import { freshState, addType, addTraitDef, addDict, dictTerm, inferType, traitMethodTerm, varTerm, conType, starKind, showError } from "./typechecker.js";
+ * import { freshState, addType, addTraitDef, addDict, dictTerm, inferType, traitMethodTerm, varTerm, conType, starKind, showError } from "system-f-omega";
  *
  * let state = freshState();
  * state = addType(state, "Int", starKind).ok;
@@ -5213,7 +5213,7 @@ export type MissingMethodError = {
  *
  * @example Construction
  * ```ts
- * import { WrongNumberOfDictsError } from "./typechecker.js";
+ * import { WrongNumberOfDictsError } from "system-f-omega";
  *
  * const err: WrongNumberOfDictsError = {
  *   wrong_number_of_dicts: { expected: 1, actual: 0 }
@@ -5223,7 +5223,7 @@ export type MissingMethodError = {
  *
  * @example Trait app (missing dict)
  * ```ts
- * import { freshState, inferType, traitAppTerm, traitLamTerm, conType, starKind, varType, showError } from "./typechecker.js";
+ * import { freshState, inferType, traitAppTerm, traitLamTerm, conType, starKind, varType, showError } from "system-f-omega";
  *
  * let state = freshState();
  * const traitLam = traitLamTerm("d", "Eq", "Self", starKind, [{ trait: "Eq", type: varType("Self") }], conType("Int"));
@@ -5234,7 +5234,7 @@ export type MissingMethodError = {
  *
  * @example Trait app (extra dicts)
  * ```ts
- * import { freshState, inferType, traitAppTerm, traitLamTerm, conType, starKind, varType, dictTerm, showError } from "./typechecker.js";
+ * import { freshState, inferType, traitAppTerm, traitLamTerm, conType, starKind, varType, dictTerm, showError } from "system-f-omega";
  *
  * let state = freshState();
  * const traitLam = traitLamTerm("d", "Eq", "Self", starKind, [], conType("Int"));  // 0 constraints
@@ -5267,7 +5267,7 @@ export type WrongNumberOfDictsError = {
  *
  * @example Construction
  * ```ts
- * import { UnexpectedKindError, starKind, arrowKind } from "./typechecker.js";
+ * import { UnexpectedKindError, starKind, arrowKind } from "system-f-omega";
  *
  * const err: UnexpectedKindError = {
  *   unexpected_kind: { name: "List", kind: arrowKind(starKind, starKind) }
@@ -5278,7 +5278,7 @@ export type WrongNumberOfDictsError = {
  * @example Hypothetical binder mismatch
  * ```ts
  * // Assume addType validates against expected (e.g., primitive * only)
- * import { freshState, addType, starKind, arrowKind, showError } from "./typechecker.js";
+ * import { freshState, addType, starKind, arrowKind, showError } from "system-f-omega";
  *
  * let state = freshState();
  * // If primitive expected * but arrow given
@@ -5308,7 +5308,7 @@ export type UnexpectedKindError = {
  *
  * @example Construction
  * ```ts
- * import { CircularImportError } from "./typechecker.js";
+ * import { CircularImportError } from "system-f-omega";
  *
  * const err: CircularImportError = {
  *   circular_import: { name: "A", cycle: ["A", "AliasA", "A"] }
@@ -5318,7 +5318,7 @@ export type UnexpectedKindError = {
  *
  * @example Cycle in deps (alias self-ref)
  * ```ts
- * import { freshState, addType, collectDependencies, showError } from "./typechecker.js";
+ * import { freshState, addType, collectDependencies, showError } from "system-f-omega";
  *
  * let state = freshState();
  * state = addType(state, "A", { star: null }).ok;
@@ -5331,7 +5331,7 @@ export type UnexpectedKindError = {
  *
  * @example importModule propagation
  * ```ts
- * import { freshState, importModule, showError } from "./typechecker.js";
+ * import { freshState, importModule, showError } from "system-f-omega";
  *
  * let from = freshState();  // Assume cyclic deps
  * let into = freshState();
@@ -5363,7 +5363,7 @@ export type CircularImportError = {
  *
  * @example Construction
  * ```ts
- * import { DuplicateBindingError, typeBinding, starKind } from "./typechecker.js";
+ * import { DuplicateBindingError, typeBinding, starKind } from "system-f-omega";
  *
  * const err: DuplicateBindingError = {
  *   duplicate_binding: {
@@ -5377,7 +5377,7 @@ export type CircularImportError = {
  *
  * @example addType duplicate
  * ```ts
- * import { freshState, addType, starKind, showError } from "./typechecker.js";
+ * import { freshState, addType, starKind, showError } from "system-f-omega";
  *
  * let state = freshState();
  * state = addType(state, "Int", starKind).ok;
@@ -5390,7 +5390,7 @@ export type CircularImportError = {
  *
  * @example importModule root conflict
  * ```ts
- * import { freshState, addType, importModule, starKind, showError } from "./typechecker.js";
+ * import { freshState, addType, importModule, starKind, showError } from "system-f-omega";
  *
  * let from = freshState();
  * from = addType(from, "Int", starKind).ok;
@@ -5407,7 +5407,7 @@ export type CircularImportError = {
  *
  * @example Override (allowOverrides)
  * ```ts
- * import { freshState, addType, importModule, starKind } from "./typechecker.js";
+ * import { freshState, addType, importModule, starKind } from "system-f-omega";
  *
  * let from = freshState();
  * from = addType(from, "Int", starKind).ok;
@@ -5486,8 +5486,8 @@ export type DuplicateBindingError = {
  *   UnboundTypeError, KindMismatchTypeError, TypeMismatchTypeError,
  *   MissingTraitImplError, CyclicTypeError, DuplicateBindingError,
  *   starKind, conType
- * } from "./typechecker.js";
- * import { typeBinding } from "./typechecker.js";
+ * } from "system-f-omega";
+ * import { typeBinding } from "system-f-omega";
  *
  * // Lookup
  * const unbound: UnboundTypeError = { unbound: "Missing" };
@@ -5516,7 +5516,7 @@ export type DuplicateBindingError = {
  *
  * @example Real inference failures
  * ```ts
- * import { freshState, addType, inferType, checkType, lamTerm, appTerm, varTerm, conTerm, projectTerm, matchTerm, variantPattern, varPattern, recordTerm, conType, starKind, arrowType, showError } from "./typechecker.js";
+ * import { freshState, addType, inferType, checkType, lamTerm, appTerm, varTerm, conTerm, projectTerm, matchTerm, variantPattern, varPattern, recordTerm, conType, starKind, arrowType, showError } from "system-f-omega";
  *
  * let state = freshState();
  * state = addType(state, "Int", starKind).ok;
@@ -5535,8 +5535,8 @@ export type DuplicateBindingError = {
  *
  * @example showError output
  * ```ts
- * import { freshState, inferType, showError } from "./typechecker.js";
- * import { lamTerm, varTerm, conTerm, conType, starKind } from "./typechecker.js";
+ * import { freshState, inferType, showError } from "system-f-omega";
+ * import { lamTerm, varTerm, conTerm, conType, starKind } from "system-f-omega";
  *
  * let state = freshState();
  * state = addType(state, "Int", starKind).ok;
@@ -5591,7 +5591,7 @@ export type TypingError =
  *
  * @example Construction (typeEq helper)
  * ```ts
- * import { typeEq, varType, conType } from "./typechecker.js";
+ * import { typeEq, varType, conType } from "system-f-omega";
  *
  * const constraint: TypeEqConstraint = typeEq(varType("a"), conType("Int"));
  * console.log(JSON.stringify(constraint));
@@ -5599,7 +5599,7 @@ export type TypingError =
  *
  * @example Worklist solving
  * ```ts
- * import { freshState, solveConstraints, typeEq, varType, conType } from "./typechecker.js";
+ * import { freshState, solveConstraints, typeEq, varType, conType } from "system-f-omega";
  *
  * const state = freshState();
  * const worklist = [typeEq(varType("a"), conType("Int"))];
@@ -5610,7 +5610,7 @@ export type TypingError =
  *
  * @example Real inference (app arg unify)
  * ```ts
- * import { freshState, addType, inferType, lamTerm, appTerm, varTerm, conTerm, conType, starKind } from "./typechecker.js";
+ * import { freshState, addType, inferType, lamTerm, appTerm, varTerm, conTerm, conType, starKind } from "system-f-omega";
  *
  * let state = freshState();
  * state = addType(state, "Int", starKind).ok;
@@ -5643,7 +5643,7 @@ export type TypeEqConstraint = { type_eq: { left: Type; right: Type } };
  *
  * @example Construction (kindEq helper)
  * ```ts
- * import { kindEq, starKind, arrowKind } from "./typechecker.js";
+ * import { kindEq, starKind, arrowKind } from "system-f-omega";
  *
  * const constraint: KindEqConstraint = kindEq(starKind, arrowKind(starKind, starKind));
  * console.log(JSON.stringify(constraint));
@@ -5651,7 +5651,7 @@ export type TypeEqConstraint = { type_eq: { left: Type; right: Type } };
  *
  * @example Worklist solving (success)
  * ```ts
- * import { freshState, solveConstraints, kindEq, starKind } from "./typechecker.js";
+ * import { freshState, solveConstraints, kindEq, starKind } from "system-f-omega";
  *
  * const state = freshState();
  * const worklist = [kindEq(starKind, starKind)];
@@ -5661,7 +5661,7 @@ export type TypeEqConstraint = { type_eq: { left: Type; right: Type } };
  *
  * @example Worklist failure (mismatch)
  * ```ts
- * import { freshState, solveConstraints, kindEq, starKind, arrowKind } from "./typechecker.js";
+ * import { freshState, solveConstraints, kindEq, starKind, arrowKind } from "system-f-omega";
  *
  * const state = freshState();
  * const worklist = [kindEq(starKind, arrowKind(starKind, starKind))];
@@ -5671,7 +5671,7 @@ export type TypeEqConstraint = { type_eq: { left: Type; right: Type } };
  *
  * @example Real HKT app (kindEq added)
  * ```ts
- * import { freshState, addType, checkKind, appType, conType, starKind, arrowKind } from "./typechecker.js";
+ * import { freshState, addType, checkKind, appType, conType, starKind, arrowKind } from "system-f-omega";
  *
  * let state = freshState();
  * state = addType(state, "List", arrowKind(starKind, starKind)).ok;
@@ -5706,8 +5706,8 @@ export type KindEqConstraint = { kind_eq: { left: Kind; right: Kind } };
  *
  * @example Construction (hasKind helper)
  * ```ts
- * import { hasKind, lamType, starKind } from "./typechecker.js";
- * import { freshState } from "./typechecker.js";
+ * import { hasKind, lamType, starKind } from "system-f-omega";
+ * import { freshState } from "system-f-omega";
  *
  * const state = freshState();
  * const constraint = hasKind(lamType("X", starKind, { var: "X" }), starKind, state);
@@ -5716,7 +5716,7 @@ export type KindEqConstraint = { kind_eq: { left: Kind; right: Kind } };
  *
  * @example Worklist deferral
  * ```ts
- * import { freshState, solveConstraints, hasKind, lamType, starKind, arrowKind } from "./typechecker.js";
+ * import { freshState, solveConstraints, hasKind, lamType, starKind, arrowKind } from "system-f-omega";
  *
  * const state = freshState();
  * const worklist = [hasKind(lamType("X", starKind, { var: "X" }), starKind, state)];
@@ -5749,8 +5749,8 @@ export type HasKindConstraint = {
  *
  * @example Construction (hasType helper)
  * ```ts
- * import { hasType, lamTerm, arrowType } from "./typechecker.js";
- * import { freshState, conType } from "./typechecker.js";
+ * import { hasType, lamTerm, arrowType } from "system-f-omega";
+ * import { freshState, conType } from "system-f-omega";
  *
  * const state = freshState();
  * const constraint = hasType(lamTerm("x", conType("Int"), { var: "x" }), arrowType(conType("Int"), conType("Int")), state);
@@ -5759,8 +5759,8 @@ export type HasKindConstraint = {
  *
  * @example Worklist deferral
  * ```ts
- * import { freshState, solveConstraints, hasType, lamTerm, arrowType } from "./typechecker.js";
- * import { conType } from "./typechecker.js";
+ * import { freshState, solveConstraints, hasType, lamTerm, arrowType } from "system-f-omega";
+ * import { conType } from "system-f-omega";
  *
  * const state = freshState();
  * const worklist = [hasType(lamTerm("x", conType("Int"), { var: "x" }), arrowType(conType("Int"), conType("Bool")), state)];
@@ -5801,8 +5801,8 @@ export type HasTypeConstraint = {
 
  * @example Construction (helpers)
  * ```ts
- * import { typeEq, kindEq, hasKind, hasType } from "./typechecker.js";
- * import { freshState, varType, conType, lamTerm, arrowType } from "./typechecker.js";
+ * import { typeEq, kindEq, hasKind, hasType } from "system-f-omega";
+ * import { freshState, varType, conType, lamTerm, arrowType } from "system-f-omega";
  *
  * const state = freshState();
  *
@@ -5817,8 +5817,8 @@ export type HasTypeConstraint = {
 
  * @example Worklist solving
  * ```ts
- * import { freshState, solveConstraints, typeEq, kindEq, hasKind } from "./typechecker.js";
- * import { varType, conType, starKind } from "./typechecker.js";
+ * import { freshState, solveConstraints, typeEq, kindEq, hasKind } from "system-f-omega";
+ * import { varType, conType, starKind } from "system-f-omega";
  *
  * const state = freshState();
  * const worklist = [
@@ -5833,7 +5833,7 @@ export type HasTypeConstraint = {
 
  * @example Real inference (internal constraints)
  * ```ts
- * import { freshState, addType, inferType, lamTerm, appTerm, varTerm, conTerm, conType, starKind } from "./typechecker.js";
+ * import { freshState, addType, inferType, lamTerm, appTerm, varTerm, conTerm, conType, starKind } from "system-f-omega";
  *
  * let state = freshState();
  * state = addType(state, "Int", starKind).ok;
@@ -5885,7 +5885,7 @@ export type Constraint =
 
  * @example Construction (core values)
  * ```ts
- * import type { Value, Environment } from "./typechecker.js";
+ * import type { Value, Environment } from "system-f-omega";
  *
  * const env: Environment = new Map();
  *
@@ -5911,7 +5911,7 @@ export type Constraint =
 
  * @example Lazy thunk (call-by-name)
  * ```ts
- * import type { Value } from "./typechecker.js";
+ * import type { Value } from "system-f-omega";
  *
  * const thunk: Value = {
  *   vthunk: { term: { lam: { arg: "x", type: { con: "Int" }, body: { var: "x" } } }, env: new Map() }
@@ -5947,7 +5947,7 @@ export type Value =
  *
  * @example Construction
  * ```ts
- * import type { Environment, Value } from "./typechecker.js";
+ * import type { Environment, Value } from "system-f-omega";
  *
  * const env: Environment = new Map([
  *   ["x", { vvar: "self" } as Value],
@@ -5957,7 +5957,7 @@ export type Value =
  *
  * @example Closure capture
  * ```ts
- * import type { Environment, Value } from "./typechecker.js";
+ * import type { Environment, Value } from "system-f-omega";
  *
  * const outerEnv: Environment = new Map([["f", { vvar: "add" } as Value]]);
  * const closure: Value = {
@@ -5987,14 +5987,14 @@ export type Environment = Map<string, Value>;
  *
  * @example Success (Value)
  * ```ts
- * import type { EvalResult, Value } from "./typechecker.js";
+ * import type { EvalResult, Value } from "system-f-omega";
  *
  * const success: EvalResult = { ok: { vvar: "42" } as Value };
  * ```
  *
  * @example Error (string)
  * ```ts
- * import type { EvalResult } from "./typechecker.js";
+ * import type { EvalResult } from "system-f-omega";
  *
  * const err: EvalResult = { err: "Unbound variable 'x'" };
  * ```
@@ -6020,7 +6020,7 @@ export type EvalResult = Result<string, Value>; // Using string for error messag
  *
  * @example CBV (strict=true)
  * ```ts
- * import type { EvalConfig } from "./typechecker.js";
+ * import type { EvalConfig } from "system-f-omega";
  *
  * const cbv: EvalConfig = { strict: true, maxSteps: 1000 };
  * // Reduces args eagerly
@@ -6028,7 +6028,7 @@ export type EvalResult = Result<string, Value>; // Using string for error messag
  *
  * @example CBN (strict=false)
  * ```ts
- * import type { EvalConfig } from "./typechecker.js";
+ * import type { EvalConfig } from "system-f-omega";
  *
  * const cbn: EvalConfig = { strict: false, maxSteps: 1000 };
  * // Lazy args (thunks)
@@ -6059,15 +6059,15 @@ export type EvalConfig = {
  *
  * @example Success (Type)
  * ```ts
- * import type { Result } from "./typechecker.js";
- * import { conType } from "./typechecker.js";
+ * import type { Result } from "system-f-omega";
+ * import { conType } from "system-f-omega";
  *
  * const okRes: Result<string, Type> = { ok: conType("Int") };
  * ```
  *
  * @example Error (TypingError)
  * ```ts
- * import type { Result, TypingError } from "./typechecker.js";
+ * import type { Result, TypingError } from "system-f-omega";
  *
  * const errRes: Result<TypingError, Type> = {
  *   err: { unbound: "Missing" } as TypingError
@@ -6076,8 +6076,8 @@ export type EvalConfig = {
  *
  * @example Usage (inferType)
  * ```ts
- * import { freshState, inferType } from "./typechecker.js";
- * import type { Result } from "./typechecker.js";
+ * import { freshState, inferType } from "system-f-omega";
+ * import type { Result } from "system-f-omega";
  *
  * const state = freshState();
  * const res: Result<any, any> = inferType(state, { var: "x" });
@@ -6111,7 +6111,7 @@ export type Result<TErr, TOk> = { ok: TOk } | { err: TErr };
  *
  * @example Computation
  * ```ts
- * import { computeFreeTypes, arrowType, appType, conType, varType } from "./typechecker.js";
+ * import { computeFreeTypes, arrowType, appType, conType, varType } from "system-f-omega";
  *
  * const ty = arrowType(
  *   appType(conType("List"), varType("a")),
@@ -6147,7 +6147,7 @@ export type FreeTypeNames = {
  *
  * @example Computation
  * ```ts
- * import { computeFreePatterns, recordPattern, variantPattern, varPattern, conPattern } from "./typechecker.js";
+ * import { computeFreePatterns, recordPattern, variantPattern, varPattern, conPattern } from "system-f-omega";
  *
  * const pat = recordPattern([
  *   ["head", variantPattern("Cons", varPattern("hd"))],
@@ -6186,7 +6186,7 @@ export type FreePatternNames = {
  *
  * @example Computation
  * ```ts
- * import { computeFreeTerms, lamTerm, appTerm, varTerm, recordTerm } from "./typechecker.js";
+ * import { computeFreeTerms, lamTerm, appTerm, varTerm, recordTerm } from "system-f-omega";
  *
  * const term = lamTerm("x", { con: "Int" }, appTerm(varTerm("f"), recordTerm([["y", varTerm("z")]])));
  * const free = computeFreeTerms({ ctx: [], meta: { counter: 0, kinds: new Map(), solutions: new Map() } }, term);
@@ -6222,7 +6222,7 @@ export type FreeTermNames = {
  *
  * @example Worklist filling (unify)
  * ```ts
- * import { freshState, unifyTypes, appType, conType, varType } from "./typechecker.js";
+ * import { freshState, unifyTypes, appType, conType, varType } from "system-f-omega";
  *
  * const state = freshState();
  * const worklist: Worklist = [];
@@ -6233,7 +6233,7 @@ export type FreeTermNames = {
  *
  * @example Solving loop
  * ```ts
- * import { freshState, solveConstraints, typeEq, varType, conType } from "./typechecker.js";
+ * import { freshState, solveConstraints, typeEq, varType, conType } from "system-f-omega";
  *
  * const state = freshState();
  * const worklist: Worklist = [typeEq(varType("a"), conType("Int"))];
@@ -6261,7 +6261,7 @@ export type Worklist = Constraint[];
  *
  * @example Local solving
  * ```ts
- * import { freshState, solveConstraints, typeEq, varType, conType } from "./typechecker.js";
+ * import { freshState, solveConstraints, typeEq, varType, conType } from "system-f-omega";
  *
  * const state = freshState();
  * const worklist = [typeEq(varType("a"), conType("Int"))];
@@ -6272,7 +6272,7 @@ export type Worklist = Constraint[];
  *
  * @example Merging (local shadows)
  * ```ts
- * import { mergeSubsts, varType, conType } from "./typechecker.js";
+ * import { mergeSubsts, varType, conType } from "system-f-omega";
  *
  * const global = new Map([["a", conType("Bool")]]);
  * const local = new Map([["a", conType("Int")], ["b", conType("String")]]);
@@ -6282,8 +6282,8 @@ export type Worklist = Constraint[];
  *
  * @example Application
  * ```ts
- * import { freshState, applySubstitution, varType } from "./typechecker.js";
- * import { conType } from "./typechecker.js";
+ * import { freshState, applySubstitution, varType } from "system-f-omega";
+ * import { conType } from "system-f-omega";
  *
  * const state = freshState();
  * const subst: Substitution = new Map([["a", conType("Int")]]);
@@ -6310,8 +6310,8 @@ export type Substitution = Map<string, Type>;
  *
  * @example Success (Type)
  * ```ts
- * import { ok } from "./typechecker.js";
- * import { conType } from "./typechecker.js";
+ * import { ok } from "system-f-omega";
+ * import { conType } from "system-f-omega";
  *
  * const success = ok(conType("Int"));  // { ok: { con: "Int" } }
  * console.log("ok:", success.ok.con);  // "Int"
@@ -6319,7 +6319,7 @@ export type Substitution = Map<string, Type>;
  *
  * @example API usage (inferType)
  * ```ts
- * import { freshState, addType, inferType, conTerm, conType, starKind } from "./typechecker.js";
+ * import { freshState, addType, inferType, conTerm, conType, starKind } from "system-f-omega";
  *
  * let state = freshState();
  * state = addType(state, "Int", starKind).ok;  // Uses ok
@@ -6344,7 +6344,7 @@ export const ok = <T>(val: T) => ({ ok: val });
  *
  * @example Error (TypingError)
  * ```ts
- * import { err, UnboundTypeError } from "./typechecker.js";
+ * import { err, UnboundTypeError } from "system-f-omega";
  *
  * const unboundErr = err({ unbound: "Missing" } as UnboundTypeError);
  * console.log("err:", unboundErr.err.unbound);  // "Missing"
@@ -6352,7 +6352,7 @@ export const ok = <T>(val: T) => ({ ok: val });
  *
  * @example API usage (unbound)
  * ```ts
- * import { freshState, inferType, varTerm } from "./typechecker.js";
+ * import { freshState, inferType, varTerm } from "system-f-omega";
  *
  * const state = freshState();
  * const result = inferType(state, varTerm("missing"));  // Uses err internally
@@ -6364,3 +6364,774 @@ export const ok = <T>(val: T) => ({ ok: val });
  * @see {@link showError} Error display
  */
 export const err = <T>(val: T) => ({ err: val });
+
+/**
+ * Pretty-prints context bindings (multi-line).
+ *
+ * **Purpose**: Debugs `TypeCheckerState.ctx`. Uses `showBinding`.
+ *
+ * @param context - Binding list
+ * @returns Newline-joined strings
+ *
+ * @example Empty context
+ * ```ts
+ * import { freshState, showContext } from "system-f-omega";
+ *
+ * const state = freshState();
+ * console.log(showContext(state.ctx));  // ""
+ * ```
+ *
+ * @example Basic bindings
+ * ```ts
+ * import { freshState, addType, addTerm, showContext, starKind, conType } from "system-f-omega";
+ *
+ * let state = freshState();
+ * state = addType(state, "Int", starKind).ok;
+ * state = addTerm(state, "x", { con: { name: "42", type: conType("Int") } }).ok;
+ * console.log(showContext(state.ctx));
+ * // "Type: Int = *\nTerm: x = Int"
+ * ```
+ *
+ * @example Complex (trait/enum)
+ * ```ts
+ * import { freshState, addType, addEnum, addTraitDef, showContext, starKind } from "system-f-omega";
+ *
+ * let state = freshState();
+ * state = addType(state, "Int", starKind).ok;
+ * state = addEnum(state, "Option", ["T"], [starKind], [["None", { tuple: [] }]]).ok;
+ * state = addTraitDef(state, "Eq", "A", starKind, [["eq", { arrow: { from: { var: "A" }, to: { var: "Bool" } }}]]).ok;
+ * console.log(showContext(state.ctx));
+ * // Multi-line: Type, Enum, TraitDef...
+ * ```
+ *
+ * @see {@link showBinding} Single binding
+ * @see {@link freshState} Empty ctx
+ */
+export const showContext = (context: Context) =>
+  context.map((t) => showBinding(t)).join("\n");
+
+/**
+ * Extracts spine arguments from left-associated applications.
+ *
+ * **Purpose**: Deconstructs nominal types: `Either<Int, Bool>` → `["Int", "Bool"]`.
+ * Used in nominal unification, enum expansion, `showType`.
+ *
+ * @param ty - Possibly nested app type
+ * @returns Argument array (left-to-right)
+ *
+ * @example Nested nominal app
+ * ```ts
+ * import { getSpineArgs, appType, conType } from "system-f-omega";
+ *
+ * const either = appType(appType(conType("Either"), conType("Int")), conType("Bool"));
+ * console.log("spine:", getSpineArgs(either));  // ["Int", "Bool"]
+ * ```
+ *
+ * @example Single app
+ * ```ts
+ * import { getSpineArgs, appType, conType } from "system-f-omega";
+ *
+ * const listInt = appType(conType("List"), conType("Int"));
+ * console.log("single:", getSpineArgs(listInt));  // ["Int"]
+ * ```
+ *
+ * @example Non-app
+ * ```ts
+ * import { getSpineArgs, conType, arrowType } from "system-f-omega";
+ * import { conType as int } from "system-f-omega";
+ *
+ * console.log("con:", getSpineArgs(conType("Int")));       // []
+ * console.log("arrow:", getSpineArgs(arrowType(conType("Int"), int("Bool"))));  // []
+ * ```
+ *
+ * @internal Used by {@link unifyTypes}, {@link showType}
+ * @see {@link getSpineHead} Head extractor
+ */
+export function getSpineArgs(ty: Type): Type[] {
+  const args: Type[] = [];
+  let current = ty;
+  while ("app" in current) {
+    args.unshift(current.app.arg);
+    current = current.app.func;
+  }
+  return args;
+}
+
+/**
+ * Pretty-prints single binding for context display.
+ *
+ * **Purpose**: Formats `Context` entries. Used by `showContext`.
+ *
+ * @param bind - Binding variant
+ * @returns Formatted string
+ *
+ * @example Term binding
+ * ```ts
+ * import { showBinding } from "system-f-omega";
+ * import { conType } from "system-f-omega";
+ *
+ * const termBind = { term: { name: "x", type: conType("Int") } };
+ * console.log(showBinding(termBind));  // "Term: x = Int"
+ * ```
+ *
+ * @example Type binding
+ * ```ts
+ * import { showBinding, starKind } from "system-f-omega";
+ *
+ * const typeBind = { type: { name: "Int", kind: starKind } };
+ * console.log(showBinding(typeBind));  // "Type: Int = *"
+ * ```
+ *
+ * @example Trait def
+ * ```ts
+ * import { showBinding } from "system-f-omega";
+ * import { starKind, arrowType, varType } from "system-f-omega";
+ *
+ * const traitBind = {
+ *   trait_def: {
+ *     name: "Eq",
+ *     type_param: "A",
+ *     kind: starKind,
+ *     methods: [["eq", arrowType(varType("A"), varType("Bool"))]]
+ *   }
+ * };
+ * console.log(showBinding(traitBind));  // "Trait: Eq = TraitDef (Eq A = *\n  eq : (A → Bool))"
+ * ```
+ *
+ * @example Trait impl + dict + alias
+ * ```ts
+ * import { showBinding, conType } from "system-f-omega";
+ *
+ * const implBind = { trait_impl: { trait: "Eq", type: conType("Int"), dict: { var: "d" } } };
+ * console.log(showBinding(implBind));  // "Impl: Eq = d: Int"
+ *
+ * const dictBind = { dict: { name: "eqInt", trait: "Eq", type: conType("Int") } };
+ * console.log(showBinding(dictBind));  // "Dict: eqInt = Trait Eq : Int"
+ *
+ * const aliasBind = {
+ *   type_alias: { name: "Id", params: ["A"], kinds: [starKind], body: conType("A") }
+ * };
+ * console.log(showBinding(aliasBind));  // "Type Alias: Id<A::*> = A"
+ * ```
+ *
+ * @see {@link showContext} Multi-binding printer
+ * @see {@link showType} Embedded types
+ * @see {@link showTraitDef} Trait methods
+ */
+export const showBinding = (bind: Binding) => {
+  if ("term" in bind)
+    return `Term: ${bind.term.name} = ${showType(bind.term.type)}`;
+  if ("type" in bind)
+    return `Type: ${bind.type.name} = ${showKind(bind.type.kind)}`;
+  if ("trait_def" in bind)
+    return `Trait: ${bind.trait_def.name} = ${showTraitDef(bind.trait_def)}`;
+  if ("trait_impl" in bind)
+    return `Impl: ${bind.trait_impl.trait} = ${showTerm(bind.trait_impl.dict)}: ${showType(bind.trait_impl.type)}`;
+  if ("dict" in bind)
+    return `Dict: ${bind.dict.name} = Trait ${bind.dict.trait} : ${showType(bind.dict.type)}`;
+  if ("type_alias" in bind) {
+    const params = bind.type_alias.params
+      .map((p, i) => `${p}::${showKind(bind.type_alias.kinds[i]!)}`)
+      .join(", ");
+    return `Type Alias: ${bind.type_alias.name}<${params}> = ${showType(bind.type_alias.body)}`;
+  }
+};
+
+/**
+ * Pretty-prints `TypingError` for user-facing diagnostics.
+ *
+ * **Purpose**: Human-readable errors with context (types/kinds shown).
+ * Covers all variants: unbound, mismatch, missing impl/case/field, cyclic, etc.
+
+ * @param err - Typing error
+ * @returns Formatted string
+ *
+ * @example Unbound identifier
+ * ```ts
+ * import { freshState, inferType, varTerm, showError } from "system-f-omega";
+ *
+ * const state = freshState();
+ * const result = inferType(state, varTerm("missing"));
+ * console.log(showError(result.err));  // "Unbound identifier: missing"
+ * ```
+ *
+ * @example Type mismatch
+ * ```ts
+ * import { freshState, addType, inferType, conTerm, appTerm, lamTerm, varTerm, arrowType, conType, starKind, showError, showType } from "system-f-omega";
+ *
+ * let state = freshState();
+ * state = addType(state, "Int", starKind).ok;
+ * state = addType(state, "Bool", starKind).ok;
+ *
+ * const id = lamTerm("x", conType("Int"), varTerm("x"));
+ * const badApp = appTerm(id, conTerm("true", conType("Bool")));
+ * const result = inferType(state, badApp);
+ * console.log(showError(result.err));
+ * // "Type mismatch:
+ * //   Expected: (Int → Int)
+ * //   Actual:   Bool"
+ * ```
+ *
+ * @example Missing trait impl
+ * ```ts
+ * import { freshState, addType, addTraitDef, checkTraitImplementation, conType, starKind, showError } from "system-f-omega";
+ *
+ * let state = freshState();
+ * state = addType(state, "String", starKind).ok;
+ * state = addTraitDef(state, "Eq", "A", starKind, [["eq", conType("Bool")]]).ok;
+ *
+ * const result = checkTraitImplementation(state, "Eq", conType("String"));
+ * console.log(showError(result.err));  // "Missing trait implementation:\n  Trait: Eq\n  Type:  String"
+ * ```
+ *
+ * @example Non-exhaustive match
+ * ```ts
+ * import { freshState, addEnum, checkExhaustive, variantPattern, varPattern, conType, starKind, showError } from "system-f-omega";
+ *
+ * let state = freshState();
+ * state = addEnum(state, "Color", [], [], [["Red", { var: "Unit" }], ["Blue", { var: "Unit" }]]).ok;
+ *
+ * const patterns = [variantPattern("Red", varPattern("x"))];  // Missing Blue
+ * const result = checkExhaustive(state, patterns, conType("Color"));
+ * console.log(showError(result.err));  // "Non-exhaustive match: missing case 'Blue'"
+ * ```
+ *
+ * @example Cyclic type
+ * ```ts
+ * import { freshState, unifyTypes, arrowType, varType, showError } from "system-f-omega";
+ *
+ * const state = freshState();
+ * const subst = new Map<string, Type>();
+ * const result = unifyTypes(state, varType("a"), arrowType(varType("a"), varType("Int")), [], subst);
+ * console.log(showError(result.err));  // "Cyclic type detected involving: a"
+ * ```
+ *
+ * @example Duplicate binding (import)
+ * ```ts
+ * import { freshState, addType, importModule, starKind, showError } from "system-f-omega";
+ *
+ * let from = freshState();
+ * from = addType(from, "Int", starKind).ok;
+ *
+ * let into = freshState();
+ * into = addType(into, "Int", starKind).ok;
+ *
+ * const result = importModule({ from, into, roots: ["Int"] });
+ * console.log(showError(result.err));
+ * // "Duplicate binding for 'Int':\n  Existing: Type: Int = *\n  Incoming: Type: Int = *"
+ * ```
+ *
+ * @see {@link inferType} Common caller
+ * @see {@link checkType} Checking errors
+ */
+export function showError(err: TypingError): string {
+  if ("unbound" in err) return `Unbound identifier: ${err.unbound}`;
+
+  if ("kind_mismatch" in err) {
+    return `Kind mismatch:\n  Expected: ${showKind(err.kind_mismatch.expected)}\n  Actual:   ${showKind(err.kind_mismatch.actual)}`;
+  }
+
+  if ("type_mismatch" in err) {
+    return `Type mismatch:\n  Expected: ${showType(err.type_mismatch.expected)}\n  Actual:   ${showType(err.type_mismatch.actual)}`;
+  }
+
+  if ("not_a_function" in err) {
+    return `Not a function:\n  ${showType(err.not_a_function)}`;
+  }
+
+  if ("not_a_type_function" in err) {
+    return `Not a type-level function:\n  ${showType(err.not_a_type_function)}`;
+  }
+
+  if ("cyclic" in err) {
+    return `Cyclic type detected involving: ${err.cyclic}`;
+  }
+
+  if ("not_a_record" in err) {
+    return `Not a record type:\n  ${showType(err.not_a_record)}`;
+  }
+
+  if ("missing_field" in err) {
+    return `Missing field '${err.missing_field.label}' in record:\n  ${showType(err.missing_field.record)}`;
+  }
+
+  if ("not_a_variant" in err) {
+    return `Not a variant type:\n  ${showType(err.not_a_variant)}`;
+  }
+
+  if ("invalid_variant_label" in err) {
+    return `Invalid variant label '${err.invalid_variant_label.label}' for:\n  ${showType(err.invalid_variant_label.variant)}`;
+  }
+
+  if ("missing_case" in err) {
+    return `Non-exhaustive match: missing case '${err.missing_case.label}'`;
+  }
+
+  if ("extra_case" in err) {
+    return `Unreachable case in match: '${err.extra_case.label}'`;
+  }
+
+  if ("not_a_tuple" in err) {
+    return `Not a tuple type:\n  ${showType(err.not_a_tuple)}`;
+  }
+
+  if ("tuple_index_out_of_bounds" in err) {
+    const { tuple, index } = err.tuple_index_out_of_bounds;
+    return `Tuple index out of bounds:\n  Tuple: ${showType(tuple)}\n  Index: ${index}`;
+  }
+
+  if ("missing_trait_impl" in err) {
+    const { trait, type } = err.missing_trait_impl;
+    return `Missing trait implementation:\n  Trait: ${trait}\n  Type:  ${showType(type)}`;
+  }
+
+  if ("missing_method" in err) {
+    const { trait, method } = err.missing_method;
+    return `Missing method '${method}' in trait '${trait}'`;
+  }
+
+  if ("wrong_number_of_dicts" in err) {
+    const { expected, actual } = err.wrong_number_of_dicts;
+    return `Wrong number of dictionaries provided:\n  Expected: ${expected}\n  Actual:   ${actual}`;
+  }
+
+  if ("unexpected_kind" in err) {
+    const { name, kind } = err.unexpected_kind;
+    return `Unexpected kind assigned to '${name}': ${showKind(kind)}`;
+  }
+
+  if ("duplicate_binding" in err) {
+    const { name, existing, incoming } = err.duplicate_binding;
+    return (
+      `Duplicate binding for '${name}':\n` +
+      `  Existing: ${showBinding(existing)}\n` +
+      `  Incoming: ${showBinding(incoming)}`
+    );
+  }
+
+  if ("circular_import" in err) {
+    const { name, cycle } = err.circular_import;
+    return (
+      `Circular import detected involving '${name}':\n` +
+      `  Cycle: ${cycle.join(" → ")}`
+    );
+  }
+
+  return "Unknown type error";
+}
+
+/**
+ * Extracts success with custom error message.
+ *
+ * **Purpose**: `unwrap` + formatted error:
+ * - Uses `showError` for TypingError → user-friendly.
+ *
+ * @template TErr Error type
+ * @template TOk Success type
+ * @param {Result<TErr, TOk>} result - Result to unwrap
+ * @param {string} [msg="Failed"] - Prefix message
+ * @returns {TOk} Success value
+ * @throws {Error} `${msg}: ${showError(err)}`
+ *
+ * @example
+ * ```ts
+ * import { expect, err, UnboundTypeError } from "system-f-omega";
+ *
+ * expect(err({ unbound: "x" } as UnboundTypeError), "Var lookup failed");
+ * // Throws: "Var lookup failed: Unbound identifier: x"
+ * ```
+ */
+export const unwrap = <TOk = unknown>(
+  result: Result<TypingError, TOk>,
+  msg: string = "Failed",
+): TOk => {
+  if ("ok" in result) return result.ok;
+  throw new Error(`${msg}: ${showError(result.err)}`);
+};
+
+/**
+ * Pretty-prints kinds for debugging and error messages.
+ *
+ * **Purpose**: Human-readable kind strings (parenthesized arrows).
+ * Used in `showType` (`∀a::κ.τ`), `showTerm` (tylam kinds), kind errors.
+ *
+ * @param k - Kind to print
+ * @returns String (e.g., `*`, `(* → *)`)
+ *
+ * @example Basic kinds
+ * ```ts
+ * import { showKind, starKind, arrowKind } from "system-f-omega";
+ *
+ * showKind(starKind);                           // "*"
+ * showKind(arrowKind(starKind, starKind));      // "(* → *)"
+ * ```
+ *
+ * @example Nested HKT
+ * ```ts
+ * import { showKind, starKind, arrowKind } from "system-f-omega";
+ *
+ * showKind(arrowKind(starKind, arrowKind(starKind, starKind)));
+ * // "(* → ((* → *) → *))"
+ * ```
+ *
+ * @see {@link showType} Uses for polymorphic binders
+ * @see {@link showTerm} Tylam/trait-lam kinds
+ */
+export function showKind(k: Kind): string {
+  if ("star" in k) return "*";
+  if ("arrow" in k)
+    return `(${showKind(k.arrow.from)} → ${showKind(k.arrow.to)})`;
+  return "unknown";
+}
+
+/**
+ * Pretty-prints types for debugging, REPL, and error messages.
+ *
+ * **Purpose**: Human-readable type strings with conventional notation:
+ * - Nominal apps: `Either<I32, Bool>` (spine-aware).
+ * - Functions: `(Int → Bool)` (parenthesized).
+ * - Polymorphism: `∀a::*. a → a`, `λt::*. t → t`.
+ * - Data: `{x: Int}`, `<Left: I32 | Right: Bool>`, `(Int, Bool)`.
+ * - Special: `⊥` (never), `?0` (metas), `μX. ...` (recursion).
+ *
+ * Recursive. Primary output for `inferType`, errors, docs.
+ *
+ * @param t - Type to print
+ * @returns Pretty-printed string
+ *
+ * @example Nominal type applications
+ * ```ts
+ * import { showType, appType, conType } from "system-f-omega";
+ *
+ * showType(appType(appType(conType("Either"), conType("Int")), conType("Bool")));
+ * // "Either<Int, Bool>"
+ * ```
+ *
+ * @example Polymorphic + higher-kinded
+ * ```ts
+ * import { showType, forallType, arrowType, lamType, starKind, arrowKind, varType } from "system-f-omega";
+ * import { conType } from "system-f-omega";
+ *
+ * showType(forallType("a", starKind, arrowType(varType("a"), varType("a"))));
+ * // "∀a::*. (a → a)"
+ *
+ * showType(lamType("F", arrowKind(starKind, starKind), varType("F")));
+ * // "λF::(* → *). F"
+ * ```
+ *
+ * @example Data structures + recursion
+ * ```ts
+ * import { showType, recordType, variantType, muType, tupleType, boundedForallType } from "system-f-omega";
+ * import { varType, starKind, conType } from "system-f-omega";
+ *
+ * showType(recordType([["x", conType("Int")], ["y", conType("Bool")]]));
+ * // "{x: Int, y: Bool}"
+ *
+ * showType(variantType([["Left", conType("Int")], ["Right", conType("Bool")]]));
+ * // "<Left: Int | Right: Bool>"
+ *
+ * showType(muType("L", varType("L")));  // "μL.L"
+ *
+ * showType(boundedForallType("a", starKind, [{ trait: "Eq", type: varType("a") }], varType("a")));
+ * // "∀a::* where Eq<a>. a"
+ * ```
+ *
+ * @see {@link showTerm} Term printer (uses this)
+ * @see {@link showKind} Kind printer (embedded)
+ * @see {@link showPattern} Pattern printer
+ * @see {@link getSpineArgs} Nominal app spine
+ */
+export function showType(t: Type): string {
+  if ("app" in t && "con" in t.app.func) {
+    const con = t.app.func.con;
+    const args = getSpineArgs(t); // Helper from below
+    return `${con}${args.length > 0 ? `<${args.map(showType).join(", ")}>` : ""}`; // Either<I32, Bool>
+  }
+  if ("var" in t) return t.var;
+  if ("arrow" in t)
+    return `(${showType(t.arrow.from)} → ${showType(t.arrow.to)})`;
+  if ("never" in t) return "⊥";
+  if ("forall" in t)
+    return `∀${t.forall.var}::${showKind(t.forall.kind)}.${showType(t.forall.body)}`;
+  if ("app" in t) return `(${showType(t.app.func)} ${showType(t.app.arg)})`;
+  if ("lam" in t)
+    return `λ${t.lam.var}::${showKind(t.lam.kind)}.${showType(t.lam.body)}`;
+  if ("con" in t) return t.con;
+  if ("record" in t) {
+    const fields = t.record
+      .map(([label, type]) => `${label}: ${showType(type)}`)
+      .join(", ");
+    return `{${fields}}`;
+  }
+  if ("variant" in t) {
+    const cases = t.variant
+      .map(([label, type]) => `${label}: ${showType(type)}`)
+      .join(" | ");
+    return `<${cases}>`;
+  }
+  if ("mu" in t) {
+    return `μ${t.mu.var}.${showType(t.mu.body)}`;
+  }
+  if ("tuple" in t) {
+    const elements = t.tuple.map(showType).join(", ");
+    return `(${elements})`;
+  }
+  if ("bounded_forall" in t) {
+    const constraints = t.bounded_forall.constraints
+      .map((c) => `${c.trait}<${showType(c.type)}>`)
+      .join(", ");
+    return `∀${t.bounded_forall.var}::${showKind(t.bounded_forall.kind)} where ${constraints}.${showType(t.bounded_forall.body)}`;
+  }
+  if ("evar" in t) return `?${t.evar}`;
+  return "unknown";
+}
+
+/**
+ * Pretty-prints terms for debugging, REPL, and error messages.
+ *
+ * **Purpose**: Human-readable term strings with conventional notation:
+ * - Lambdas: `λx:τ.body`
+ * - Apps: `(callee arg)` (parenthesized).
+ * - Polymorphism: `Λα::κ.body`, `term [τ]`.
+ * - Data: `{x = 1, y = true}`, `<Left=42> as Either<Int,Bool>`.
+ * - Traits: `dict Eq<Int> { eq = λx:Int.λy:Int.true }`, `d.eq`.
+ * - Control: `match xs { Nil => 0 | Cons(x,_) => x }`.
+ *
+ * Recursive. Embeds `showType`/`showKind`/`showPattern`. Primary output for inference results.
+ *
+ * @param t - Term to print
+ * @returns Pretty-printed string
+ *
+ * @example Core lambda calculus
+ * ```ts
+ * import { showTerm, lamTerm, appTerm, varTerm, conType } from "system-f-omega";
+ *
+ * const id = lamTerm("x", conType("Int"), varTerm("x"));
+ * showTerm(id);  // "λx:Int.x"
+ *
+ * const app = appTerm(varTerm("f"), varTerm("x"));
+ * showTerm(app);  // "(f x)"
+ * ```
+ *
+ * @example Data + patterns
+ * ```ts
+ * import { showTerm, recordTerm, injectTerm, matchTerm, tupleTerm } from "system-f-omega";
+ * import { conTerm, conType, varTerm, showPattern, varPattern, wildcardPattern, variantPattern, tuplePattern } from "system-f-omega";
+ *
+ * showTerm(recordTerm([["x", conTerm("1", conType("Int"))]]));  // "{x = 1}"
+ *
+ * const inj = injectTerm("Left", conTerm("42", conType("Int")), conType("Either"));
+ * showTerm(inj);  // "<Left=42> as Either"
+ *
+ * const match = matchTerm(varTerm("xs"), [
+ *   [varPattern("x"), conTerm("0", conType("Int"))],
+ *   [variantPattern("Cons", tuplePattern([varPattern("hd"), wildcardPattern()])), varTerm("hd")]
+ * ]);
+ * showTerm(match);  // "match xs { x => 0 | Cons((hd, _)) => hd }"
+ * ```
+ *
+ * @example Traits + polymorphism
+ * ```ts
+ * import { showTerm, tylamTerm, tyappTerm, dictTerm, traitMethodTerm, starKind } from "system-f-omega";
+ * import { lamTerm, varTerm, conType, conTerm, showType } from "system-f-omega";
+ *
+ * const polyId = tylamTerm("a", starKind, lamTerm("x", conType("Int"), varTerm("x")));
+ * showTerm(polyId);  // "Λa::*. λx:Int.x"
+ *
+ * showTerm(tyappTerm(polyId, conType("Bool")));  // "Λa::*. λx:Int.x [Bool]"
+ *
+ * const dict = dictTerm("Eq", conType("Int"), [["eq", conTerm("eqInt", conType("Bool"))]]);
+ * showTerm(dict);  // "dict Eq<Int> { eq = eqInt }"
+ *
+ * showTerm(traitMethodTerm(dict, "eq"));  // "dict Eq<Int> { eq = eqInt }.eq"
+ * ```
+ *
+ * @see {@link showType} Embedded types
+ * @see {@link showKind} Kind annotations
+ * @see {@link showPattern} Match cases
+ */
+export function showTerm(t: Term): string {
+  if ("var" in t) return t.var;
+  if ("lam" in t)
+    return `λ${t.lam.arg}:${showType(t.lam.type)}.${showTerm(t.lam.body)}`;
+  if ("app" in t) return `(${showTerm(t.app.callee)} ${showTerm(t.app.arg)})`;
+  if ("tylam" in t)
+    return `Λ${t.tylam.var}::${showKind(t.tylam.kind)}.${showTerm(t.tylam.body)}`;
+  if ("tyapp" in t)
+    return `${showTerm(t.tyapp.term)} [${showType(t.tyapp.type)}]`;
+  if ("con" in t) return t.con.name;
+  if ("let" in t)
+    return `let ${t.let.name} = ${showTerm(t.let.value)} in ${showTerm(t.let.body)}`;
+
+  if ("record" in t) {
+    const fields = t.record
+      .map(([label, term]) => `${label} = ${showTerm(term)}`)
+      .join(", ");
+    return `{${fields}}`;
+  }
+  if ("trait_lam" in t) {
+    const constraints = t.trait_lam.constraints
+      .map((c) => `${c.trait}<${showType(c.type)}>`)
+      .join(", ");
+    return `Λ${t.trait_lam.type_var}::${showKind(t.trait_lam.kind)} where ${constraints}. ${showTerm(t.trait_lam.body)}`;
+  }
+
+  if ("trait_app" in t) {
+    const dicts = t.trait_app.dicts.map(showTerm).join(", ");
+    return `${showTerm(t.trait_app.term)} [${showType(t.trait_app.type)}] with dicts {${dicts}}`;
+  }
+
+  if ("dict" in t) {
+    const methods = t.dict.methods
+      .map(([name, impl]) => `${name} = ${showTerm(impl)}`)
+      .join(", ");
+    return `dict ${t.dict.trait}<${showType(t.dict.type)}> { ${methods} }`;
+  }
+
+  if ("trait_method" in t) {
+    return `${showTerm(t.trait_method.dict)}.${t.trait_method.method}`;
+  }
+  if ("project" in t) return `${showTerm(t.project.record)}.${t.project.label}`;
+  if ("inject" in t)
+    return `<${t.inject.label}=${showTerm(t.inject.value)}> as ${showType(t.inject.variant_type)}`;
+  if ("match" in t) {
+    const cases = t.match.cases
+      .map(([pattern, body]) => `${showPattern(pattern)} => ${showTerm(body)}`)
+      .join(" | ");
+    return `match ${showTerm(t.match.scrutinee)} { ${cases} }`;
+  }
+  if ("fold" in t) {
+    return `fold[${showType(t.fold.type)}](${showTerm(t.fold.term)})`;
+  }
+  if ("unfold" in t) {
+    return `unfold(${showTerm(t.unfold)})`;
+  }
+  if ("tuple" in t) {
+    const elements = t.tuple.map(showTerm).join(", ");
+    return `(${elements})`;
+  }
+  if ("tuple_project" in t) {
+    return `${showTerm(t.tuple_project.tuple)}.${t.tuple_project.index}`;
+  }
+  return "unknown";
+}
+
+/**
+ * Pretty-prints patterns for debugging and error messages.
+ *
+ * **Purpose**: Human-readable string for patterns in `match` expressions.
+ * Recursive: handles nested records/variants/tuples.
+ *
+ * Used in: `showTerm(match)`, error reporting (`missing_case`).
+ *
+ * @param p - Pattern to print
+ * @returns String representation (e.g., `{x: y}`, `Cons(_)`)
+ *
+ * @example Simple patterns
+ * ```ts
+ * import { showPattern, varPattern, wildcardPattern, conPattern } from "system-f-omega";
+ *
+ * showPattern(varPattern("x"));     // "x"
+ * showPattern(wildcardPattern());   // "_"
+ * showPattern(conPattern("None", {}));  // "None"
+ * ```
+ *
+ * @example Nested structures
+ * ```ts
+ * import { showPattern, recordPattern, variantPattern, tuplePattern } from "system-f-omega";
+ * import { varPattern, wildcardPattern } from "system-f-omega";
+ *
+ * showPattern(recordPattern([["x", varPattern("a")], ["y", wildcardPattern()]]));
+ * // "{x: a, y: _}"
+ *
+ * showPattern(variantPattern("Cons", tuplePattern([varPattern("hd"), wildcardPattern()]))));
+ * // "Cons((hd, _))"
+ *
+ * showPattern(tuplePattern([varPattern("1"), varPattern("2")]));  // "(1, 2)"
+ * ```
+ *
+ * @see {@link showType} Type pretty-printer
+ * @see {@link showTerm} Term pretty-printer (uses this)
+ */
+export function showPattern(p: Pattern): string {
+  if ("var" in p) return p.var;
+  if ("wildcard" in p) return "_";
+  if ("con" in p) return p.con.name;
+  if ("record" in p) {
+    const fields = p.record
+      .map(([label, pat]) => `${label}: ${showPattern(pat)}`)
+      .join(", ");
+    return `{${fields}}`;
+  }
+  if ("variant" in p) {
+    return `${p.variant.label}(${showPattern(p.variant.pattern)})`;
+  }
+  if ("tuple" in p) {
+    const elements = p.tuple.map(showPattern).join(", ");
+    return `(${elements})`;
+  }
+  return "unknown";
+}
+
+/**
+ * Pretty-prints trait definition (multi-line methods).
+ *
+ * **Purpose**: Debugs `TraitDef` bindings. Used in `showBinding`.
+ *
+ * @param t - Trait definition
+ * @returns Formatted string
+ *
+ * @example Basic trait
+ * ```ts
+ * import { showTraitDef } from "system-f-omega";
+ * import { starKind, arrowType, varType } from "system-f-omega";
+ *
+ * const eqTrait = {
+ *   name: "Eq",
+ *   type_param: "A",
+ *   kind: starKind,
+ *   methods: [["eq", arrowType(varType("A"), varType("Bool"))]]
+ * };
+ * console.log(showTraitDef(eqTrait));
+ * // "TraitDef (Eq A = *\n  eq : (A → Bool))"
+ * ```
+ *
+ * @example Multi-method
+ * ```ts
+ * import { showTraitDef } from "system-f-omega";
+ * import { starKind, arrowType, varType } from "system-f-omega";
+ *
+ * const ordTrait = {
+ *   name: "Ord",
+ *   type_param: "A",
+ *   kind: starKind,
+ *   methods: [
+ *     ["eq", arrowType(varType("A"), varType("Bool"))],
+ *     ["lt", arrowType(varType("A"), varType("Bool"))]
+ *   ]
+ * };
+ * console.log(showTraitDef(ordTrait));
+ * // "TraitDef (Ord A = *\n  eq : (A → Bool)\n  lt : (A → Bool))"
+ * ```
+ *
+ * @example HKT trait
+ * ```ts
+ * import { showTraitDef, arrowKind, starKind } from "system-f-omega";
+ * import { varType, arrowType } from "system-f-omega";
+ *
+ * const functorTrait = {
+ *   name: "Functor",
+ *   type_param: "F",
+ *   kind: arrowKind(starKind, starKind),
+ *   methods: [["map", arrowType(varType("F"), varType("F"))]]
+ * };
+ * console.log(showTraitDef(functorTrait));
+ * // "TraitDef (Functor F = (* → *)\n  map : (F → F))"
+ * ```
+ *
+ * @internal Used by {@link showBinding}
+ * @see {@link showBinding} Context printer
+ */
+export const showTraitDef = (t: TraitDef) => {
+  return `TraitDef (${t.name} ${t.type_param} = ${showKind(t.kind)}\n${t.methods.map((y) => `  ${y[0]} : ${showType(y[1])}`).join("\n")})`;
+};
