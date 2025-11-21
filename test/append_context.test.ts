@@ -23,7 +23,7 @@ import {
   starKind,
   tuplePattern,
   tupleType,
-  typecheck,
+  typeCheck,
   typesEqual,
   variantPattern,
   varPattern,
@@ -406,7 +406,7 @@ test("typecheck uses new bindings", () => {
     "Option",
   );
   const term = conTerm("someInt", appType(conType("Option"), conType("Int")));
-  const inferred = unwrap(typecheck(st, term), "Inferred Option<Int>");
+  const inferred = unwrap(typeCheck(st, term), "Inferred Option<Int>");
   expect(
     typesEqual(st, inferred, appType(conType("Option"), conType("Int"))),
   ).toBe(true);

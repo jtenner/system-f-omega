@@ -16,6 +16,8 @@ import type {
   FreePatternNames,
   FreeTermNames,
   FreeTypeNames,
+  HasKindConstraint,
+  HasTypeConstraint,
   ImportAliases,
   InjectTerm,
   Kind,
@@ -57,24 +59,257 @@ import type {
   Worklist,
 } from "./types.js";
 import { err, ok } from "./types.js";
-
+/**
+ * Creates a type equality constraint for the worklist solver.
+ *
+ * **Purpose**: Adds a unification constraint `left = right` to a worklist.
+ * This is the core primitive for type equivalence during inference, checking,
+ * and subsumption. The solver will normalize both sides, handle meta-vars,
+ * and propagate substitutions via `solveConstraints(worklist, subst)`.
+ *
+ * Used in:
+ * - `unifyTypes()` (structural matching)
+ * - `subsumes()` (subtyping)
+ * - Pattern matching unification
+ *
+ * @param left - Left-hand type (normalized by solver)
+ * @param right - Right-hand type (normalized by solver)
+ * @returns Type equality constraint
+ *
+ * @example Basic unification
+ * ```ts
+ * import { typeEq, solveConstraints, freshState } from "./typechecker.js";
+ * import { varType } from "./typechecker.js";
+ *
+ * const state = freshState();
+ * const worklist: Constraint[] = [typeEq(varType("a"), varType("Int"))];
+ * const subst = new Map<string, Type>();
+ *
+ * const result = solveConstraints(state, worklist, subst);
+ * // subst: { "a" => Int }
+ * ```
+ *
+ * @example Recursive unification (arrow types)
+ * ```ts
+ * import { typeEq, arrowType, solveConstraints, freshState } from "./typechecker.js";
+ *
+ * const state = freshState();
+ * const worklist = [typeEq(
+ *   arrowType({ var: "a" }, { var: "b" }),
+ *   arrowType(conType("Int"), conType("Bool"))
+ * )];
+ * const subst = new Map();
+ * solveConstraints(state, worklist, subst);
+ * // Unifies a=Int, b=Bool
+ * ```
+ *
+ * @see {@link solveConstraints}
+ * @see {@link unifyTypes}
+ */
 export const typeEq = (left: Type, right: Type): TypeEqConstraint => ({
   type_eq: { left, right },
 });
+
+/**
+ * Creates a kind equality constraint for kind unification.
+ *
+ * **Purpose**: Ensures two kinds are equivalent (e.g., during higher-kinded
+ * type application). Kinds unify structurally: `* ≡ *`, `κ₁→κ₂ ≡ κ₁'→κ₂'`.
+ *
+ * Less common than type equality (triggers on HKT apps like `List<Int>` where
+ * `List :: * → *`).
+ *
+ * @param left - Left-hand kind
+ * @param right - Right-hand kind
+ * @returns Kind equality constraint
+ *
+ * @example HKT application kind check
+ * ```ts
+ * import { kindEq, arrowKind, starKind, solveConstraints, freshState } from "./typechecker.js";
+ *
+ * const state = freshState();
+ * const worklist: Constraint[] = [kindEq(
+ *   arrowKind(starKind, starKind),  // * → *
+ *   arrowKind(starKind, starKind)   // Matches
+ * )];
+ * // Processes via unifyKinds() → ok(null)
+ * ```
+ *
+ * @example Kind mismatch (fails)
+ * ```ts
+ * import { kindEq, starKind, arrowKind, solveConstraints, freshState } from "./typechecker.js";
+ *
+ * const state = freshState();
+ * const worklist = [kindEq(starKind, arrowKind(starKind, starKind))];
+ * const result = solveConstraints(state, worklist);
+ * // err: { kind_mismatch: { expected: *, actual: (* → *) } }
+ * ```
+ *
+ * @see {@link solveConstraints}
+ * @see {@link checkAppKind}
+ */
 export const kindEq = (left: Kind, right: Kind): KindEqConstraint => ({
   kind_eq: { left, right },
 });
-export const hasKind = (ty: Type, kind: Kind, state: TypeCheckerState) => ({
+
+/**
+ * Creates a "has kind" constraint to defer kind checking.
+ *
+ * **Purpose**: Schedules `Γ ⊢ ty : kind` for later resolution. Used when a type's
+ * well-formedness is needed but context/metas aren't ready (e.g., during
+ * unification of polymorphic types, or checking alias bodies).
+ *
+ * The solver calls `checkKind(state, ty)` and adds a follow-up `kindEq` if needed.
+ *
+ * @param ty - Type to check
+ * @param kind - Expected kind
+ * @param state - Checker state (context + metas)
+ * @returns Has-kind constraint
+ *
+ * @example Defer kind check during unification
+ * ```ts
+ * import { hasKind, solveConstraints, freshState, lamType, starKind } from "./typechecker.js";
+ *
+ * const state = freshState();
+ * const worklist: Constraint[] = [hasKind(
+ *   lamType("X", starKind, varType("X")),  // λX::*.X : * → *
+ *   starKind
+ * )];
+ * solveConstraints(state, worklist);
+ * // Triggers checkKind(lam...) → adds kindEq(*→*, *) → fails safely
+ * ```
+ *
+ * @example Valid HKT kinding
+ * ```ts
+ * import { hasKind, appType, conType, starKind, solveConstraints } from "./typechecker.js";
+ * // Assumes List :: * → * in ctx
+ * const worklist = [hasKind(appType(conType("List"), conType("Int")), starKind)];
+ * // checkKind(List<Int>) → * ✓
+ * ```
+ *
+ * @see {@link checkKind}
+ * @see {@link solveConstraints}
+ */
+export const hasKind = (
+  ty: Type,
+  kind: Kind,
+  state: TypeCheckerState,
+): HasKindConstraint => ({
   has_kind: { ty, kind, state },
 });
-export const hasType = (term: Term, ty: Type, state: TypeCheckerState) => ({
+
+/**
+ * Creates a "has type" constraint to defer type checking/inference of a subterm.
+ *
+ * **Purpose**: Schedules `Γ ⊢ term : ty` (via `inferType` or `checkType`).
+ * Used in bidirectional checking when a subterm's type needs resolution but
+ * context isn't finalized (e.g., during let-bindings, trait method checking,
+ * or dictionary validation).
+ *
+ * Triggers `inferType(state, term)` → adds `typeEq(result, ty)`.
+ *
+ * @param term - Term to type
+ * @param ty - Expected type
+ * @param state - Checker state
+ * @returns Has-type constraint
+ *
+ * @example Defer subterm checking in let-binding
+ * ```ts
+ * import { hasType, solveConstraints, freshState, lamTerm } from "./typechecker.js";
+ * import { conType } from "./typechecker.js";
+ *
+ * const state = freshState();
+ * const worklist: Constraint[] = [hasType(
+ *   lamTerm("x", conType("Int"), { var: "x" }),  // λx:Int.x
+ *   { arrow: { from: conType("Int"), to: conType("Int") } }
+ * )];
+ * solveConstraints(state, worklist);
+ * // infers (Int → Int) → typeEq ✓
+ * ```
+ *
+ * @example Trait method validation
+ * ```ts
+ * // Inside inferDictType: defer each method impl check
+ * worklist.push(hasType(methodImpl, expectedMethodType));
+ * ```
+ *
+ * @see {@link inferType}
+ * @see {@link solveConstraints}
+ */
+export const hasType = (
+  term: Term,
+  ty: Type,
+  state: TypeCheckerState,
+): HasTypeConstraint => ({
   has_type: { term, ty, state },
 });
 
+/** Infer mode used for the inferTypeWithMode function. */
 export type InferMode =
   | { infer: null } // Infer type arguments
   | { check: Type }; // Check against expected type
 
+export const inferMode = { infer: null };
+export const checkMode = (check: Type) => ({ check });
+
+/**
+ * Bidirectional type inference/checking dispatcher.
+ *
+ * **Purpose**: Unified entrypoint for **bidirectional type checking**.
+ * - **Infer mode** (`{ infer: null }`): Synthesizes type via `inferType` (`Γ ⊢ e ⇒ τ`).
+ * - **Check mode** (`{ check: Type }`): Validates against expected type via `checkType` (`Γ ⊢ e ⇐ τ`), returning inferred/resolved type.
+ *
+ * Returns `Type` in **both modes** (unifies APIs). Handles polymorphism, traits, and constraints seamlessly.
+ * Central to the typechecker — used in applications, lets, trait methods, pattern branches, etc.
+ *
+ * **Why bidirectional?**
+ * - **Robust**: Infers when possible, checks when expected (e.g., lambdas, records).
+ * - **Precise errors**: Checking gives better diagnostics than pure inference.
+ * - **Efficient**: Avoids unnecessary generalization.
+ *
+ * @param state - Type checker state (context + meta-vars)
+ * @param term - Term to type
+ * @param mode - Inference mode: `{ infer: null }` or `{ check: Type }`
+ * @returns Inferred/checked type, or error (mismatch, unbound, etc.)
+ *
+ * @example Inference mode (synthesize type)
+ * ```ts
+ * import { inferTypeWithMode, freshState, lamTerm, conType, varTerm } from "./typechecker.js";
+ *
+ * const state = freshState();
+ * const identity = lamTerm("x", conType("Int"), varTerm("x"));
+ * const result = inferTypeWithMode(state, identity, { infer: null });
+ * console.log(showType(result.ok));  // (Int → Int)
+ * ```
+ *
+ * @example Checking mode (validate against expected)
+ * ```ts
+ * import { inferTypeWithMode, arrowType, freshState } from "./typechecker.js";
+ *
+ * const state = freshState();
+ * const expected = arrowType(conType("Int"), conType("Bool"));
+ * const result = inferTypeWithMode(state, identity, { check: expected });
+ * // ok({ type: (Int → Bool), subst: Map }) → returns (Int → Bool)
+ * // or err(type_mismatch) if incompatible
+ * ```
+ *
+ * @example Error case (mismatch in check mode)
+ * ```ts
+ * import { inferTypeWithMode, freshState, conTerm } from "./typechecker.js";
+ * import { arrowType, conType } from "./typechecker.js";
+ *
+ * const state = freshState();
+ * const num = conTerm("42", conType("Int"));
+ * const result = inferTypeWithMode(state, num, {
+ *   check: arrowType(conType("Int"), conType("Bool"))
+ * });
+ * // err: { type_mismatch: { expected: (Int → Bool), actual: Int } }
+ * ```
+ *
+ * @see {@link inferType} Synthesis-only (infer mode)
+ * @see {@link checkType} Analysis-only (check mode)
+ * @see {@link InferMode} Mode discriminator
+ */
 export function inferTypeWithMode(
   state: TypeCheckerState,
   term: Term,
@@ -89,9 +324,147 @@ export function inferTypeWithMode(
   return inferType(state, term);
 }
 
+/**
+ * The base kind `*` representing concrete types.
+ *
+ * **Purpose**: The terminal kind in the kind lattice. All value-habiting types
+ * have kind `*`: `Int :: *`, `Bool :: *`, `List<Int> :: *`. Higher-kinded types
+ * (type constructors) use arrow kinds: `List :: * → *`.
+ *
+ * **Usage**:
+ * - Type bindings: `addType(state, "Int", starKind)`
+ * - Polymorphic binders: `forallType("a", starKind, ...)`, `tylamTerm("a", starKind, ...)`
+ * - Kind unification/app checking: `List<Int>` requires `List :: * → *`
+ *
+ * @example Type constructor declaration
+ * ```ts
+ * import { addType, starKind, arrowKind } from "./typechecker.js";
+ *
+ * // Int :: *
+ * addType(freshState(), "Int", starKind);
+ *
+ * // List :: * → *
+ * addType(freshState(), "List", arrowKind(starKind, starKind));
+ * ```
+ *
+ * @example Polymorphic lambda
+ * ```ts
+ * import { tylamTerm, starKind } from "./typechecker.js";
+ *
+ * const id = tylamTerm("a", starKind, lamTerm("x", { var: "a" }, { var: "x" }));
+ * // Λa::*. (a → a)
+ * ```
+ *
+ * @see {@link arrowKind}
+ * @see {@link addType}
+ * @see {@link checkKind}
+ */
 export const starKind: Kind = { star: null };
+
+/**
+ * The bottom type `⊥` (never type) — inhabits no values.
+ *
+ * **Purpose**: Represents the empty type (uninhabited). Key properties:
+ * - **Subtyping**: `⊥ <: τ` for *any* `τ` (anything matches bottom).
+ * - **Unification**: `⊥ ~ τ` succeeds if `τ :: *` (but `τ ~ ⊥` only if `τ = ⊥`).
+ * - **Uses**: Unreachable branches, empty variants (`<>`), cycle detection fallback,
+ *   error recovery in inference.
+ *
+ * **Never confuses with `void`**: `⊥` is a *type*, not a value (no `neverValue`).
+ *
+ * @example Subtyping (⊥ matches anything)
+ * ```ts
+ * import { neverType, isBottom, isAssignableTo, freshState } from "./typechecker.js";
+ * import { conType } from "./typechecker.js";
+ *
+ * const state = freshState();
+ * isBottom(state, neverType);           // true
+ * isAssignableTo(state, neverType, conType("Int"));  // true (⊥ <: Int)
+ * ```
+ *
+ * @example Unification behavior
+ * ```ts
+ * import { unifyTypes, neverType, freshState } from "./typechecker.js";
+ * import { conType } from "./typechecker.js";
+ *
+ * const state = freshState();
+ * unifyTypes(state, neverType, conType("Int"), [], new Map());  // ok(null)
+ * unifyTypes(state, conType("Int"), neverType, [], new Map());  // err(mismatch)
+ * ```
+ *
+ * @example Empty variant (unreachable case)
+ * ```ts
+ * import { variantType } from "./typechecker.js";
+ *
+ * const emptyVariant = variantType([]);  // < > :: ⊥
+ * // normalizeType(state, emptyVariant) → { never: null }
+ * ```
+ *
+ * @see {@link isBottom}
+ * @see {@link isAssignableTo}
+ * @see {@link subsumes}
+ */
 export const neverType = { never: null };
 
+/**
+ * Merges local and global substitutions, with **local shadowing global**.
+ *
+ * **Purpose**: Combines substitutions from nested inference/checking scopes.
+ * - **Globals first**: Persistent solutions (`meta.solutions`).
+ * - **Local overrides**: Temporary bindings from current `solveConstraints` take precedence.
+ *
+ * Used after constraint solving to propagate solutions upward:
+ * - `checkType` → `mergeSubsts(solveRes.ok, bodyCheckRes.ok.subst)`
+ * - Trait methods, pattern branches, let-bindings.
+ * Ensures meta-vars solved locally update globals without losing prior solutions.
+ *
+ * **Key invariant**: Local subst **never conflicts** with globals (unification ensures compatibility).
+ *
+ * @param local - Temporary substitution (higher precedence)
+ * @param globals - Persistent/global solutions (base layer)
+ * @returns Merged `Map<string, Type>` (local shadows globals)
+ *
+ * @example Basic merge (local shadows)
+ * ```ts
+ * import { mergeSubsts } from "./typechecker.js";
+ * import { varType, conType } from "./typechecker.js";
+ *
+ * const globals = new Map([["a", conType("Int")]]);
+ * const local = new Map([["a", conType("Bool")], ["b", conType("String")]]);
+ *
+ * const merged = mergeSubsts(local, globals);
+ * console.log(merged.get("a"));  // Bool (local wins!)
+ * console.log(merged.get("b"));  // String
+ * ```
+ *
+ * @example Real unification flow (checkType)
+ * ```ts
+ * import { mergeSubsts, solveConstraints, freshState, typeEq } from "./typechecker.js";
+ * import { varType } from "./typechecker.js";
+ *
+ * const state = freshState();
+ * const worklist = [typeEq({ var: "a" }, { var: "b" })];
+ * const localSubst = new Map();  // From solveConstraints(worklist)
+ * solveConstraints(state, worklist, localSubst);  // { "a" => { var: "b" } }
+ *
+ * const globals = state.meta.solutions;  // { "b" => Int }
+ * const merged = mergeSubsts(localSubst, globals);  // { "a" => Int, "b" => Int }
+ * ```
+ *
+ * @example Empty cases
+ * ```ts
+ * const emptyLocal = new Map();
+ * const merged1 = mergeSubsts(emptyLocal, globals);  // === globals
+ *
+ * const emptyGlobal = new Map();
+ * const merged2 = mergeSubsts(local, emptyGlobal);   // === local
+ * ```
+ *
+ * @see {@link solveConstraints} Produces local subst
+ * @see {@link checkType} Uses merge for nested results
+ * @see {@link applySubstitution} Consumes merged subst
+ * @see {@link Substitution} `Map<string, Type>`
+ */
 export function mergeSubsts(
   local: Substitution,
   globals: Substitution,
@@ -104,14 +477,123 @@ export function mergeSubsts(
   return merge;
 }
 
+/** Check is a given type is a meta (or existential) variable. */
 export const isMetaVar = (type: Type): type is MetaType => "evar" in type;
 
+/**
+ * Creates a fresh existential meta-variable `?N` for type inference.
+ *
+ * **Purpose**: Generates unification variables during inference/checking.
+ * - **Unbound metas**: Represent unknowns solved later by `solveConstraints`.
+ * - **Kind-tracked**: `env.kinds.set(name, kind)` enables `checkKind(?N)`.
+ * - **Counter-based**: Sequential `?0`, `?1`, ... (avoids clashes).
+ *
+ * Core to **algorithm W/HM-style inference**: Instantiate foralls, defer decisions.
+ * Used everywhere: polymorphism (`instantiateType`), app checking, pattern matching.
+ *
+ * @param env - Meta environment (`state.meta`) with counter + solutions
+ * @param kind - Kind of meta-var (defaults `*` for concrete types)
+ * @returns Fresh `{ evar: "?N" }`
+ *
+ * @example Basic inference variable
+ * ```ts
+ * import { freshMetaVar, freshState } from "./typechecker.js";
+ * import { starKind } from "./typechecker.js";
+ *
+ * const state = freshState();
+ * const meta = freshMetaVar(state.meta, starKind);
+ * console.log(meta);  // { evar: "?0" }
+ * console.log(state.meta.kinds.get("?0"));  // { star: null }
+ * ```
+ *
+ * @example HKT meta-variable
+ * ```ts
+ * import { freshMetaVar, freshState, arrowKind } from "./typechecker.js";
+ * import { starKind } from "./typechecker.js";
+ *
+ * const state = freshState();
+ * const hktMeta = freshMetaVar(state.meta, arrowKind(starKind, starKind));  // ?1 :: * → *
+ * // Used for: inferType(app(List, Int)) → List<Int> where List = ?1
+ * ```
+ *
+ * @example Polymorphism instantiation
+ * ```ts
+ * import { freshMetaVar, freshState, forallType } from "./typechecker.js";
+ * import { starKind, varType } from "./typechecker.js";
+ *
+ * const state = freshState();
+ * const poly = forallType("a", starKind, arrowType(varType("a"), varType("a")));
+ * const freshA = freshMetaVar(state.meta);  // ?0
+ * // instantiateType(poly) → ?0 → ?0 (id specialized)
+ * ```
+ *
+ * @see {@link solveMetaVar} Solves `?N := τ`
+ * @see {@link MetaEnv} Tracks `counter`, `kinds`, `solutions`
+ * @see {@link instantiateType} Uses for forall instantiation
+ */
 export function freshMetaVar(env: MetaEnv, kind: Kind = starKind): MetaType {
   const name = `?${env.counter++}`;
   env.kinds.set(name, kind);
   return { evar: name };
 }
 
+/**
+ * Checks if a type normalizes to the bottom type `⊥` (never).
+ *
+ * **Purpose**: Detects uninhabited types for:
+ * - **Subtyping**: `⊥ <: τ` always holds (`isAssignableTo`).
+ * - **Unification**: `⊥ ~ τ` succeeds if `τ :: *`.
+ * - **Exhaustiveness**: Empty variants/matches → `⊥`.
+ * - **Cycles**: Infinite normalization → `⊥` fallback.
+ *
+ * Normalizes first (`normalizeType(state, type)`), then checks `"never" in ty`.
+ *
+ * @param state - Checker state (for normalization)
+ * @param type - Input type (may be complex/aliased)
+ * @returns `true` if `⊥`, `false` otherwise
+ *
+ * @example Direct bottom
+ * ```ts
+ * import { isBottom, neverType, freshState } from "./typechecker.js";
+ *
+ * const state = freshState();
+ * isBottom(state, neverType);  // true
+ * ```
+ *
+ * @example Subtyping use (⊥ matches anything)
+ * ```ts
+ * import { isBottom, isAssignableTo, freshState, conType } from "./typechecker.js";
+ * import { neverType } from "./typechecker.js";
+ *
+ * const state = freshState();
+ * const unreachable = neverType;
+ * isBottom(state, unreachable);                  // true
+ * isAssignableTo(state, unreachable, conType("Int"));  // true (⊥ <: Int)
+ * ```
+ *
+ * @example Normalization to bottom (empty variant)
+ * ```ts
+ * import { isBottom, freshState, variantType } from "./typechecker.js";
+ *
+ * const state = freshState();
+ * const emptyVar = variantType([]);  // < >
+ * isBottom(state, emptyVar);         // true (normalizes to ⊥)
+ * ```
+ *
+ * @example Cycle detection fallback
+ * ```ts
+ * import { isBottom, freshState, muType, varType } from "./typechecker.js";
+ *
+ * const state = freshState();
+ * const cyclic = muType("X", { var: "X" });  // Degenerate μX.X
+ * isBottom(state, cyclic);                   // true (normalize → ⊥)
+ * ```
+ *
+ * @see {@link neverType} The `⊥` constructor
+ * @see {@link normalizeType} Preprocessing step
+ * @see {@link isAssignableTo} Uses for `⊥ <: τ`
+ * @see {@link subsumes} Bottom early-exit
+ */
 export const isBottom = (state: TypeCheckerState, type: Type) =>
   "never" in normalizeType(state, type);
 
@@ -137,6 +619,38 @@ export function solveMetaVar(
   return ok(null);
 }
 
+/**
+ * Occurs check: detects if meta-var `evar` appears in `ty` (prevents cycles).
+ *
+ * **Purpose**: Ensures no cyclic bindings like `?X := ?X → Int` during unification.
+ * Recurses structurally, follows solutions (`?Y → sol`), skips bound vars/foralls.
+ * Called by `solveMetaVar`/`unifyMetaVar` before binding.
+ *
+ * @param env - Meta environment (for following solutions)
+ * @param evar - Meta-var name to find (`"?X"`)
+ * @param ty - Type to search
+ * @returns `true` if `evar` occurs (cycle!), `false` otherwise
+ *
+ * @example Cycle detection (blocks binding)
+ * ```ts
+ * import { occursCheckEvar, freshState } from "./typechecker.js";
+ * import { arrowType, varType } from "./typechecker.js";
+ *
+ * const state = freshState();
+ * const env = state.meta;
+ * const cycleTy = arrowType({ evar: "?0" }, varType("Int"));  // ?0 → Int
+ * occursCheckEvar(env, "?0", cycleTy);  // true → reject ?0 := ?0 → Int
+ * ```
+ *
+ * @example Follows solutions
+ * ```ts
+ * env.solutions.set("?1", { evar: "?0" });  // ?1 := ?0
+ * occursCheckEvar(env, "?0", { evar: "?1" });  // true (follows ?1 → ?0)
+ * ```
+ *
+ * @see {@link solveMetaVar} Caller (rejects on `true`)
+ * @see {@link unifyMetaVar} Caller during unification
+ */
 export function occursCheckEvar(env: MetaEnv, evar: string, ty: Type): boolean {
   if ("evar" in ty) {
     if (ty.evar === evar) return true;
@@ -182,7 +696,68 @@ export function occursCheckEvar(env: MetaEnv, evar: string, ty: Type): boolean {
   return false;
 }
 
-// Recurse, substitute into body, then tyapp the outer fresh
+/**
+ * Instantiates polymorphic terms by freshening type variables (term-level `instantiateType`).
+ *
+ * **Purpose**: Monomorphizes type-lambda-bound terms for concrete use:
+ * - **Type lambdas** (`Λα. e`): Freshen `α → ?N`, substitute into body, return `e[?N] [?N]`.
+ * - **Structural recursion**: Instantiates subterms/types recursively (post-order).
+ *
+ * Used for:
+ * - Trait dictionary instantiation (`checkTraitImplementation`).
+ * - Polymorphic let-bindings, applications.
+ * - Avoids capture during substitution.
+ *
+ * **Algorithm** (tylam special case):
+ * 1. Recurse: `instBody = instantiateTerm(body)`
+ * 2. Fresh: `?N = freshMetaVar()`
+ * 3. Subst: `body[α ↦ ?N]` (via `applySubstitutionToTerm`)
+ * 4. Apply: `tyappTerm(body[?N], ?N)`
+ *
+ * Other constructors: Recurse structurally + `instantiateType` on embedded types.
+ *
+ * @param state - Checker state (metas for freshening)
+ * @param term - Input term (possibly polymorphic)
+ * @returns Instantiated term with fresh metas
+ *
+ * @example Basic type-lambda instantiation
+ * ```ts
+ * import { instantiateTerm, freshState, tylamTerm, lamTerm, varTerm, varType, starKind } from "./typechecker.js";
+ *
+ * const state = freshState();
+ * const polyId = tylamTerm("a", starKind, lamTerm("x", varType("a"), varTerm("x")));
+ * // Λa::*. λx:a. x
+ *
+ * const inst = instantiateTerm(state, polyId);
+ * // λx:?0. x [?0]  (monomorphized)
+ * ```
+ *
+ * @example Nested: Dictionary methods
+ * ```ts
+ * import { instantiateTerm, freshState, dictTerm } from "./typechecker.js";
+ * // Assumes poly methods with tylams
+ *
+ * const polyDict = dictTerm("Eq", { var: "Self" }, [
+ *   ["eq", tylamTerm("a", starKind,  poly impl )]
+ * ]);
+ * const instDict = instantiateTerm(state, polyDict);
+ * // Methods now monomorphized with fresh ?N
+ * ```
+ *
+ * @example Trait lambda (constraints + body)
+ * ```ts
+ * import { instantiateTerm, freshState, traitLamTerm } from "./typechecker.js";
+ *
+ * const traitLam = traitLamTerm("d", "Eq", "Self", starKind, [], body);
+ * const inst = instantiateTerm(state, traitLam);
+ * // Constraints/types freshened, body instantiated
+ * ```
+ *
+ * @see {@link instantiateType} Type-level counterpart (foralls)
+ * @see {@link applySubstitutionToTerm} Substitutes fresh metas
+ * @see {@link freshMetaVar} Generates `?N`
+ * @see {@link checkTraitImplementation} Primary caller
+ */
 export function instantiateTerm(state: TypeCheckerState, term: Term): Term {
   // Recurse first: Instantiate inner tytams (post-order)
   let instBody = term;
@@ -284,6 +859,64 @@ export function instantiateTerm(state: TypeCheckerState, term: Term): Term {
   return term;
 }
 
+/**
+ * Instantiates universal quantifiers in types by freshening bound variables.
+ *
+ * **Purpose**: Skolemizes polymorphic types for concrete use (e.g., subsumption, unification):
+ * - **`∀α. τ`**: Replace `α ↦ ?N`, recurse on body.
+ * - **`∀{C}. τ`**: Same (constraints handled externally via dicts).
+ * - **Recurses** until quantifier-free.
+ *
+ * Used in:
+ * - `subsumes()`: Instantiate general type before subtyping.
+ * - Trait resolution: Freshen impl types.
+ * - Unification: Avoid capture.
+ *
+ * **Algorithm**:
+ * 1. `∀α. τ` → `fv = freshMetaVar()` → `τ[α ↦ fv]` → recurse
+ * 2. `∀{C}. τ` → same (skip `C`)
+ * 3. Base: return `τ`
+ *
+ * @param state - Checker state (metas for freshening)
+ * @param type - Input type (possibly polymorphic)
+ * @returns Quantifier-free type with fresh metas
+ *
+ * @example Basic forall instantiation
+ * ```ts
+ * import { instantiateType, freshState, forallType, arrowType, varType, starKind } from "./typechecker.js";
+ *
+ * const state = freshState();
+ * const polyId = forallType("a", starKind, arrowType(varType("a"), varType("a")));
+ * const inst = instantiateType(state, polyId);
+ * console.log(showType(inst));  // (?0 → ?0)
+ * ```
+ *
+ * @example Nested foralls
+ * ```ts
+ * import { instantiateType, freshState, forallType, tupleType, varType, starKind } from "./typechecker.js";
+ *
+ * const state = freshState();
+ * const nested = forallType("a", starKind,
+ *   forallType("b", starKind, tupleType([varType("a"), varType("b")])));
+ * const inst = instantiateType(state, nested);
+ * console.log(showType(inst));  // (?0, ?1)
+ * ```
+ *
+ * @example Bounded forall (constraints external)
+ * ```ts
+ * import { instantiateType, freshState, boundedForallType, arrowType, varType, starKind } from "./typechecker.js";
+ *
+ * const state = freshState();
+ * const bounded = boundedForallType("a", starKind, [], arrowType(varType("a"), varType("a")));
+ * const inst = instantiateType(state, bounded);
+ * console.log(showType(inst));  // (?0 → ?0)  (ignores constraints)
+ * ```
+ *
+ * @see {@link substituteType} Performs `[α ↦ ?N]`
+ * @see {@link freshMetaVar} Generates `?N`
+ * @see {@link subsumes} Primary caller (instantiate general)
+ * @see {@link instantiateTerm} Term-level counterpart
+ */
 export function instantiateType(state: TypeCheckerState, type: Type): Type {
   if ("forall" in type) {
     const fv = freshMetaVar(state.meta);
@@ -311,6 +944,71 @@ export function instantiateType(state: TypeCheckerState, type: Type): Type {
   return type;
 }
 
+/**
+ * Subtyping relation: `specific <: general` (mutates `worklist`/`subst`).
+ *
+ * **Purpose**: Checks if `specific` is a subtype of `general`:
+ * 1. Instantiate `general` (Skolemize foralls).
+ * 2. **Bottom rules**:
+ *    - `⊥ <: τ` always (if `τ :: *`).
+ *    - `τ <: ⊥` only if `τ = ⊥`.
+ * 3. Otherwise: `unifyTypes(instGeneral, specific)` (structural).
+ *
+ * Supports width subsumption (records), equi-recursion (μ), nominal enums.
+ * Used in checking, pattern matching, trait resolution.
+ *
+ * @param state - Checker state
+ * @param general - Supertype (e.g., `List<a>`)
+ * @param specific - Subtype (e.g., `List<Int>`, `⊥`)
+ * @param worklist - Constraint accumulator
+ * @param subst - Mutable substitution
+ * @returns `ok(null)` if subtypes, else error
+ *
+ * @example Bottom subtyping (⊥ <: anything)
+ * ```ts
+ * import { subsumes, freshState, neverType, conType, listType } from "./typechecker.js";
+ * // Assume List<Int> in ctx
+ *
+ * const state = freshState();
+ * const result = subsumes(state, conType("List<Int>"), neverType, [], new Map());
+ * // ok(null) ✓
+ * ```
+ *
+ * @example Record width subsumption
+ * ```ts
+ * import { subsumes, freshState, recordType } from "./typechecker.js";
+ * import { conType } from "./typechecker.js";
+ *
+ * const state = freshState();
+ * const wide = recordType([["x", conType("Int")], ["y", conType("Bool")]]);
+ * const narrow = recordType([["x", conType("Int")]]);
+ * subsumes(state, wide, narrow, [], new Map());  // ok(null) ✓ (narrow <: wide)
+ * ```
+ *
+ * @example Polymorphic instantiation + unify
+ * ```ts
+ * import { subsumes, freshState, forallType, arrowType, varType, starKind } from "./typechecker.js";
+ *
+ * const state = freshState();
+ * const poly = forallType("a", starKind, arrowType(varType("a"), varType("a")));
+ * const mono = arrowType(conType("Int"), conType("Int"));
+ * subsumes(state, poly, mono, [], new Map());  // instantiate → ?0→?0 ~ Int→Int ✓
+ * ```
+ *
+ * @example Failure (Int not <: Bool)
+ * ```ts
+ * import { subsumes, freshState, conType } from "./typechecker.js";
+ *
+ * const state = freshState();
+ * subsumes(state, conType("Bool"), conType("Int"), [], new Map());
+ * // err: { type_mismatch: { expected: Bool, actual: Int } }
+ * ```
+ *
+ * @see {@link instantiateType} Skolemizes `general`
+ * @see {@link isBottom} Early bottom checks
+ * @see {@link unifyTypes} Structural fallback
+ * @see {@link isAssignableTo} Simplified wrapper
+ */
 export function subsumes(
   state: TypeCheckerState,
   general: Type, // Supertype (e.g., t_ok)
@@ -343,6 +1041,51 @@ export function subsumes(
   return unifyTypes(state, instGeneral, specific, worklist, subst);
 }
 
+/**
+ * Quick subtyping check: `from <: to` (assignable).
+ *
+ * **Purpose**: Decidable `τ₁ <: τ₂` for simple cases **without constraints**:
+ * - `⊥ <: τ` always (bottom subtypes anything).
+ * - `τ <: ⊥` only if `τ = ⊥`.
+ * - Otherwise: `typesEqual(τ₁, τ₂)` (normalize + structural).
+ *
+ * **Fast path** for checking, patterns, unification guards (no worklist).
+ * Use `subsumes` for full polymorphic/width subtyping.
+ *
+ * @param state - Checker state (for normalization/equality)
+ * @param from - Source type (subtype)
+ * @param to - Target type (supertype)
+ * @returns `true` if assignable
+ *
+ * @example Bottom subtypes anything
+ * ```ts
+ * import { isAssignableTo, freshState, neverType, conType } from "./typechecker.js";
+ *
+ * const state = freshState();
+ * isAssignableTo(state, neverType, conType("Int"));  // true (⊥ <: Int)
+ * ```
+ *
+ * @example Non-bottom cannot subtype ⊥
+ * ```ts
+ * import { isAssignableTo, freshState, neverType, conType } from "./typechecker.js";
+ *
+ * const state = freshState();
+ * isAssignableTo(state, conType("Int"), neverType);  // false
+ * ```
+ *
+ * @example Equality (normal case)
+ * ```ts
+ * import { isAssignableTo, freshState, arrowType, conType } from "./typechecker.js";
+ *
+ * const state = freshState();
+ * const fnTy = arrowType(conType("Int"), conType("Bool"));
+ * isAssignableTo(state, fnTy, fnTy);  // true
+ * ```
+ *
+ * @see {@link subsumes} Full subtyping (polymorphic/width)
+ * @see {@link typesEqual} Structural equality fallback
+ * @see {@link isBottom} Bottom detection
+ */
 export function isAssignableTo(
   state: TypeCheckerState,
   from: Type,
@@ -353,7 +1096,43 @@ export function isAssignableTo(
   return typesEqual(state, from, to); // Otherwise, equality
 }
 
-// Show patterns for debugging
+/**
+ * Pretty-prints patterns for debugging and error messages.
+ *
+ * **Purpose**: Human-readable string for patterns in `match` expressions.
+ * Recursive: handles nested records/variants/tuples.
+ *
+ * Used in: `showTerm(match)`, error reporting (`missing_case`).
+ *
+ * @param p - Pattern to print
+ * @returns String representation (e.g., `{x: y}`, `Cons(_)`)
+ *
+ * @example Simple patterns
+ * ```ts
+ * import { showPattern, varPattern, wildcardPattern, conPattern } from "./typechecker.js";
+ *
+ * showPattern(varPattern("x"));     // "x"
+ * showPattern(wildcardPattern());   // "_"
+ * showPattern(conPattern("None", {}));  // "None"
+ * ```
+ *
+ * @example Nested structures
+ * ```ts
+ * import { showPattern, recordPattern, variantPattern, tuplePattern } from "./typechecker.js";
+ * import { varPattern, wildcardPattern } from "./typechecker.js";
+ *
+ * showPattern(recordPattern([["x", varPattern("a")], ["y", wildcardPattern()]]));
+ * // "{x: a, y: _}"
+ *
+ * showPattern(variantPattern("Cons", tuplePattern([varPattern("hd"), wildcardPattern()]))));
+ * // "Cons((hd, _))"
+ *
+ * showPattern(tuplePattern([varPattern("1"), varPattern("2")]));  // "(1, 2)"
+ * ```
+ *
+ * @see {@link showType} Type pretty-printer
+ * @see {@link showTerm} Term pretty-printer (uses this)
+ */
 export function showPattern(p: Pattern): string {
   if ("var" in p) return p.var;
   if ("wildcard" in p) return "_";
@@ -374,7 +1153,49 @@ export function showPattern(p: Pattern): string {
   return "unknown";
 }
 
-// Extract all variable bindings from a pattern
+/**
+ * Extracts variable bindings from a pattern (for context extension).
+ *
+ * **Purpose**: Collects pattern variables as `[name, type]` pairs to extend
+ * the typing context during `checkPattern`/`matchTerm`. Leaf vars get placeholder
+ * `{ var: "$unknown" }` (resolved to actual slice during checking).
+ *
+ * Recursive: flattens nested records/variants/tuples. Ignores wildcards/cons.
+ *
+ * Used in: `checkPattern` → `extendedCtx = [...state.ctx, ...patternBindings(pat)]`.
+ *
+ * @param pattern - Input pattern
+ * @returns Flat list of `[varName, placeholderType]` bindings
+ *
+ * @example Simple variable
+ * ```ts
+ * import { patternBindings, varPattern } from "./typechecker.js";
+ *
+ * patternBindings(varPattern("x"));  // [["x", { var: "$unknown" }]]
+ * ```
+ *
+ * @example Nested collection
+ * ```ts
+ * import { patternBindings, recordPattern, variantPattern, tuplePattern } from "./typechecker.js";
+ * import { varPattern, wildcardPattern } from "./typechecker.js";
+ *
+ * // {x: (hd, _)} → ["x", ...] + ["hd"]
+ * patternBindings(recordPattern([["head", tuplePattern([varPattern("hd"), wildcardPattern()])]]));
+ * // [["head", { var: "$unknown" }], ["hd", { var: "$unknown" }]]
+ *
+ * patternBindings(variantPattern("Cons", varPattern("xs")));  // [["xs", { var: "$unknown" }]]
+ * ```
+ *
+ * @example No bindings
+ * ```ts
+ * import { patternBindings, wildcardPattern } from "./typechecker.js";
+ *
+ * patternBindings(wildcardPattern());  // []
+ * ```
+ *
+ * @see {@link checkPattern} Resolves placeholders to real types
+ * @see {@link matchTerm} Uses for branch contexts
+ */
 export function patternBindings(pattern: Pattern): [string, Type][] {
   if ("var" in pattern)
     // We'll need the type from context during type checking
@@ -401,7 +1222,34 @@ export function patternBindings(pattern: Pattern): [string, Type][] {
   return [];
 }
 
-// Pretty printing
+/**
+ * Pretty-prints kinds for debugging and error messages.
+ *
+ * **Purpose**: Human-readable kind strings (parenthesized arrows).
+ * Used in `showType` (`∀a::κ.τ`), `showTerm` (tylam kinds), kind errors.
+ *
+ * @param k - Kind to print
+ * @returns String (e.g., `*`, `(* → *)`)
+ *
+ * @example Basic kinds
+ * ```ts
+ * import { showKind, starKind, arrowKind } from "./typechecker.js";
+ *
+ * showKind(starKind);                           // "*"
+ * showKind(arrowKind(starKind, starKind));      // "(* → *)"
+ * ```
+ *
+ * @example Nested HKT
+ * ```ts
+ * import { showKind, starKind, arrowKind } from "./typechecker.js";
+ *
+ * showKind(arrowKind(starKind, arrowKind(starKind, starKind)));
+ * // "(* → ((* → *) → *))"
+ * ```
+ *
+ * @see {@link showType} Uses for polymorphic binders
+ * @see {@link showTerm} Tylam/trait-lam kinds
+ */
 export function showKind(k: Kind): string {
   if ("star" in k) return "*";
   if ("arrow" in k)
@@ -409,6 +1257,63 @@ export function showKind(k: Kind): string {
   return "unknown";
 }
 
+/**
+ * Pretty-prints types for debugging, REPL, and error messages.
+ *
+ * **Purpose**: Human-readable type strings with conventional notation:
+ * - Nominal apps: `Either<I32, Bool>` (spine-aware).
+ * - Functions: `(Int → Bool)` (parenthesized).
+ * - Polymorphism: `∀a::*. a → a`, `λt::*. t → t`.
+ * - Data: `{x: Int}`, `<Left: I32 | Right: Bool>`, `(Int, Bool)`.
+ * - Special: `⊥` (never), `?0` (metas), `μX. ...` (recursion).
+ *
+ * Recursive. Primary output for `inferType`, errors, docs.
+ *
+ * @param t - Type to print
+ * @returns Pretty-printed string
+ *
+ * @example Nominal type applications
+ * ```ts
+ * import { showType, appType, conType } from "./typechecker.js";
+ *
+ * showType(appType(appType(conType("Either"), conType("Int")), conType("Bool")));
+ * // "Either<Int, Bool>"
+ * ```
+ *
+ * @example Polymorphic + higher-kinded
+ * ```ts
+ * import { showType, forallType, arrowType, lamType, starKind, arrowKind, varType } from "./typechecker.js";
+ * import { conType } from "./typechecker.js";
+ *
+ * showType(forallType("a", starKind, arrowType(varType("a"), varType("a"))));
+ * // "∀a::*. (a → a)"
+ *
+ * showType(lamType("F", arrowKind(starKind, starKind), varType("F")));
+ * // "λF::(* → *). F"
+ * ```
+ *
+ * @example Data structures + recursion
+ * ```ts
+ * import { showType, recordType, variantType, muType, tupleType, boundedForallType } from "./typechecker.js";
+ * import { varType, starKind, conType } from "./typechecker.js";
+ *
+ * showType(recordType([["x", conType("Int")], ["y", conType("Bool")]]));
+ * // "{x: Int, y: Bool}"
+ *
+ * showType(variantType([["Left", conType("Int")], ["Right", conType("Bool")]]));
+ * // "<Left: Int | Right: Bool>"
+ *
+ * showType(muType("L", varType("L")));  // "μL.L"
+ *
+ * showType(boundedForallType("a", starKind, [{ trait: "Eq", type: varType("a") }], varType("a")));
+ * // "∀a::* where Eq<a>. a"
+ * ```
+ *
+ * @see {@link showTerm} Term printer (uses this)
+ * @see {@link showKind} Kind printer (embedded)
+ * @see {@link showPattern} Pattern printer
+ * @see {@link getSpineArgs} Nominal app spine
+ */
 export function showType(t: Type): string {
   if ("app" in t && "con" in t.app.func) {
     const con = t.app.func.con;
@@ -454,6 +1359,70 @@ export function showType(t: Type): string {
   return "unknown";
 }
 
+/**
+ * Pretty-prints terms for debugging, REPL, and error messages.
+ *
+ * **Purpose**: Human-readable term strings with conventional notation:
+ * - Lambdas: `λx:τ.body`
+ * - Apps: `(callee arg)` (parenthesized).
+ * - Polymorphism: `Λα::κ.body`, `term [τ]`.
+ * - Data: `{x = 1, y = true}`, `<Left=42> as Either<Int,Bool>`.
+ * - Traits: `dict Eq<Int> { eq = λx:Int.λy:Int.true }`, `d.eq`.
+ * - Control: `match xs { Nil => 0 | Cons(x,_) => x }`.
+ *
+ * Recursive. Embeds `showType`/`showKind`/`showPattern`. Primary output for inference results.
+ *
+ * @param t - Term to print
+ * @returns Pretty-printed string
+ *
+ * @example Core lambda calculus
+ * ```ts
+ * import { showTerm, lamTerm, appTerm, varTerm, conType } from "./typechecker.js";
+ *
+ * const id = lamTerm("x", conType("Int"), varTerm("x"));
+ * showTerm(id);  // "λx:Int.x"
+ *
+ * const app = appTerm(varTerm("f"), varTerm("x"));
+ * showTerm(app);  // "(f x)"
+ * ```
+ *
+ * @example Data + patterns
+ * ```ts
+ * import { showTerm, recordTerm, injectTerm, matchTerm, tupleTerm } from "./typechecker.js";
+ * import { conTerm, conType, varTerm, showPattern, varPattern, wildcardPattern, variantPattern, tuplePattern } from "./typechecker.js";
+ *
+ * showTerm(recordTerm([["x", conTerm("1", conType("Int"))]]));  // "{x = 1}"
+ *
+ * const inj = injectTerm("Left", conTerm("42", conType("Int")), conType("Either"));
+ * showTerm(inj);  // "<Left=42> as Either"
+ *
+ * const match = matchTerm(varTerm("xs"), [
+ *   [varPattern("x"), conTerm("0", conType("Int"))],
+ *   [variantPattern("Cons", tuplePattern([varPattern("hd"), wildcardPattern()])), varTerm("hd")]
+ * ]);
+ * showTerm(match);  // "match xs { x => 0 | Cons((hd, _)) => hd }"
+ * ```
+ *
+ * @example Traits + polymorphism
+ * ```ts
+ * import { showTerm, tylamTerm, tyappTerm, dictTerm, traitMethodTerm, starKind } from "./typechecker.js";
+ * import { lamTerm, varTerm, conType, conTerm, showType } from "./typechecker.js";
+ *
+ * const polyId = tylamTerm("a", starKind, lamTerm("x", conType("Int"), varTerm("x")));
+ * showTerm(polyId);  // "Λa::*. λx:Int.x"
+ *
+ * showTerm(tyappTerm(polyId, conType("Bool")));  // "Λa::*. λx:Int.x [Bool]"
+ *
+ * const dict = dictTerm("Eq", conType("Int"), [["eq", conTerm("eqInt", conType("Bool"))]]);
+ * showTerm(dict);  // "dict Eq<Int> { eq = eqInt }"
+ *
+ * showTerm(traitMethodTerm(dict, "eq"));  // "dict Eq<Int> { eq = eqInt }.eq"
+ * ```
+ *
+ * @see {@link showType} Embedded types
+ * @see {@link showKind} Kind annotations
+ * @see {@link showPattern} Match cases
+ */
 export function showTerm(t: Term): string {
   if ("var" in t) return t.var;
   if ("lam" in t)
@@ -673,6 +1642,61 @@ function applySubstitutionToTerm(
   return term;
 }
 
+/**
+ * Resolves a trait dictionary for `type` implementing `trait`.
+ *
+ * **Purpose**: **Dictionary-passing trait resolution** (Haskell-style):
+ * 1. **Exact match**: Lookup `trait_impl` with `typesEqual(impl.type, target)`.
+ * 2. **Polymorphic**:
+ *    - Normalize/impl/target.
+ *    - Instantiate impl (`∀ → ?N`).
+ *    - Apply target lambdas to fresh metas (HKT matching).
+ *    - Unify → solve → instantiate dict + apply subst.
+ * 3. Fail: `{ missing_trait_impl: { trait, type } }`.
+ *
+ * Returns instantiated dictionary term (methods specialized).
+ *
+ * @param state - Checker state (ctx for impls, metas)
+ * @param trait - Trait name (`"Eq"`, `"Functor"`)
+ * @param type - Concrete type (`List<Int>`, `Option<Bool>`)
+ * @returns Dictionary `Term` or error
+ *
+ * @example Exact match
+ * ```ts
+ * import { checkTraitImplementation, freshState, conType, dictTerm } from "./typechecker.js";
+ *
+ * let state = freshState();
+ * state = state.ctx.push({
+ *   trait_impl: { trait: "Eq", type: conType("Int"), dict: dictTerm("Eq", conType("Int"), []) }
+ * });
+ * const dict = checkTraitImplementation(state, "Eq", conType("Int"));
+ * // ok(dictTerm("Eq", Int, [...]))
+ * ```
+ *
+ * @example Polymorphic impl (List for List<Int>)
+ * ```ts
+ * import { checkTraitImplementation, freshState, forallType, appType } from "./typechecker.js";
+ * // Assume List :: * → *, impl: ∀F. Eq<F> given List impl
+ *
+ * const state = freshState();  // + trait_impl { trait: "Eq", type: conType("List"), dict: polyDict }
+ * const dict = checkTraitImplementation(state, "Eq", appType(conType("List"), conType("Int")));
+ * // ok(instantiated dict for List<Int>)
+ * ```
+ *
+ * @example Failure (no impl)
+ * ```ts
+ * import { checkTraitImplementation, freshState, conType } from "./typechecker.js";
+ *
+ * const state = freshState();
+ * checkTraitImplementation(state, "Eq", conType("String"));
+ * // err: { missing_trait_impl: { trait: "Eq", type: String } }
+ * ```
+ *
+ * @see {@link checkTraitConstraints} Multi-constraint resolution
+ * @see {@link instantiateType} Skolemizes impl types
+ * @see {@link instantiateTerm} Freshens dict
+ * @see {@link traitImplBinding} Stores impls
+ */
 export function checkTraitImplementation(
   state: TypeCheckerState,
   trait: string,
@@ -760,7 +1784,72 @@ export function checkTraitImplementation(
   return err({ missing_trait_impl: { trait, type } } as TypingError);
 }
 
-// Verify all trait constraints are satisfied
+/**
+ * Resolves dictionaries for multiple trait constraints.
+ *
+ * **Purpose**: Batch-resolves `[{trait: "Eq", type: τ}, ...]` → `[dict1, dict2, ...]`.
+ * Short-circuits on first failure. Used for bounded polymorphism/trait apps.
+ *
+ * Sequential: Calls `checkTraitImplementation` per constraint.
+ *
+ * @param state - Checker state
+ * @param constraints - List of `{trait, type}` bounds
+ * @returns Array of dictionary terms or first error
+ *
+ * @example Success (multiple dicts)
+ * ```ts
+ * import { freshState, addType, addTraitDef, traitImplBinding, dictTerm, conType, checkTraitConstraints, arrowType, lamTerm, varTerm } from "./typechecker.js";
+ *
+ * let state = freshState();
+ * state = addType(state, "Int", { star: null }).ok;
+ * state = addType(state, "Bool", { star: null }).ok;
+ * state = addTraitDef(state, "Eq", "A", { star: null }, [
+ *   ["eq", arrowType(conType("A"), arrowType(conType("A"), conType("Bool")))]
+ * ]).ok;
+ * const eqDict = dictTerm("Eq", conType("Int"), [
+ *   ["eq", lamTerm("x", conType("Int"), lamTerm("y", conType("Int"), conTerm("true", conType("Bool"))))]
+ * ]);
+ * state = traitImplBinding("Eq", conType("Int"), eqDict);
+ *
+ * const constraints = [{ trait: "Eq", type: conType("Int") }];
+ * const result = checkTraitConstraints(state, constraints);
+ * console.log("ok:", result.ok.length === 1);  // true
+ * ```
+ *
+ * @example Failure (propagates first error)
+ * ```ts
+ * import { freshState, addType, addTraitDef, conType, checkTraitConstraints } from "./typechecker.js";
+ *
+ * let state = freshState();
+ * state = addType(state, "String", { star: null }).ok;
+ * state = addTraitDef(state, "Eq", "A", { star: null }, [["eq", conType("Bool")]]).ok;
+ * // No Eq<String> impl!
+ *
+ * const constraints = [{ trait: "Eq", type: conType("String") }];
+ * const result = checkTraitConstraints(state, constraints);
+ * console.log("err:", "missing_trait_impl" in result.err);  // true
+ * ```
+ *
+ * @example Bounded forall resolution
+ * ```ts
+ * import { freshState, addType, addTraitDef, traitImplBinding, dictTerm, conType, boundedForallType, checkTraitConstraints, starKind, arrowType } from "./typechecker.js";
+ * import { lamTerm, varTerm } from "./typechecker.js";
+ *
+ * let state = freshState();
+ * state = addType(state, "Int", starKind).ok;
+ * state = addTraitDef(state, "Eq", "A", starKind, [["eq", arrowType(conType("A"), conType("Bool"))]]).ok;
+ * const dict = dictTerm("Eq", conType("Int"), [["eq", lamTerm("x", conType("Int"), conTerm("true", conType("Bool")))]]);
+ * state = traitImplBinding("Eq", conType("Int"), dict);
+ *
+ * const bounded = boundedForallType("a", starKind, [{ trait: "Eq", type: conType("Int") }], arrowType(varType("a"), conType("Int")));
+ * const constraints = bounded.bounded_forall.constraints;
+ * const dicts = checkTraitConstraints(state, constraints);
+ * console.log("dicts:", dicts.ok.length);  // 1
+ * ```
+ *
+ * @see {@link checkTraitImplementation} Resolves single constraint
+ * @see {@link traitAppTerm} Uses resolved dicts
+ */
 export function checkTraitConstraints(
   state: TypeCheckerState,
   constraints: TraitConstraint[],
@@ -802,7 +1891,82 @@ function extractPatternLabels(pattern: Pattern): Set<string> {
   return labels;
 }
 
-// Updated checkExhaustive
+/**
+ * Checks if patterns exhaustively cover all cases of `type` (variant/enum).
+ *
+ * **Purpose**: Pattern match safety: ensures no uncovered cases.
+ * - **Nominal**: Lookup enum binding → check arity → label coverage.
+ * - **Structural**: Direct variant labels.
+ * - **Wildcard/Var**: Always exhaustive.
+ * - **Primitives/Functions**: Always ok (no cases).
+ *
+ * Errors: `not_a_variant`, `kind_mismatch` (arity), `missing_case`.
+ *
+ * @param state - Checker state (ctx for enums)
+ * @param patterns - Match cases
+ * @param type - Scrutinee type (normalized)
+ * @returns `ok(null)` if exhaustive, else error
+ *
+ * @example Success: Nominal enum full coverage
+ * ```ts
+ * import { freshState, addType, addEnum, checkExhaustive, conType, variantPattern, varPattern, appType, starKind } from "./typechecker.js";
+ * import { tupleType } from "./typechecker.js";
+ *
+ * let state = freshState();
+ * state = addType(state, "Int", starKind).ok;
+ * state = addEnum(state, "Color", [], [], [
+ *   ["Red", tupleType([])],
+ *   ["Blue", tupleType([])]
+ * ]).ok;
+ *
+ * const patterns = [
+ *   variantPattern("Red", varPattern("x")),
+ *   variantPattern("Blue", varPattern("y"))
+ * ];
+ * const result = checkExhaustive(state, patterns, conType("Color"));
+ * console.log("exhaustive:", "ok" in result);  // true
+ * ```
+ *
+ * @example Success: Wildcard early exit
+ * ```ts
+ * import { freshState, checkExhaustive, varPattern } from "./typechecker.js";
+ * import { conType } from "./typechecker.js";
+ *
+ * const state = freshState();
+ * const patterns = [varPattern("x")];  // Catches all
+ * const result = checkExhaustive(state, patterns, conType("Any"));
+ * console.log("wildcard ok:", "ok" in result);  // true
+ * ```
+ *
+ * @example Failure: Missing case
+ * ```ts
+ * import { freshState, addEnum, checkExhaustive, conType, variantPattern, varPattern, starKind } from "./typechecker.js";
+ *
+ * let state = freshState();
+ * state = addEnum(state, "Color", [], [], [
+ *   ["Red", { var: "Unit" }],
+ *   ["Blue", { var: "Unit" }]
+ * ]).ok;
+ *
+ * const patterns = [variantPattern("Red", varPattern("x"))];  // Missing Blue
+ * const result = checkExhaustive(state, patterns, conType("Color"));
+ * console.log("missing:", "missing_case" in result.err);  // true
+ * ```
+ *
+ * @example Failure: Non-variant type
+ * ```ts
+ * import { freshState, checkExhaustive, conType } from "./typechecker.js";
+ *
+ * const state = freshState();
+ * const patterns = [];  // Empty OK for primitives
+ * const result = checkExhaustive(state, patterns, conType("Int"));
+ * console.log("non-variant ok:", "ok" in result);  // true
+ * ```
+ *
+ * @see {@link inferMatchType} Calls during match inference
+ * @see {@link checkPattern} Single-pattern validation
+ * @see {@link extractPatternLabels} Label collection
+ */
 export function checkExhaustive(
   state: TypeCheckerState,
   patterns: Pattern[],
@@ -862,7 +2026,80 @@ export function checkExhaustive(
   return ok(null);
 }
 
-// Check if a pattern matches a type and extract bindings
+/**
+ * Type-checks pattern against `type`, returning bindings for context extension.
+ *
+ * **Purpose**: Validates `pat :: type` → extracts vars as `Context` for branch typing:
+ * - **Var**: Binds whole `type`.
+ * - **Wildcard/Con**: No bindings.
+ * - **Variant**: Unfold μ, infer metas, structural/nominal lookup → recurse on payload.
+ * - **Record/Tuple**: Recurse on fields/elements.
+ *
+ * Errors: `unbound`, `not_a_variant`, `invalid_variant_label`, `kind_mismatch`.
+ *
+ * @param state - Checker state (ctx/metas)
+ * @param pattern - Pattern to check
+ * @param type - Expected type (normalized)
+ * @returns Bindings `[{ term: { name: "x", type: τ } }, ...]` or error
+ *
+ * @example Success: Variable binding
+ * ```ts
+ * import { freshState, addType, checkPattern, varPattern, conType, starKind } from "./typechecker.js";
+ *
+ * let state = freshState();
+ * state = addType(state, "Int", starKind).ok;
+ *
+ * const result = checkPattern(state, varPattern("x"), conType("Int"));
+ * console.log("bindings:", result.ok.length === 1);  // true
+ * console.log("name:", result.ok[0].term.name);      // "x"
+ * ```
+ *
+ * @example Success: Nested variant (nominal enum)
+ * ```ts
+ * import { freshState, addType, addEnum, checkPattern, variantPattern, varPattern, appType, conType, starKind, tupleType } from "./typechecker.js";
+ *
+ * let state = freshState();
+ * state = addType(state, "Int", starKind).ok;
+ * state = addEnum(state, "Option", ["T"], [starKind], [
+ *   ["None", tupleType([])],
+ *   ["Some", conType("T")]
+ * ]).ok;
+ *
+ * const result = checkPattern(state, variantPattern("Some", varPattern("x")), appType(conType("Option"), conType("Int")));
+ * console.log("bindings:", result.ok.length === 1);  // true
+ * console.log("name:", result.ok[0].term.name);      // "x"
+ * ```
+ *
+ * @example Success: Record flattening
+ * ```ts
+ * import { freshState, addType, checkPattern, recordPattern, varPattern, conType, recordType, starKind } from "./typechecker.js";
+ *
+ * let state = freshState();
+ * state = addType(state, "Int", starKind).ok;
+ * state = addType(state, "Bool", starKind).ok;
+ *
+ * const result = checkPattern(state, recordPattern([
+ *   ["x", varPattern("a")],
+ *   ["y", varPattern("b")]
+ * ]), recordType([["x", conType("Int")], ["y", conType("Bool")]]));
+ * console.log("bindings:", result.ok.length === 2);  // true ("a", "b")
+ * ```
+ *
+ * @example Failure: Invalid variant label
+ * ```ts
+ * import { freshState, addEnum, checkPattern, variantPattern, varPattern, conType, starKind } from "./typechecker.js";
+ *
+ * let state = freshState();
+ * state = addEnum(state, "Color", [], [], [["Red", { var: "Unit" }]]).ok;
+ *
+ * const result = checkPattern(state, variantPattern("Blue", varPattern("x")), conType("Color"));
+ * console.log("error:", "invalid_variant_label" in result.err);  // true
+ * ```
+ *
+ * @see {@link inferMatchType} Uses bindings per branch
+ * @see {@link checkExhaustive} Coverage check
+ * @see {@link patternBindings} Placeholder extraction
+ */
 export function checkPattern(
   state: TypeCheckerState,
   pattern: Pattern,
@@ -1029,7 +2266,6 @@ const checkConPattern = (
 // Helper (add if not already present)
 const first = <T, U>(tuple: [T, U]) => tuple[0];
 
-// Updated checkRecordPattern
 function checkRecordPattern(
   state: TypeCheckerState,
   pattern: RecordPattern,
@@ -1097,6 +2333,67 @@ function checkRecordPattern(
   return ok(bindings);
 }
 
+/**
+ * Captures `[target ↦ replacement]` in `inType` (alpha-safe substitution).
+ *
+ * **Purpose**: Core type transformation:
+ * - Replace free `target` vars with `replacement`.
+ * - **Skip bound vars**: `∀α.τ[α↦σ] = ∀α.τ`, `λ/μ` same.
+ * - **Cycle guard**: `avoidInfinite` stops infinite recursion.
+ * - **Structural**: Recurses on arrows/apps/records/etc.
+ * - **Cons**: Now substitutes constructors too.
+ *
+ * Used in: `instantiateType`, enum expansion, mu unfolding, normalization.
+ *
+ * @param target - Var/con name to replace
+ * @param replacement - New type
+ * @param inType - Input type
+ * @param avoidInfinite - Cycle detection set (defaults empty)
+ * @returns Substituted type
+ *
+ * @example Basic variable capture
+ * ```ts
+ * import { substituteType, varType } from "./typechecker.js";
+ * import { arrowType, conType } from "./typechecker.js";
+ *
+ * const ty = arrowType(varType("a"), varType("b"));
+ * const subst = substituteType("a", conType("Int"), ty);
+ * console.log(showType(subst));  // "(Int → b)"
+ * ```
+ *
+ * @example Skip bound variable (alpha-safe)
+ * ```ts
+ * import { substituteType, forallType, varType, starKind } from "./typechecker.js";
+ * import { arrowType } from "./typechecker.js";
+ *
+ * const poly = forallType("a", starKind, arrowType(varType("a"), varType("b")));
+ * const subst = substituteType("a", varType("X"), poly);
+ * console.log(showType(subst));  // "∀a::*. (a → b)" (skipped!)
+ * ```
+ *
+ * @example Mu cycle guard
+ * ```ts
+ * import { substituteType, muType, varType, tupleType } from "./typechecker.js";
+ *
+ * const rec = muType("L", tupleType([varType("Int"), varType("L")]));
+ * const avoid = new Set(["L"]);
+ * const subst = substituteType("L", varType("X"), rec, avoid);
+ * console.log(showType(subst));  // "μL.(Int, L)" (guarded!)
+ * ```
+ *
+ * @example Constructor substitution
+ * ```ts
+ * import { substituteType, conType, appType } from "./typechecker.js";
+ *
+ * const either = appType(conType("Either"), conType("String"));
+ * const subst = substituteType("Either", conType("Result"), either);
+ * console.log(showType(subst));  // "Result<String>"
+ * ```
+ *
+ * @see {@link instantiateType} Uses for Skolemization
+ * @see {@link normalizeType} Mu/enum expansion
+ * @see {@link applySubstitution} Term-level counterpart
+ */
 export function substituteType(
   target: string,
   replacement: Type,
@@ -1287,8 +2584,53 @@ function substituteArrowType(
   );
 }
 
+/**
+ * Checks if kind is concrete `*` (value-habiting types).
+ *
+ * **Purpose**: Guards HKT apps, record/variant fields, trait methods.
+ * All "data types" must be `:: *`.
+ *
+ * @param kind - Kind to test
+ * @returns `true` if `*`
+ *
+ * @example Concrete vs HKT
+ * ```ts
+ * import { isStarKind, starKind, arrowKind } from "./typechecker.js";
+ *
+ * isStarKind(starKind);                    // true (Int :: *)
+ * isStarKind(arrowKind(starKind, starKind));  // false (List :: * → *)
+ * ```
+ *
+ * @see {@link kindsEqual}
+ * @see {@link checkKind}
+ */
 export const isStarKind = (kind: Kind) => "star" in kind;
 
+/**
+ * Structural equality for kinds (recursive).
+ *
+ * **Purpose**: Unifies kinds in apps (`List<Int>`), polymorphism binders.
+ * Alpha-equivalent: `* ≡ *`, `κ₁→κ₂ ≡ κ₁'→κ₂'`.
+ *
+ * @param left - First kind
+ * @param right - Second kind
+ * @returns `true` if equal
+ *
+ * @example Basic + nested
+ * ```ts
+ * import { kindsEqual, starKind, arrowKind } from "./typechecker.js";
+ *
+ * kindsEqual(starKind, starKind);  // true
+ *
+ * const hkt1 = arrowKind(starKind, starKind);      // * → *
+ * const hkt2 = arrowKind(starKind, arrowKind(starKind, starKind));  // * → (* → *)
+ * kindsEqual(hkt1, hkt1);  // true
+ * kindsEqual(hkt1, hkt2);  // false
+ * ```
+ *
+ * @see {@link isStarKind} Concrete check
+ * @see {@link unifyKinds} Constraint version
+ */
 export const kindsEqual = (left: Kind, right: Kind): boolean =>
   ("star" in left && "star" in right) ||
   ("arrow" in left &&
@@ -1296,7 +2638,81 @@ export const kindsEqual = (left: Kind, right: Kind): boolean =>
     kindsEqual(left.arrow.from, right.arrow.from) &&
     kindsEqual(left.arrow.to, right.arrow.to));
 
-// Updated checkKind function
+/**
+ * Infers/validates kind of `type` under context (`Γ ⊢ τ : κ`).
+ *
+ * **Purpose**: Ensures types are well-formed:
+ * - **EVar**: Lookup `meta.kinds`.
+ * - **Var/Con**: Context lookup (aliases expand).
+ * - **Compounds**: Recurse + structural rules (app: func arg → result).
+ * - **Lenient**: Assume `*` for unbound vars (subtyping/bottom checks).
+ *
+ * Dispatcher → helpers (`checkAppKind`, etc.). Errors: `unbound`, `kind_mismatch`.
+ *
+ * @param state - Checker state (ctx/metas)
+ * @param type - Type to kind
+ * @param lenient - Assume `*` for unbound (defaults `false`)
+ * @returns Inferred `Kind` or error
+ *
+ * @example Concrete type (star)
+ * ```ts
+ * import { freshState, addType, checkKind, starKind } from "./typechecker.js";
+ *
+ * let state = freshState();
+ * state = addType(state, "Int", starKind).ok;
+ *
+ * const result = checkKind(state, { con: "Int" });
+ * console.log("kind:", showKind(result.ok));  // "*"
+ * ```
+ *
+ * @example HKT application
+ * ```ts
+ * import { freshState, addType, checkKind, arrowKind, appType, starKind, conType } from "./typechecker.js";
+ *
+ * let state = freshState();
+ * state = addType(state, "List", arrowKind(starKind, starKind)).ok;
+ * state = addType(state, "Int", starKind).ok;
+ *
+ * const result = checkKind(state, appType(conType("List"), conType("Int")));
+ * console.log("List<Int>:", showKind(result.ok));  // "*"
+ * ```
+ *
+ * @example Type alias expansion
+ * ```ts
+ * import { freshState, addType, addTypeAlias, checkKind, starKind, arrowType, varType } from "./typechecker.js";
+ *
+ * let state = freshState();
+ * state = addType(state, "Int", starKind).ok;
+ * state = addTypeAlias(state, "Id", ["A"], [starKind], varType("A")).ok;
+ *
+ * const result = checkKind(state, { con: "Id" });
+ * console.log("Id kind:", showKind(result.ok));  // "*"
+ * ```
+ *
+ * @example Failure: Kind mismatch
+ * ```ts
+ * import { freshState, addType, checkKind, arrowKind, starKind, conType } from "./typechecker.js";
+ *
+ * let state = freshState();
+ * state = addType(state, "List", arrowKind(starKind, starKind)).ok;
+ *
+ * const result = checkKind(state, conType("List"));  // List alone: * → *
+ * console.log("error:", "kind_mismatch" in result.err);  // true
+ * ```
+ *
+ * @example Lenient unbound
+ * ```ts
+ * import { freshState, checkKind, varType, starKind } from "./typechecker.js";
+ *
+ * const state = freshState();
+ * const result = checkKind(state, varType("Unknown"), true);  // lenient=true
+ * console.log("lenient:", showKind(result.ok));  // "*"
+ * ```
+ *
+ * @see {@link isStarKind} Concrete check
+ * @see {@link kindsEqual} Equality
+ * @see {@link addType} Binds constructors
+ */
 export function checkKind(
   state: TypeCheckerState,
   type: Type,
@@ -1441,6 +2857,7 @@ function checkVariantKind(
 
   return ok(starKind);
 }
+
 function checkRecordKind(
   state: TypeCheckerState,
   type: RecordType,
@@ -1622,6 +3039,77 @@ function typesEqualSpine(
   return true;
 }
 
+/**
+ * Alpha-equivalent structural equality after normalization (`τ₁ ≡ τ₂`).
+ *
+ * **Purpose**: Decidable type equality for unification guards, subsumption:
+ * - **Normalize first**: Expands aliases, β-reduces, unfolds μ.
+ * - **Exact**: EVar/Var/Con by name.
+ * - **Spine**: Nominal apps (`Either<a,b>` pairwise args).
+ * - **Alpha**: Rename binders (`∀a.τ ≡ ∀b.τ[b/a]`).
+ * - **Structural**: Records/variants/tuples (labels sorted).
+ *
+ * Used in: Lookup, unification early-exit, trait matching.
+ *
+ * @param state - Checker state (normalization)
+ * @param left - First type
+ * @param right - Second type
+ * @returns `true` if equivalent
+ *
+ * @example Basic + nominal spine
+ * ```ts
+ * import { freshState, addType, typesEqual, appType, conType, starKind } from "./typechecker.js";
+ *
+ * let state = freshState();
+ * state = addType(state, "Either", starKind).ok;
+ * state = addType(state, "Int", starKind).ok;
+ * state = addType(state, "Bool", starKind).ok;
+ *
+ * const left = appType(appType(conType("Either"), conType("Int")), conType("Bool"));
+ * const right = appType(appType(conType("Either"), conType("Int")), conType("Bool"));
+ * console.log("Either<Int,Bool> == Either<Int,Bool>:", typesEqual(state, left, right));  // true
+ * ```
+ *
+ * @example Alpha-equivalence (binders)
+ * ```ts
+ * import { freshState, typesEqual, forallType, arrowType, varType, starKind } from "./typechecker.js";
+ *
+ * const state = freshState();
+ * const left = forallType("a", starKind, arrowType(varType("a"), varType("a")));
+ * const right = forallType("b", starKind, arrowType(varType("b"), varType("b")));
+ * console.log("∀a.a→a == ∀b.b→b:", typesEqual(state, left, right));  // true
+ * ```
+ *
+ * @example Data structures (labels sorted)
+ * ```ts
+ * import { freshState, typesEqual, recordType, variantType, tupleType } from "./typechecker.js";
+ * import { conType } from "./typechecker.js";
+ *
+ * const state = freshState();
+ * const recLeft = recordType([["y", conType("Bool")], ["x", conType("Int")]]);
+ * const recRight = recordType([["x", conType("Int")], ["y", conType("Bool")]]);
+ * console.log("{x:Int,y:Bool} == {y:Bool,x:Int}:", typesEqual(state, recLeft, recRight));  // true
+ *
+ * const varLeft = variantType([["Right", conType("Bool")], ["Left", conType("Int")]]);
+ * const varRight = variantType([["Left", conType("Int")], ["Right", conType("Bool")]]);
+ * console.log("variant equal:", typesEqual(state, varLeft, varRight));  // true
+ * ```
+ *
+ * @example Failure (mismatch)
+ * ```ts
+ * import { freshState, typesEqual, arrowType, conType } from "./typechecker.js";
+ *
+ * const state = freshState();
+ * const fn1 = arrowType(conType("Int"), conType("Bool"));
+ * const fn2 = arrowType(conType("Bool"), conType("Int"));
+ * console.log("Int→Bool == Bool→Int:", typesEqual(state, fn1, fn2));  // false
+ * ```
+ *
+ * @see {@link normalizeType} Preprocessing
+ * @see {@link alphaRename} Binder equivalence
+ * @see {@link typesEqualSpine} Nominal spine
+ * @see {@link subsumes} Uses for unification fallback
+ */
 export function typesEqual(
   state: TypeCheckerState,
   left: Type,
@@ -1780,6 +3268,61 @@ export function typesEqual(
   return false;
 }
 
+/**
+ * Alpha-renames free occurrences of `from` to `to` (binder-safe).
+ *
+ * **Purpose**: Enables alpha-equivalence in `typesEqual`:
+ * - Rename free vars.
+ * - **Skip shadowed binders**: `∀α.τ[α↦β] = ∀α.τ`.
+ * - Structural recurse (arrow/app/record/etc.).
+ *
+ * Used for: `typesEqual(∀a.τ, ∀b.σ)` → rename `b→a` → compare bodies.
+
+ * @param from - Var to rename
+ * @param to - New var name
+ * @param type - Input type
+ * @returns Renamed type (unchanged if `from===to`)
+ *
+ * @example Free variable rename
+ * ```ts
+ * import { alphaRename, varType, arrowType } from "./typechecker.js";
+ *
+ * const ty = arrowType(varType("a"), varType("b"));
+ * const renamed = alphaRename("a", "X", ty);
+ * console.log(showType(renamed));  // "(X → b)"
+ * ```
+ *
+ * @example Skip bound binder
+ * ```ts
+ * import { alphaRename, forallType, arrowType, varType, starKind } from "./typechecker.js";
+ *
+ * const poly = forallType("a", starKind, arrowType(varType("a"), varType("b")));
+ * const renamed = alphaRename("a", "X", poly);
+ * console.log(showType(renamed));  // "∀a::*. (a → b)" (skipped!)
+ * ```
+ *
+ * @example Nested data structures
+ * ```ts
+ * import { alphaRename, recordType, varType } from "./typechecker.js";
+ * import { conType } from "./typechecker.js";
+ *
+ * const rec = recordType([["x", varType("a")], ["y", conType("Int")]]);
+ * const renamed = alphaRename("a", "T", rec);
+ * console.log(showType(renamed));  // "{x: T, y: Int}"
+ * ```
+ *
+ * @example Identity (no-op)
+ * ```ts
+ * import { alphaRename, varType } from "./typechecker.js";
+ *
+ * const ty = varType("a");
+ * const same = alphaRename("a", "a", ty);
+ * console.log(showType(same));  // "a"
+ * ```
+ *
+ * @see {@link typesEqual} Primary caller (alpha-equivalence)
+ * @see {@link substituteType} Similar (no binder skip)
+ */
 export function alphaRename(from: string, to: string, type: Type): Type {
   if (from === to) return type; // no need to rename
 
@@ -1874,6 +3417,93 @@ export function alphaRename(from: string, to: string, type: Type): Type {
   return type;
 }
 
+/**
+ * Core unification engine: `left ~ right` (mutates `worklist`/`subst`).
+ *
+ * **Purpose**: Solves type equations via worklist:
+ * 1. **Normalize** + early `typesEqual`.
+ * 2. **Degenerate μ** → cyclic error.
+ * 3. **Bottom**: `⊥ ~ ⊥`, `⊥ ~ τ::*` (asymmetric).
+ * 4. **Rigid-rigid**: `typesEqual` or mismatch.
+ * 5. **Flex-rigid**: Bind meta (occurs-checked).
+ * 6. **Nominal spine**: Head + arg pairs → worklist.
+ * 7. **Arrows**: Bottom-domain → codomain only.
+ * 8. **Structural**: Dispatch to helpers (`unifyArrowTypes`, etc.).
+ *
+ * Defers to worklist. Heart of inference/checking.
+ *
+ * @param state - Checker state
+ * @param left - Left type
+ * @param right - Right type
+ * @param worklist - Constraint queue
+ * @param subst - Mutable bindings
+ * @returns `ok(null)` or error
+ *
+ * @example Success: Basic unification
+ * ```ts
+ * import { freshState, unifyTypes, solveConstraints, typeEq, varType, conType } from "./typechecker.js";
+ *
+ * const state = freshState();
+ * const worklist: Constraint[] = [];
+ * const subst = new Map<string, Type>();
+ * unifyTypes(state, varType("a"), conType("Int"), worklist, subst);
+ * solveConstraints(state, worklist, subst);
+ * console.log("a:", showType(subst.get("a")!));  // "Int"
+ * ```
+ *
+ * @example Flex-rigid binding (meta)
+ * ```ts
+ * import { freshState, freshMetaVar, unifyTypes, solveConstraints, arrowType, conType } from "./typechecker.js";
+ *
+ * const state = freshState();
+ * const meta = freshMetaVar(state.meta);
+ * const subst = new Map<string, Type>();
+ * unifyTypes(state, meta, arrowType(conType("Int"), conType("Bool")), [], subst);
+ * console.log("bound:", showType(subst.get(meta.evar)!));  // "(Int → Bool)"
+ * ```
+ *
+ * @example Nominal spine (Either args)
+ * ```ts
+ * import { freshState, addType, unifyTypes, solveConstraints, appType, conType, varType, starKind } from "./typechecker.js";
+ *
+ * let state = freshState();
+ * state = addType(state, "Either", starKind).ok;
+ * state = addType(state, "Int", starKind).ok;
+ * state = addType(state, "Bool", starKind).ok;
+ *
+ * const left = appType(appType(conType("Either"), conType("Int")), conType("Bool"));
+ * const right = appType(appType(conType("Either"), varType("a")), varType("b"));
+ * const subst = new Map();
+ * unifyTypes(state, left, right, [], subst);
+ * solveConstraints(state, [], subst);
+ * console.log("a:", showType(subst.get("a")!));  // "Int"
+ * ```
+ *
+ * @example Bottom rules (asymmetric)
+ * ```ts
+ * import { freshState, unifyTypes, neverType, conType } from "./typechecker.js";
+ *
+ * const state = freshState();
+ * const subst = new Map();
+ *
+ * unifyTypes(state, neverType, conType("Int"), [], subst);  // ok (⊥ ~ Int)
+ * unifyTypes(state, conType("Int"), neverType, [], subst);  // err(mismatch)
+ * ```
+ *
+ * @example Failure: Rigid mismatch
+ * ```ts
+ * import { freshState, unifyTypes, conType } from "./typechecker.js";
+ *
+ * const state = freshState();
+ * const result = unifyTypes(state, conType("Int"), conType("Bool"), [], new Map());
+ * console.log("mismatch:", "type_mismatch" in result.err);  // true
+ * ```
+ *
+ * @see {@link solveConstraints} Processes worklist
+ * @see {@link unifyFlex} Meta binding
+ * @see {@link typesEqual} Early exit
+ * @see {@link unifyArrowTypes} Arrow dispatch
+ */
 export function unifyTypes(
   state: TypeCheckerState,
   left: Type,
@@ -2089,31 +3719,6 @@ export function unifyTypes(
     return unifyTupleTypes(left, right, worklist, subst);
 
   return err({ type_mismatch: { expected: left, actual: right } });
-}
-
-export function unifyMetaVar(
-  state: TypeCheckerState,
-  evar: string,
-  ty: Type,
-  worklist: Worklist,
-  subst: Substitution,
-): Result<TypingError, null> {
-  // Follow existing solution if solved
-  if (state.meta.solutions.has(evar)) {
-    const existing = state.meta.solutions.get(evar)!;
-    return unifyTypes(state, existing, ty, worklist, subst); // Recursive unify
-  }
-
-  // Check if ty contains evar (occurs)
-  if (occursCheckEvar(state.meta, evar, ty)) {
-    return err({ cyclic: evar });
-  }
-
-  // Bind locally first (for this unification), then solve globally later if needed
-  // (Or solve globally immediately if no local subst conflicts)
-  const currentSubstTy = applySubstitution(state, subst, ty); // Apply local subst to ty
-  subst.set(evar, currentSubstTy); // Bind in subst (allows propagation)
-  return ok(null);
 }
 
 function unifyTupleTypes(
@@ -2353,6 +3958,70 @@ function unifyBoundedForallTypes(
   return ok(null);
 }
 
+/**
+ * Unifies type variable `varName` with `type` (rigid-flex).
+ *
+ * **Purpose**: `α ~ τ` for **type vars** (not metas):
+ * 1. Existing subst → check equal.
+ * 2. Tautology: `α ~ α`.
+ * 3. `⊥` special: No bind (subtyping later).
+ * 4. Occurs-check → cyclic.
+ * 5. Bind: `subst.set(α, τ)`.
+ *
+ * Called by `unifyTypes`. Handles non-meta vars.
+ *
+ * @param state - Checker state
+ * @param varName - Type var (`"a"`)
+ * @param type - Type to unify
+ * @param subst - Mutable bindings
+ * @returns `ok(null)` or error
+ *
+ * @example Success: Bind var
+ * ```ts
+ * import { freshState, unifyVariable, arrowType, conType, typesEqual } from "./typechecker.js";
+ *
+ * const state = freshState();
+ * const subst = new Map<string, Type>();
+ * const result = unifyVariable(state, "a", arrowType(conType("Int"), conType("Bool")), subst);
+ * console.log("bound:", subst.has("a"));  // true
+ * console.log("equal:", typesEqual(state, subst.get("a")!, arrowType(conType("Int"), conType("Bool"))));  // true
+ * ```
+ *
+ * @example Tautology (α ~ α)
+ * ```ts
+ * import { freshState, unifyVariable, varType } from "./typechecker.js";
+ *
+ * const state = freshState();
+ * const subst = new Map();
+ * const result = unifyVariable(state, "a", varType("a"), subst);
+ * console.log("tautology:", "ok" in result);  // true (no bind)
+ * ```
+ *
+ * @example Bottom special (no bind)
+ * ```ts
+ * import { freshState, unifyVariable, neverType } from "./typechecker.js";
+ *
+ * const state = freshState();
+ * const subst = new Map();
+ * const result = unifyVariable(state, "a", neverType, subst);
+ * console.log("bottom ok:", "ok" in result && !subst.has("a"));  // true
+ * ```
+ *
+ * @example Failure: Cyclic
+ * ```ts
+ * import { freshState, unifyVariable, arrowType, varType } from "./typechecker.js";
+ *
+ * const state = freshState();
+ * const cyclicTy = arrowType(varType("a"), varType("Int"));
+ * const subst = new Map();
+ * const result = unifyVariable(state, "a", cyclicTy, subst);
+ * console.log("cyclic:", "cyclic" in result.err);  // true
+ * ```
+ *
+ * @internal Called by {@link unifyTypes}
+ * @see {@link occursCheck} Cycle detection
+ * @see {@link unifyMetaVar} Meta counterpart
+ */
 export function unifyVariable(
   state: TypeCheckerState,
   varName: string,
@@ -2393,11 +4062,81 @@ export function unifyVariable(
   return ok(null);
 }
 
+/**
+ * Unifies two kinds: wrapper over `kindsEqual`.
+ *
+ * **Purpose**: Constraint solver primitive for kind equality.
+ * Returns `kind_mismatch` on failure.
+ *
+ * @param left - First kind
+ * @param right - Second kind
+ * @returns `ok(null)` if equal
+ *
+ * @example Success: Equal kinds
+ * ```ts
+ * import { unifyKinds, starKind, arrowKind } from "./typechecker.js";
+ *
+ * const result1 = unifyKinds(starKind, starKind);
+ * console.log("star equal:", "ok" in result1);  // true
+ *
+ * const hkt = arrowKind(starKind, starKind);
+ * const result2 = unifyKinds(hkt, hkt);
+ * console.log("HKT equal:", "ok" in result2);  // true
+ * ```
+ *
+ * @example Failure: Mismatch
+ * ```ts
+ * import { unifyKinds, starKind, arrowKind } from "./typechecker.js";
+ *
+ * const result = unifyKinds(starKind, arrowKind(starKind, starKind));
+ * console.log("mismatch:", "kind_mismatch" in result.err);  // true
+ * ```
+ *
+ * @see {@link kindsEqual} Structural check
+ * @see {@link solveConstraints} Worklist consumer
+ */
 export function unifyKinds(left: Kind, right: Kind): Result<TypingError, null> {
   if (kindsEqual(left, right)) return ok(null);
   return err({ kind_mismatch: { expected: left, actual: right } });
 }
 
+/**
+ * Occurs check for type variables: `varName` free in `type`?
+ *
+ * **Purpose**: Cycle detection in `unifyVariable`: blocks `a := a → Int`.
+ * Skips bound vars (`∀a.τ`, `λ/μ`). Flags degenerate `μM.M`.
+ *
+ * @param varName - Type var (`"a"`)
+ * @param type - Type to search
+ * @returns `true` if free occurrence
+ *
+ * @example Occurs in structure
+ * ```ts
+ * import { occursCheck, arrowType, varType } from "./typechecker.js";
+ *
+ * const ty = arrowType(varType("a"), varType("Int"));
+ * console.log("a occurs:", occursCheck("a", ty));  // true
+ * ```
+ *
+ * @example Skipped binder
+ * ```ts
+ * import { occursCheck, forallType, arrowType, varType, starKind } from "./typechecker.js";
+ *
+ * const poly = forallType("a", starKind, arrowType(varType("a"), varType("b")));
+ * console.log("outer a:", occursCheck("a", poly));  // false (bound)
+ * ```
+ *
+ * @example Degenerate mu (cyclic)
+ * ```ts
+ * import { occursCheck, muType, varType } from "./typechecker.js";
+ *
+ * const degenerate = muType("M", varType("M"));
+ * console.log("degenerate:", occursCheck("X", degenerate));  // true (flags μM.M)
+ * ```
+ *
+ * @see {@link unifyVariable} Caller
+ * @see {@link occursCheckEvar} Meta-var version
+ */
 export function occursCheck(varName: string, type: Type): boolean {
   if ("var" in type) return type.var === varName;
 
@@ -2445,6 +4184,75 @@ export function occursCheck(varName: string, type: Type): boolean {
   return false;
 }
 
+/**
+ * Applies substitution to type (metas → solutions, vars → bindings).
+ *
+ * **Purpose**: Resolves `subst`/`meta.solutions` in `type`:
+ * - **Metas**: `?N → sol` (follow chains).
+ * - **Vars**: `α → subst(α)` (cycle-detect via `visited`).
+ * - **Binders**: Shadow subst (`∀α.τ[α↦σ] = ∀α.τ[free↦σ]`).
+ * - **Structural**: Recurse on compounds.
+ *
+ * Used post-unification: `applySubstitution(solveRes.ok, resultTy)`.
+ *
+ * @param state - Checker state (metas fallback)
+ * @param subst - Local bindings `Map<string, Type>`
+ * @param type - Input type
+ * @param visited - Cycle set (defaults empty)
+ * @returns Resolved type
+ *
+ * @example Meta resolution
+ * ```ts
+ * import { freshState, freshMetaVar, applySubstitution, conType, arrowType } from "./typechecker.js";
+ *
+ * const state = freshState();
+ * const meta = freshMetaVar(state.meta);
+ * const subst = new Map([ [meta.evar, arrowType(conType("Int"), conType("Bool"))] ]);
+ * const resolved = applySubstitution(state, subst, meta);
+ * console.log("meta:", showType(resolved));  // "(Int → Bool)"
+ * ```
+ *
+ * @example Var chain (cycle safe)
+ * ```ts
+ * import { freshState, applySubstitution, varType } from "./typechecker.js";
+ * import { conType } from "./typechecker.js";
+ *
+ * const state = freshState();
+ * const subst = new Map([
+ *   ["a", { var: "b" }],
+ *   ["b", conType("Int")]
+ * ]);
+ * const resolved = applySubstitution(state, subst, varType("a"));
+ * console.log("chain:", showType(resolved));  // "Int"
+ * ```
+ *
+ * @example Binder shadowing
+ * ```ts
+ * import { freshState, applySubstitution, forallType, varType, starKind } from "./typechecker.js";
+ *
+ * const state = freshState();
+ * const subst = new Map([["a", varType("X")]]);
+ * const poly = forallType("a", starKind, arrowType(varType("a"), varType("b")));
+ * const resolved = applySubstitution(state, subst, poly);
+ * console.log("shadow:", showType(resolved));  // "∀a::*. (a → b)"
+ * ```
+ *
+ * @example Data structures
+ * ```ts
+ * import { freshState, applySubstitution, recordType, varType } from "./typechecker.js";
+ * import { conType } from "./typechecker.js";
+ *
+ * const state = freshState();
+ * const subst = new Map([["a", conType("Int")]]);
+ * const rec = recordType([["x", varType("a")], ["y", conType("Bool")]]);
+ * const resolved = applySubstitution(state, subst, rec);
+ * console.log("record:", showType(resolved));  // "{x: Int, y: Bool}"
+ * ```
+ *
+ * @see {@link solveConstraints} Produces subst
+ * @see {@link mergeSubsts} Combines subst
+ * @see {@link applySubstitutionToTerm} Term counterpart
+ */
 export function applySubstitution(
   state: TypeCheckerState,
   subst: Substitution,
@@ -2549,7 +4357,93 @@ export function applySubstitution(
   return type;
 }
 
-// Bidirectional type checking - check a term against an expected type
+/**
+ * Bidirectional checking: `Γ ⊢ term ⇐ expectedType` (returns resolved type + subst).
+ *
+ * **Purpose**: Analysis mode (`⇐`):
+ * - **Specialized**: Lam/tylam/trait_lam/record/tuple/inject/fold (direct rules).
+ * - **Fallback**: `inferType` → `subsumes(expected, inferred)` (polymorphic/general).
+ * Returns `{ type: resolvedExpected, subst }`.
+ *
+ * Validates + resolves metas/constraints.
+ *
+ * @param state - Checker state
+ * @param term - Term to check
+ * @param expectedType - Expected type
+ * @returns Resolved type + subst, or error
+ *
+ * @example Lambda: Domain unify + body check
+ * ```ts
+ * import { freshState, addType, checkType, lamTerm, varTerm, arrowType, conType, starKind } from "./typechecker.js";
+ *
+ * let state = freshState();
+ * state = addType(state, "Int", starKind).ok;
+ * state = addType(state, "Bool", starKind).ok;
+ *
+ * const id = lamTerm("x", conType("Int"), varTerm("x"));
+ * const expected = arrowType(conType("Int"), conType("Int"));
+ * const result = checkType(state, id, expected);
+ * console.log("lam ok:", "ok" in result);  // true
+ * ```
+ *
+ * @example Record: Field-by-field
+ * ```ts
+ * import { freshState, addType, checkType, recordTerm, conTerm, recordType, conType, starKind } from "./typechecker.js";
+ *
+ * let state = freshState();
+ * state = addType(state, "Int", starKind).ok;
+ * state = addType(state, "Bool", starKind).ok;
+ *
+ * const recTerm = recordTerm([
+ *   ["x", conTerm("1", conType("Int"))],
+ *   ["y", conTerm("true", conType("Bool"))]
+ * ]);
+ * const expected = recordType([["x", conType("Int")], ["y", conType("Bool")]]);
+ * const result = checkType(state, recTerm, expected);
+ * console.log("record ok:", "ok" in result);  // true
+ * ```
+ *
+ * @example Subsumption fallback (poly)
+ * ```ts
+ * import { freshState, addType, checkType, tylamTerm, lamTerm, varTerm, forallType, arrowType, varType, starKind, conType } from "./typechecker.js";
+ *
+ * let state = freshState();
+ * state = addType(state, "Int", starKind).ok;
+ *
+ * const polyId = tylamTerm("a", starKind, lamTerm("x", varType("a"), varTerm("x")));
+ * const expected = arrowType(conType("Int"), conType("Int"));
+ * const result = checkType(state, polyId, expected);
+ * console.log("subsumption ok:", "ok" in result);  // true
+ * ```
+ *
+ * @example Tylam: Kind + alpha-rename
+ * ```ts
+ * import { freshState, checkType, tylamTerm, lamTerm, varTerm, forallType, arrowType, varType, starKind } from "./typechecker.js";
+ *
+ * const state = freshState();
+ * const tyLam = tylamTerm("a", starKind, lamTerm("x", varType("a"), varTerm("x")));
+ * const expected = forallType("α", starKind, arrowType(varType("α"), varType("α")));
+ * const result = checkType(state, tyLam, expected);
+ * console.log("tylam ok:", "ok" in result);  // true
+ * ```
+ *
+ * @example Failure: Type mismatch
+ * ```ts
+ * import { freshState, addType, checkType, conTerm, arrowType, conType, starKind } from "./typechecker.js";
+ *
+ * let state = freshState();
+ * state = addType(state, "Int", starKind).ok;
+ *
+ * const num = conTerm("42", conType("Int"));
+ * const expected = arrowType(conType("Int"), conType("Int"));
+ * const result = checkType(state, num, expected);
+ * console.log("mismatch:", "type_mismatch" in result.err);  // true
+ * ```
+ *
+ * @see {@link inferType} Synthesis counterpart
+ * @see {@link subsumes} Fallback subtyping
+ * @see {@link inferTypeWithMode} Dispatcher
+ */
 export function checkType(
   state: TypeCheckerState,
   term: Term,
@@ -2898,8 +4792,92 @@ export function checkType(
   return ok({ type: resolvedExpected, subst: finalSubst });
 }
 
-// ./src/typechecker.ts (cont.)
-// Typing judgment: Γ ⊢ e : τ
+/**
+ * Synthesizes type: `Γ ⊢ term ⇒ τ` (inference mode).
+ *
+ * **Purpose**: Dispatcher for term-specific inference rules:
+ * - **Primitives**: Var/con lookup, lam/app, let.
+ * - **Poly**: Tylam/tyapp/trait-lam/app.
+ * - **Data**: Record/project/inject/match/tuple/fold.
+ * - **Traits**: Dict/trait-app/method.
+ *
+ * Recursive. Errors bubble from helpers.
+ *
+ * @param state - Checker state
+ * @param term - Term to infer
+ * @returns Inferred `Type` or error
+ *
+ * @example Variable lookup
+ * ```ts
+ * import { freshState, addType, addTerm, inferType, varTerm, conType, starKind } from "./typechecker.js";
+ *
+ * let state = freshState();
+ * state = addType(state, "Int", starKind).ok;
+ * state = addTerm(state, "x", { con: { name: "42", type: conType("Int") } }).ok;
+ *
+ * const result = inferType(state, varTerm("x"));
+ * console.log("var:", showType(result.ok));  // "Int"
+ * ```
+ *
+ * @example Lambda + app
+ * ```ts
+ * import { freshState, addType, inferType, lamTerm, appTerm, varTerm, conType, arrowType, starKind } from "./typechecker.js";
+ *
+ * let state = freshState();
+ * state = addType(state, "Int", starKind).ok;
+ * state = addType(state, "Bool", starKind).ok;
+ *
+ * const id = lamTerm("x", conType("Int"), varTerm("x"));
+ * const result1 = inferType(state, id);
+ * console.log("lam:", showType(result1.ok));  // "(Int → Int)"
+ *
+ * const app = appTerm(id, { con: { name: "0", type: conType("Int") } });
+ * const result2 = inferType(state, app);
+ * console.log("app:", showType(result2.ok));  // "Int"
+ * ```
+ *
+ * @example Record projection
+ * ```ts
+ * import { freshState, addType, inferType, recordTerm, projectTerm, conTerm, conType, starKind } from "./typechecker.js";
+ *
+ * let state = freshState();
+ * state = addType(state, "Int", starKind).ok;
+ * state = addType(state, "Bool", starKind).ok;
+ *
+ * const rec = recordTerm([
+ *   ["x", conTerm("1", conType("Int"))],
+ *   ["y", conTerm("true", conType("Bool"))]
+ * ]);
+ * const proj = projectTerm(rec, "x");
+ * const result = inferType(state, proj);
+ * console.log("project:", showType(result.ok));  // "Int"
+ * ```
+ *
+ * @example Match on enum
+ * ```ts
+ * import { freshState, addType, addEnum, inferType, matchTerm, variantPattern, varPattern, conTerm, appType, conType, tuplePattern, wildcardPattern, starKind } from "./typechecker.js";
+ * import { tupleType } from "./typechecker.js";
+ *
+ * let state = freshState();
+ * state = addType(state, "Int", starKind).ok;
+ * state = addEnum(state, "Option", ["T"], [starKind], [
+ *   ["None", tupleType([])],
+ *   ["Some", conType("T")]
+ * ]).ok;
+ *
+ * const scrut = conTerm("opt", appType(conType("Option"), conType("Int")));
+ * const match = matchTerm(scrut, [
+ *   [variantPattern("None", tuplePattern([])), conTerm("0", conType("Int"))],
+ *   [variantPattern("Some", tuplePattern([varPattern("x"), wildcardPattern()])), varTerm("x")]
+ * ]);
+ * const result = inferType(state, match);
+ * console.log("match:", showType(result.ok));  // "Int"
+ * ```
+ *
+ * @see {@link checkType} Checking counterpart
+ * @see {@link inferTypeWithMode} Bidirectional dispatcher
+ * @see {@link inferLamType} Lambda rule
+ */
 export function inferType(
   state: TypeCheckerState,
   term: Term,
@@ -3012,6 +4990,7 @@ function inferFoldType(state: TypeCheckerState, term: FoldTerm) {
 
   return ok(term.fold.type);
 }
+
 function inferMatchType(state: TypeCheckerState, term: MatchTerm) {
   const scrutineeType = inferType(state, term.match.scrutinee);
   if ("err" in scrutineeType) return scrutineeType;
@@ -3095,6 +5074,7 @@ function inferMatchType(state: TypeCheckerState, term: MatchTerm) {
 
   return ok(normalizeType(state, commonType!));
 }
+
 function inferInjectType(
   state: TypeCheckerState,
   term: InjectTerm,
@@ -3180,7 +5160,7 @@ function inferInjectType(
   return err({ not_a_variant: variantType });
 }
 
-// NEW Helper: Check injected value against field type (handles unit, single, tuple/multi-field)
+// Check injected value against field type (handles unit, single, tuple/multi-field)
 function checkInjectValue(
   state: TypeCheckerState,
   value: Term,
@@ -3252,8 +5232,43 @@ function checkInjectValue(
   return ok({ valueType });
 }
 
-// Helper to extract spine args (left-assoc nested apps)
-// Replace existing getSpineArgs function
+/**
+ * Extracts spine arguments from left-associated applications.
+ *
+ * **Purpose**: Deconstructs nominal types: `Either<Int, Bool>` → `["Int", "Bool"]`.
+ * Used in nominal unification, enum expansion, `showType`.
+ *
+ * @param ty - Possibly nested app type
+ * @returns Argument array (left-to-right)
+ *
+ * @example Nested nominal app
+ * ```ts
+ * import { getSpineArgs, appType, conType } from "./typechecker.js";
+ *
+ * const either = appType(appType(conType("Either"), conType("Int")), conType("Bool"));
+ * console.log("spine:", getSpineArgs(either));  // ["Int", "Bool"]
+ * ```
+ *
+ * @example Single app
+ * ```ts
+ * import { getSpineArgs, appType, conType } from "./typechecker.js";
+ *
+ * const listInt = appType(conType("List"), conType("Int"));
+ * console.log("single:", getSpineArgs(listInt));  // ["Int"]
+ * ```
+ *
+ * @example Non-app
+ * ```ts
+ * import { getSpineArgs, conType, arrowType } from "./typechecker.js";
+ * import { conType as int } from "./typechecker.js";
+ *
+ * console.log("con:", getSpineArgs(conType("Int")));       // []
+ * console.log("arrow:", getSpineArgs(arrowType(conType("Int"), int("Bool"))));  // []
+ * ```
+ *
+ * @internal Used by {@link unifyTypes}, {@link showType}
+ * @see {@link getSpineHead} Head extractor
+ */
 export function getSpineArgs(ty: Type): Type[] {
   const args: Type[] = [];
   let current = ty;
@@ -3264,7 +5279,42 @@ export function getSpineArgs(ty: Type): Type[] {
   return args;
 }
 
-// Add new helper to get the spine head (the constructor)
+/**
+ * Extracts spine head (constructor) from left-associated applications.
+ *
+ * **Purpose**: Deconstructs nominal types: `Either<Int,Bool>` → `Either`.
+ * Used with `getSpineArgs` in unification, enum lookup, `showType`.
+ *
+ * @param ty - Possibly nested app type
+ * @returns Head type (con/var)
+ *
+ * @example Nested nominal app
+ * ```ts
+ * import { getSpineHead, appType, conType } from "./typechecker.js";
+ *
+ * const either = appType(appType(conType("Either"), conType("Int")), conType("Bool"));
+ * console.log("head:", showType(getSpineHead(either)));  // "Either"
+ * ```
+ *
+ * @example Single app
+ * ```ts
+ * import { getSpineHead, appType, conType } from "./typechecker.js";
+ *
+ * const listInt = appType(conType("List"), conType("Int"));
+ * console.log("head:", showType(getSpineHead(listInt)));  // "List"
+ * ```
+ *
+ * @example Non-app
+ * ```ts
+ * import { getSpineHead, conType, arrowType } from "./typechecker.js";
+ *
+ * console.log("con:", showType(getSpineHead(conType("Int"))));       // "Int"
+ * console.log("arrow:", showType(getSpineHead(arrowType(conType("Int"), conType("Bool")))));  // "(Int → Bool)"
+ * ```
+ *
+ * @internal Used by {@link unifyTypes}, {@link checkPattern}
+ * @see {@link getSpineArgs} Args extractor
+ */
 export function getSpineHead(ty: Type): Type {
   let current = ty;
   while ("app" in current) {
@@ -3912,6 +5962,7 @@ function inferSelfFromArgument(
 
   return err({ unbound: "Self" });
 }
+
 function findEnumForVariant(
   state: TypeCheckerState,
   variantType: Type,
@@ -3969,14 +6020,50 @@ function extractParentFromConstructor(type: Type): Type | null {
 }
 
 /**
- * Convert a structural variant into a higher‑order type constructor (λ form)
- * guided by the given `selfKind`.
+ * Synthesizes HKT constructor from structural variant (infer self-type).
  *
- * Example:
- *   variant = <Left: a | Right: b>
- *   selfKind = * → * → *
- *   =>
- *     λt0::* . λt1::* . <Left: t0 | Right: t1>
+ * **Purpose**: Converts `<Left: a | Right: b>` → `λt0.λt1.<Left:t0|Right:t1>`.
+ * Peels `selfKind` → arg kinds/names → nest lambdas inside-out.
+ * Used to infer enum constructors from patterns.
+ *
+ * @param vtype - Structural variant
+ * @param selfKind - Target kind (e.g., `* → *`)
+ * @returns Lambda type constructor
+ *
+ * @example Unary variant → * → *
+ * ```ts
+ * import { createVariantLambda, variantType, starKind, arrowKind, lamType } from "./typechecker.js";
+ * import { conType } from "./typechecker.js";
+ *
+ * const v = variantType([["None", { tuple: [] }], ["Some", conType("a")]]);
+ * const lambda = createVariantLambda(v, arrowKind(starKind, starKind));
+ * console.log(showType(lambda));  // "λt0::*. <None: ⊥ | Some: t0>"
+ * ```
+ *
+ * @example Binary → * → * → *
+ * ```ts
+ * import { createVariantLambda, variantType, starKind, arrowKind } from "./typechecker.js";
+ * import { tupleType, varType } from "./typechecker.js";
+ *
+ * const v = variantType([
+ *   ["Left", varType("l")],
+ *   ["Right", varType("r")]
+ * ]);
+ * const lambda = createVariantLambda(v, arrowKind(starKind, arrowKind(starKind, starKind)));
+ * console.log(showType(lambda));  // "λt1::*. λt0::*. <Left: t0 | Right: t1>"
+ * ```
+ *
+ * @example Non-variant passthrough
+ * ```ts
+ * import { createVariantLambda, conType, starKind } from "./typechecker.js";
+ *
+ * const ty = conType("Int");
+ * const result = createVariantLambda(ty, starKind);
+ * console.log("passthrough:", showType(result));  // "Int"
+ * ```
+ *
+ * @internal Used by {@link inferSelfFromArgument}
+ * @see {@link inferSelfFromArgument} Pattern inference
  */
 export function createVariantLambda(vtype: Type, selfKind: Kind): Type {
   if (!("variant" in vtype)) return vtype;
@@ -4052,7 +6139,57 @@ function inferVarType(state: TypeCheckerState, term: VarTerm) {
   return err({ unbound: term.var });
 }
 
-// Helper to collect unbound meta variables from a type
+/**
+ * Collects unbound meta-variables (`?N` without solutions) in `ty`.
+ *
+ * **Purpose**: Finds unsolved evars for generalization, error reporting.
+ * Recurses structurally, skips solved metas.
+ *
+ * @param state - Checker state (solutions lookup)
+ * @param ty - Type to scan
+ * @param metas - Accumulator set (defaults empty)
+ * @returns Array of unbound evar names
+ *
+ * @example Single unbound meta
+ * ```ts
+ * import { freshState, freshMetaVar, getUnboundMetas } from "./typechecker.js";
+ * import { arrowType } from "./typechecker.js";
+ *
+ * const state = freshState();
+ * const meta = freshMetaVar(state.meta);
+ * const ty = arrowType(meta, meta);
+ * const unbound = getUnboundMetas(state, ty);
+ * console.log("unbound:", unbound);  // ["?0"]
+ * ```
+ *
+ * @example Solved vs unbound
+ * ```ts
+ * import { freshState, freshMetaVar, getUnboundMetas, conType } from "./typechecker.js";
+ *
+ * const state = freshState();
+ * const meta1 = freshMetaVar(state.meta);  // ?0 unbound
+ * state.meta.solutions.set(meta1.evar, conType("Int"));  // Solved
+ * const meta2 = freshMetaVar(state.meta);  // ?1 unbound
+ * const unbound = getUnboundMetas(state, meta2);
+ * console.log("unbound:", unbound);  // ["?1"]
+ * ```
+ *
+ * @example Nested data
+ * ```ts
+ * import { freshState, freshMetaVar, getUnboundMetas, recordType } from "./typechecker.js";
+ *
+ * const state = freshState();
+ * const meta1 = freshMetaVar(state.meta);
+ * const meta2 = freshMetaVar(state.meta);
+ * const rec = recordType([["x", meta1], ["y", meta2]]);
+ * const unbound = getUnboundMetas(state, rec);
+ * console.log("record metas:", unbound);  // ["?0", "?1"]
+ * ```
+ *
+ * @internal Utility for generalization/errors
+ * @see {@link freshMetaVar} Creates metas
+ * @see {@link solveMetaVar} Solves metas
+ */
 export function getUnboundMetas(
   state: TypeCheckerState,
   ty: Type,
@@ -4076,7 +6213,66 @@ export function getUnboundMetas(
   return Array.from(metas);
 }
 
-// Worklist constraint solver
+/**
+ * Solves constraint worklist: processes until empty.
+ *
+ * **Purpose**: Unification engine: `while(constraints) processConstraint()`.
+ * Mutates `subst`. Short-circuits on first error.
+ *
+ * Core solver for inference/checking.
+ *
+ * @param state - Checker state
+ * @param worklist - Constraints to solve
+ * @param subst - Bindings (mutated, defaults empty)
+ * @returns Final `subst` or first error
+ *
+ * @example Success: Simple type equality
+ * ```ts
+ * import { freshState, solveConstraints, typeEq, varType, conType } from "./typechecker.js";
+ *
+ * const state = freshState();
+ * const worklist = [typeEq({ var: "a" }, conType("Int"))];
+ * const subst = new Map<string, Type>();
+ * const result = solveConstraints(state, worklist, subst);
+ * console.log("ok:", "ok" in result);  // true
+ * console.log("a:", showType(subst.get("a")!));  // "Int"
+ * ```
+ *
+ * @example Failure: Kind mismatch
+ * ```ts
+ * import { freshState, solveConstraints, kindEq, starKind, arrowKind } from "./typechecker.js";
+ *
+ * const state = freshState();
+ * const worklist = [kindEq(starKind, arrowKind(starKind, starKind))];
+ * const result = solveConstraints(state, worklist);
+ * console.log("error:", "kind_mismatch" in result.err);  // true
+ * ```
+ *
+ * @example Chained unification (worklist growth)
+ * ```ts
+ * import { freshState, solveConstraints, unifyTypes, arrowType, varType, conType } from "./typechecker.js";
+ *
+ * const state = freshState();
+ * const worklist: Constraint[] = [];
+ * const subst = new Map<string, Type>();
+ * unifyTypes(state, varType("a"), arrowType(conType("Int"), conType("Bool")), worklist, subst);
+ * const result = solveConstraints(state, worklist, subst);
+ * console.log("chained ok:", "ok" in result);  // true
+ * ```
+ *
+ * @example Empty worklist
+ * ```ts
+ * import { freshState, solveConstraints } from "./typechecker.js";
+ *
+ * const state = freshState();
+ * const result = solveConstraints(state, []);
+ * console.log("empty ok:", "ok" in result && result.ok.size === 0);  // true
+ * ```
+ *
+ * @see {@link processConstraint} Constraint dispatcher
+ * @see {@link typeEq} Type constraint
+ * @see {@link unifyTypes} Adds to worklist
+ */
 export function solveConstraints(
   state: TypeCheckerState,
   worklist: Worklist,
@@ -4090,6 +6286,80 @@ export function solveConstraints(
   return ok(subst);
 }
 
+/**
+ * Dispatches constraint processing (worklist solver step).
+ *
+ * **Purpose**: Handles each `Constraint` variant:
+ * - `type_eq`: Apply subst/normalize → `unifyTypes` (recursive).
+ * - `kind_eq`: `unifyKinds`.
+ * - `has_kind`: Subst → `checkKind` → add `kindEq`.
+ * - `has_type`: `inferType` → add `typeEq`.
+ *
+ * Called by `solveConstraints` in loop.
+ *
+ * @param state - Checker state
+ * @param constraint - Single constraint
+ * @param worklist - Queue (mutated by generators)
+ * @param subst - Bindings (mutated)
+ * @returns `ok(null)` or error
+ *
+ * @example type_eq: Unification
+ * ```ts
+ * import { freshState, processConstraint, typeEq, varType, conType } from "./typechecker.js";
+ *
+ * const state = freshState();
+ * const subst = new Map<string, Type>();
+ * const worklist: Constraint[] = [];
+ * const result = processConstraint(state, typeEq(varType("a"), conType("Int")), worklist, subst);
+ * console.log("type_eq ok:", "ok" in result);  // true
+ * console.log("bound:", subst.has("a"));       // true
+ * ```
+ *
+ * @example kind_eq: Success/failure
+ * ```ts
+ * import { freshState, processConstraint, kindEq, starKind } from "./typechecker.js";
+ *
+ * const state = freshState();
+ * const subst = new Map();
+ * const worklist = [];
+ *
+ * const eqOk = processConstraint(state, kindEq(starKind, starKind), worklist, subst);
+ * console.log("kind_eq ok:", "ok" in eqOk);  // true
+ *
+ * const eqErr = processConstraint(state, kindEq(starKind, { arrow: { from: starKind, to: starKind } }), [], new Map());
+ * console.log("kind mismatch:", "kind_mismatch" in eqErr.err);  // true
+ * ```
+ *
+ * @example has_kind: Defers to kindEq
+ * ```ts
+ * import { freshState, processConstraint, hasKind, conType, starKind } from "./typechecker.js";
+ *
+ * const state = freshState();
+ * const subst = new Map();
+ * const worklist: Constraint[] = [];
+ * const result = processConstraint(state, hasKind(conType("Int"), starKind, state), worklist, subst);
+ * console.log("has_kind ok:", "ok" in result);  // true
+ * console.log("worklist grew:", worklist.length > 0);  // true (kindEq added)
+ * ```
+ *
+ * @example has_type: Defers to typeEq
+ * ```ts
+ * import { freshState, processConstraint, hasType, lamTerm, varTerm, arrowType, conType } from "./typechecker.js";
+ *
+ * const state = freshState();
+ * const subst = new Map();
+ * const worklist: Constraint[] = [];
+ * const id = lamTerm("x", conType("Int"), varTerm("x"));
+ * const expected = arrowType(conType("Int"), conType("Int"));
+ * const result = processConstraint(state, hasType(id, expected, state), worklist, subst);
+ * console.log("has_type ok:", "ok" in result);  // true
+ * console.log("worklist grew:", worklist.length > 0);  // true (typeEq added)
+ * ```
+ *
+ * @internal Called by {@link solveConstraints}
+ * @see {@link typeEq} Type constraint
+ * @see {@link unifyTypes} Recursive unifier
+ */
 export function processConstraint(
   state: TypeCheckerState,
   constraint: Constraint,
@@ -4142,10 +6412,71 @@ export function processConstraint(
   throw new Error("Unknown constraint kind");
 }
 
-// Top-level type checking function
-export const typecheck = inferType;
+/**
+ * Top-level type inference: `Γ ⊢ term : τ` (alias for `inferType`).
+ *
+ * **Purpose**: Convenience entrypoint. Use directly or via `inferTypeWithMode`.
+ *
+ * @param state - Checker state
+ * @param term - Term to infer
+ * @returns Inferred type or error
+ *
+ * @see {@link inferType} Implementation
+ * @see {@link inferTypeWithMode} Bidirectional
+ * @see {@link checkType} Checking mode
+ */
+export const typeCheck = inferType;
 
-// Type checking with constraint solving (for more complex scenarios)
+/**
+ * Constraint-based type inference: `Γ ⊢ term : ?result`.
+ *
+ * **Purpose**: Meta-inference via worklist: `hasType(term, $result, state)` → solve.
+ * Fallback to `inferType` if unsolved. For complex scenarios (deferred solving).
+ *
+ * @param state - Checker state
+ * @param term - Term to infer
+ * @returns Solved `$result` or fallback inference
+ *
+ * @example Success: Extracts $result
+ * ```ts
+ * import { freshState, addType, typecheckWithConstraints, lamTerm, varTerm, conType, starKind } from "./typechecker.js";
+ *
+ * let state = freshState();
+ * state = addType(state, "Int", starKind).ok;
+ *
+ * const id = lamTerm("x", conType("Int"), varTerm("x"));
+ * const result = typecheckWithConstraints(state, id);
+ * console.log("constraint:", showType(result.ok));  // "(Int → Int)"
+ * ```
+ *
+ * @example With bindings (let-like)
+ * ```ts
+ * import { freshState, addType, addTerm, typecheckWithConstraints, appTerm, varTerm, conTerm, conType, starKind } from "./typechecker.js";
+ * import { lamTerm } from "./typechecker.js";
+ *
+ * let state = freshState();
+ * state = addType(state, "Int", starKind).ok;
+ * state = addTerm(state, "id", lamTerm("x", conType("Int"), varTerm("x"))).ok;
+ *
+ * const app = appTerm(varTerm("id"), conTerm("0", conType("Int")));
+ * const result = typecheckWithConstraints(state, app);
+ * console.log("app:", showType(result.ok));  // "Int"
+ * ```
+ *
+ * @example Fallback (no constraints solved)
+ * ```ts
+ * import { freshState, typecheckWithConstraints, conTerm, conType } from "./typechecker.js";
+ *
+ * const state = freshState();
+ * const num = conTerm("42", conType("Int"));
+ * const result = typecheckWithConstraints(state, num);
+ * console.log("fallback:", showType(result.ok));  // "Int"
+ * ```
+ *
+ * @see {@link inferType} Fallback implementation
+ * @see {@link hasType} Generated constraint
+ * @see {@link solveConstraints} Solver
+ */
 export function typecheckWithConstraints(
   state: TypeCheckerState,
   term: Term,
@@ -4163,7 +6494,85 @@ export function typecheckWithConstraints(
   return ok(resultType);
 }
 
-// Update the normalizeType function
+/**
+ * Normalizes types: expands aliases/enums, β-reduces apps, unfolds μ (cycle-safe).
+ *
+ * **Purpose**: Simplifies to core form:
+ * - **Aliases**: Expand param-matching (`Id<Int>` → `Int`).
+ * - **Enums**: Nominal → structural variant (recursive → `μX.<...X...>`).
+ * - **Apps**: β-reduce `(λt.τ) σ` → `τ[t↦σ]`.
+ * - **Cycles**: Guard `seen` → unchanged/⊥.
+ * - **Metas**: Follow solutions.
+ *
+ * Used everywhere: unification, equality, printing, checking.
+ *
+ * @param state - Checker state (ctx/metas)
+ * @param ty - Input type
+ * @param seen - Cycle set (defaults empty)
+ * @returns Normalized type
+ *
+ * @example Alias expansion
+ * ```ts
+ * import { freshState, addType, addTypeAlias, normalizeType, conType, varType, starKind, appType } from "./typechecker.js";
+ *
+ * let state = freshState();
+ * state = addType(state, "Int", starKind).ok;
+ * state = addTypeAlias(state, "Id", ["A"], [starKind], varType("A")).ok;
+ *
+ * const idInt = appType(conType("Id"), conType("Int"));
+ * const norm = normalizeType(state, idInt);
+ * console.log("alias:", showType(norm));  // "Int"
+ * ```
+ *
+ * @example Enum expansion (non-recursive)
+ * ```ts
+ * import { freshState, addType, addEnum, normalizeType, appType, conType, starKind } from "./typechecker.js";
+ * import { tupleType } from "./typechecker.js";
+ *
+ * let state = freshState();
+ * state = addType(state, "Int", starKind).ok;
+ * state = addEnum(state, "Option", ["T"], [starKind], [
+ *   ["None", tupleType([])],
+ *   ["Some", conType("T")]
+ * ]).ok;
+ *
+ * const optInt = appType(conType("Option"), conType("Int"));
+ * const norm = normalizeType(state, optInt);
+ * console.log("enum:", showType(norm));  // "<None: ⊥ | Some: Int>"
+ * ```
+ *
+ * @example Recursive enum → μ
+ * ```ts
+ * import { freshState, addType, addEnum, normalizeType, appType, conType, starKind, varType } from "./typechecker.js";
+ * import { tupleType } from "./typechecker.js";
+ *
+ * let state = freshState();
+ * state = addType(state, "Int", starKind).ok;
+ * state = addEnum(state, "List", ["T"], [starKind], [
+ *   ["Nil", tupleType([])],
+ *   ["Cons", tupleType([conType("T"), appType(conType("List"), varType("T"))])]
+ * ], true).ok;
+ *
+ * const listInt = appType(conType("List"), conType("Int"));
+ * const norm = normalizeType(state, listInt);
+ * console.log("recursive:", showType(norm));  // "μX0.<Nil: ⊥ | Cons: (Int, X0<Int>)>"
+ * ```
+ *
+ * @example Beta-reduction (app lam)
+ * ```ts
+ * import { freshState, normalizeType, lamType, appType, varType, starKind, conType } from "./typechecker.js";
+ *
+ * const state = freshState();
+ * const idLam = lamType("t", starKind, varType("t"));
+ * const idInt = appType(idLam, conType("Int"));
+ * const norm = normalizeType(state, idInt);
+ * console.log("beta:", showType(norm));  // "Int"
+ * ```
+ *
+ * @see {@link substituteType} Used in expansions
+ * @see {@link getSpineArgs} Nominal spine
+ * @see {@link typesEqual} Calls normalize
+ */
 export function normalizeType(
   state: TypeCheckerState,
   ty: Type,
@@ -4369,6 +6778,62 @@ export function normalizeType(
 
   return ty; // Fallback
 }
+
+/**
+ * Instantiates bounded forall + resolves trait dictionaries.
+ *
+ * **Purpose**: `∀{C}. τ` → `τ[α↦?N]` + `checkTraitConstraints(C[α↦?N])`.
+ * Non-bounded: Passthrough `{type: ty, dicts: []}`.
+ *
+ * Used for trait app auto-resolution.
+ *
+ * @param state - Checker state
+ * @param ty - Bounded forall type
+ * @returns `{ type: instantiatedBody, dicts: Term[] }` or error
+ *
+ * @example Success: Resolves constraints
+ * ```ts
+ * import { freshState, addType, addTraitDef, traitImplBinding, dictTerm, conType, boundedForallType, instantiateWithTraits, starKind, arrowType, lamTerm, varTerm } from "./typechecker.js";
+ *
+ * let state = freshState();
+ * state = addType(state, "Int", starKind).ok;
+ * state = addType(state, "Bool", starKind).ok;
+ * state = addTraitDef(state, "Eq", "A", starKind, [["eq", arrowType(conType("A"), conType("Bool"))]]).ok;
+ * const eqDict = dictTerm("Eq", conType("Int"), [["eq", lamTerm("x", conType("Int"), conTerm("true", conType("Bool")))]]);
+ * state.ctx.push(traitImplBinding("Eq", conType("Int"), eqDict));
+ *
+ * const bounded = boundedForallType("a", starKind, [{ trait: "Eq", type: conType("Int") }], arrowType(varType("a"), conType("Int")));
+ * const result = instantiateWithTraits(state, bounded);
+ * console.log("success:", "ok" in result && result.ok.dicts.length === 1);  // true
+ * ```
+ *
+ * @example Passthrough: Non-bounded
+ * ```ts
+ * import { freshState, instantiateWithTraits, arrowType, conType } from "./typechecker.js";
+ *
+ * const state = freshState();
+ * const simple = arrowType(conType("Int"), conType("Bool"));
+ * const result = instantiateWithTraits(state, simple);
+ * console.log("passthrough:", "ok" in result && result.ok.dicts.length === 0);  // true
+ * ```
+ *
+ * @example Failure: Missing impl
+ * ```ts
+ * import { freshState, addType, addTraitDef, boundedForallType, instantiateWithTraits, starKind, conType } from "./typechecker.js";
+ *
+ * let state = freshState();
+ * state = addType(state, "String", starKind).ok;
+ * state = addTraitDef(state, "Eq", "A", starKind, [["eq", conType("Bool")]]).ok;
+ * // No Eq<String>!
+ *
+ * const bounded = boundedForallType("a", starKind, [{ trait: "Eq", type: conType("String") }], conType("String"));
+ * const result = instantiateWithTraits(state, bounded);
+ * console.log("missing:", "missing_trait_impl" in result.err);  // true
+ * ```
+ *
+ * @see {@link checkTraitConstraints} Resolves dicts
+ * @see {@link autoInstantiate} Uses for trait apps
+ */
 export function instantiateWithTraits(
   state: TypeCheckerState,
   ty: Type,
@@ -4398,7 +6863,68 @@ export function instantiateWithTraits(
   return ok({ type: body, dicts: dictsResult.ok });
 }
 
-// When you encounter a polymorphic value in application position:
+/**
+ * Auto-instantiates polymorphic terms: applies type args + trait dicts.
+ *
+ * **Purpose**: Convenience: `polyTerm` → `polyTerm[?N] with dicts` (quantifier-free).
+ * - **Forall**: Fresh `?N` → `tyappTerm` → substitute.
+ * - **Bounded**: `instantiateWithTraits` → `traitAppTerm(?N, dicts)`.
+ *
+ * Used for implicit application of polymorphic values/dicts.
+ *
+ * @param state - Checker state
+ * @param term - Possibly polymorphic term
+ * @returns `{ term: instantiated, type: monomorphic }`
+ *
+ * @example Forall: Auto-tyapp
+ * ```ts
+ * import { freshState, inferType, autoInstantiate, tylamTerm, lamTerm, varTerm, varType, starKind } from "./typechecker.js";
+ *
+ * const state = freshState();
+ * const polyId = tylamTerm("a", starKind, lamTerm("x", varType("a"), varTerm("x")));
+ * const result = autoInstantiate(state, polyId);
+ * console.log("instantiated:", showTerm(result.ok.term));  // "Λa::*. λx:a. x [?0]"
+ * console.log("type:", showType(result.ok.type));         // "?0 → ?0"
+ * ```
+ *
+ * @example Bounded forall: Auto-trait-app
+ * ```ts
+ * import { freshState, addType, addTraitDef, traitImplBinding, dictTerm, autoInstantiate, traitLamTerm, conType, starKind, arrowType, lamTerm, varTerm } from "./typechecker.js";
+ *
+ * let state = freshState();
+ * state = addType(state, "Int", starKind).ok;
+ * state = addTraitDef(state, "Eq", "A", starKind, [["eq", arrowType(conType("A"), conType("Bool"))]]).ok;
+ * const dict = dictTerm("Eq", conType("Int"), [["eq", lamTerm("x", conType("Int"), conTerm("true", conType("Bool")))]]);
+ * state.ctx.push(traitImplBinding("Eq", conType("Int"), dict));
+ *
+ * const traitLam = traitLamTerm("d", "Eq", "Self", starKind, [{ trait: "Eq", type: { var: "Self" } }], arrowType(varType("Self"), conType("Int")));
+ * const result = autoInstantiate(state, traitLam);
+ * console.log("trait-app:", "ok" in result && result.ok.dicts.length > 0);  // true
+ * ```
+ *
+ * @example Failure: Missing trait impl
+ * ```ts
+ * import { freshState, addType, addTraitDef, traitLamTerm, autoInstantiate, starKind, varType } from "./typechecker.js";
+ *
+ * let state = freshState();
+ * state = addType(state, "String", starKind).ok;
+ * state = addTraitDef(state, "Eq", "A", starKind, [["eq", varType("Bool")]]).ok;
+ * // No Eq<String>!
+ *
+ * const traitLam = traitLamTerm("d", "Eq", "Self", starKind, [{ trait: "Eq", type: conType("String") }], varType("Self"));
+ * const result = autoInstantiate(state, traitLam);
+ * console.log("missing impl:", "missing_trait_impl" in result.err);  // true
+ * ```
+ *
+ * @example Mixed: Forall + bounded
+ * ```ts
+ * import { freshState, autoInstantiate, tylamTerm, traitLamTerm } from "./typechecker.js";
+ * // Complex setup omitted - combines tyapp + trait-app
+ * ```
+ *
+ * @see {@link instantiateWithTraits} Trait instantiation
+ * @see {@link inferType} Initial type
+ */
 export function autoInstantiate(
   state: TypeCheckerState,
   term: Term,
@@ -4432,6 +6958,53 @@ export function autoInstantiate(
   return ok({ term: accTerm, type: accType });
 }
 
+/**
+ * Recursively resolves meta-vars in `ty` via `meta.solutions` (arrow-only recurse).
+ *
+ * **Purpose**: Eliminates solved `?N` (follow chains). Partial: only arrows recurse fully.
+ *
+ * @param state - Checker state
+ * @param ty - Type with metas
+ * @returns Resolved type (unresolved metas unchanged)
+ *
+ * @example Resolved meta
+ * ```ts
+ * import { freshState, freshMetaVar, resolveMetaVars, conType } from "./typechecker.js";
+ *
+ * const state = freshState();
+ * const meta = freshMetaVar(state.meta);
+ * state.meta.solutions.set(meta.evar, conType("Int"));
+ * const resolved = resolveMetaVars(state, meta);
+ * console.log("resolved:", showType(resolved));  // "Int"
+ * ```
+ *
+ * @example Arrow chain
+ * ```ts
+ * import { freshState, freshMetaVar, resolveMetaVars, arrowType, conType } from "./typechecker.js";
+ *
+ * const state = freshState();
+ * const meta1 = freshMetaVar(state.meta);  // ?0
+ * const meta2 = freshMetaVar(state.meta);  // ?1
+ * state.meta.solutions.set(meta1.evar, conType("Int"));
+ * state.meta.solutions.set(meta2.evar, arrowType(meta1, conType("Bool")));
+ * const resolved = resolveMetaVars(state, meta2);
+ * console.log("chain:", showType(resolved));  // "(Int → Bool)"
+ * ```
+ *
+ * @example Unresolved meta
+ * ```ts
+ * import { freshState, freshMetaVar, resolveMetaVars } from "./typechecker.js";
+ *
+ * const state = freshState();
+ * const meta = freshMetaVar(state.meta);  // No solution
+ * const resolved = resolveMetaVars(state, meta);
+ * console.log("unresolved:", showType(resolved));  // "?0"
+ * ```
+ *
+ * @internal Partial resolver (arrows only)
+ * @see {@link applySubstitution} Full substitution
+ * @see {@link freshMetaVar} Creates metas
+ */
 export function resolveMetaVars(state: TypeCheckerState, ty: Type): Type {
   if (isMetaVar(ty)) {
     const solution = state.meta.solutions.get(ty.evar);
@@ -4447,7 +7020,35 @@ export function resolveMetaVars(state: TypeCheckerState, ty: Type): Type {
   return ty;
 }
 
-// Helper to calculate the arity of a kind
+/**
+ * Computes kind arity: number of arguments until `*`.
+ *
+ * **Purpose**: Counts HKT parameters: `* → *` → 1, `* → (* → *)` → 2.
+ * Used for enum/alias arity matching, trait param validation.
+ *
+ * @param kind - Input kind
+ * @returns Arity (0 for `*`)
+ *
+ * @example Base cases
+ * ```ts
+ * import { kindArity, starKind, arrowKind } from "./typechecker.js";
+ *
+ * console.log("star:", kindArity(starKind));  // 0
+ * console.log("unary:", kindArity(arrowKind(starKind, starKind)));  // 1
+ * ```
+ *
+ * @example Nested HKT
+ * ```ts
+ * import { kindArity, starKind, arrowKind } from "./typechecker.js";
+ *
+ * const binary = arrowKind(starKind, arrowKind(starKind, starKind));
+ * console.log("binary:", kindArity(binary));  // 2
+ * ```
+ *
+ * @internal HKT utility
+ * @see {@link inferDictType} Trait arity
+ * @see {@link addEnum} Param matching
+ */
 export function kindArity(kind: Kind): number {
   if ("star" in kind) return 0;
 
@@ -4460,7 +7061,58 @@ export function kindArity(kind: Kind): number {
   return acc;
 }
 
-// Helper to check if type has unbound metas
+/**
+ * Checks if `type` contains unbound meta-variables (unsolved `?N`).
+ *
+ * **Purpose**: Detects inference incompleteness (generalization guard).
+ * Recurses structurally. Used for error reporting, generalization.
+ *
+ * @param state - Checker state (solutions lookup)
+ * @param type - Type to scan
+ * @returns `true` if any unbound meta
+ *
+ * @example Unbound meta
+ * ```ts
+ * import { freshState, freshMetaVar, hasUnboundMetas } from "./typechecker.js";
+ *
+ * const state = freshState();
+ * const meta = freshMetaVar(state.meta);
+ * console.log("unbound:", hasUnboundMetas(state, meta));  // true
+ * ```
+ *
+ * @example Solved meta
+ * ```ts
+ * import { freshState, freshMetaVar, hasUnboundMetas, conType } from "./typechecker.js";
+ *
+ * const state = freshState();
+ * const meta = freshMetaVar(state.meta);
+ * state.meta.solutions.set(meta.evar, conType("Int"));
+ * console.log("solved:", hasUnboundMetas(state, meta));  // false
+ * ```
+ *
+ * @example Nested unbound
+ * ```ts
+ * import { freshState, freshMetaVar, hasUnboundMetas, recordType } from "./typechecker.js";
+ *
+ * const state = freshState();
+ * const meta1 = freshMetaVar(state.meta);
+ * const meta2 = freshMetaVar(state.meta);
+ * const rec = recordType([["x", meta1], ["y", meta2]]);
+ * console.log("nested:", hasUnboundMetas(state, rec));  // true
+ * ```
+ *
+ * @example No metas
+ * ```ts
+ * import { freshState, hasUnboundMetas, conType } from "./typechecker.js";
+ *
+ * const state = freshState();
+ * console.log("concrete:", hasUnboundMetas(state, conType("Int")));  // false
+ * ```
+ *
+ * @internal Utility for generalization
+ * @see {@link getUnboundMetas} Collects names
+ * @see {@link freshMetaVar} Creates metas
+ */
 export function hasUnboundMetas(state: TypeCheckerState, type: Type): boolean {
   if (isMetaVar(type) && !state.meta.solutions.has(type.evar)) {
     return true;
@@ -4485,7 +7137,50 @@ export function hasUnboundMetas(state: TypeCheckerState, type: Type): boolean {
   return false;
 }
 
-// Helper to collect type variables from a type
+/**
+ * Collects **free** type variables in `type` (skips bound in ∀/λ).
+ *
+ * **Purpose**: FTV for dependency analysis, renaming, generalization.
+ * Recurses structurally, shadows binders.
+ *
+ * @param type - Input type
+ * @param vars - Accumulator set (defaults empty)
+ * @returns Array of free var names
+ *
+ * @example Free vars in arrow
+ * ```ts
+ * import { collectTypeVars, arrowType, varType } from "./typechecker.js";
+ *
+ * const ty = arrowType(varType("a"), varType("b"));
+ * console.log("free:", collectTypeVars(ty));  // ["a", "b"]
+ * ```
+ *
+ * @example Skips forall binder
+ * ```ts
+ * import { collectTypeVars, forallType, arrowType, varType, starKind } from "./typechecker.js";
+ *
+ * const poly = forallType("a", starKind, arrowType(varType("a"), varType("b")));
+ * console.log("free:", collectTypeVars(poly));  // ["b"] (a bound)
+ * ```
+ *
+ * @example Nested data
+ * ```ts
+ * import { collectTypeVars, recordType, varType } from "./typechecker.js";
+ *
+ * const rec = recordType([["x", varType("a")], ["y", varType("b")]]);
+ * console.log("record:", collectTypeVars(rec));  // ["a", "b"]
+ * ```
+ *
+ * @example No free vars
+ * ```ts
+ * import { collectTypeVars } from "./typechecker.js";
+ *
+ * console.log("concrete:", collectTypeVars({ con: "Int" }));  // []
+ * ```
+ *
+ * @internal FTV utility
+ * @see {@link computeFreeTypes} Full free names
+ */
 export function collectTypeVars(
   type: Type,
   vars = new Set<string>(),
@@ -4520,6 +7215,62 @@ export function collectTypeVars(
   return Array.from(vars);
 }
 
+/**
+ * Strips trailing strippable-var apps, returns arity + remaining kind.
+ *
+ * **Purpose**: HKT trait matching: peel `F<t>` (t impl-var) → `F :: * → *`.
+ * Validates app kinds during stripping.
+ *
+ * Used in `inferDictType` for partial impl kinds.
+ *
+ * @param state - Checker state (kind checks)
+ * @param type - Possibly-applied type
+ * @param strippableVars - Vars to peel (e.g., `["t"]`)
+ * @returns `{ stripped: N, kind: remainingKind }` or error
+ *
+ * @example Success: Strip param var
+ * ```ts
+ * import { freshState, addType, computeStrippedKind, appType, varType, conType, starKind, arrowKind } from "./typechecker.js";
+ *
+ * let state = freshState();
+ * state = addType(state, "Option", arrowKind(starKind, starKind)).ok;
+ * state = addType(state, "Int", starKind).ok;
+ *
+ * const fInt = appType(conType("Option"), varType("t"));
+ * const result = computeStrippedKind(state, fInt, ["t"]);
+ * console.log("stripped:", result.ok.stripped);  // 1
+ * console.log("kind:", showKind(result.ok.kind));  // "* → *"
+ * ```
+ *
+ * @example Failure: Kind mismatch
+ * ```ts
+ * import { freshState, addType, computeStrippedKind, appType, varType, conType, starKind } from "./typechecker.js";
+ *
+ * let state = freshState();
+ * state = addType(state, "Bad", starKind).ok;  // Wrong kind for app
+ *
+ * const badApp = appType(conType("Bad"), varType("t"));
+ * const result = computeStrippedKind(state, badApp, ["t"]);
+ * console.log("error:", "kind_mismatch" in result.err);  // true
+ * ```
+ *
+ * @example No stripping (concrete arg)
+ * ```ts
+ * import { freshState, addType, computeStrippedKind, appType, conType, starKind } from "./typechecker.js";
+ *
+ * let state = freshState();
+ * state = addType(state, "Option", starKind).ok;
+ * state = addType(state, "Int", starKind).ok;
+ *
+ * const optInt = appType(conType("Option"), conType("Int"));
+ * const result = computeStrippedKind(state, optInt, ["t"]);
+ * console.log("no-strip:", result.ok.stripped);  // 0
+ * ```
+ *
+ * @internal Trait HKT utility
+ * @see {@link inferDictType} Impl validation
+ * @see {@link kindArity} Related
+ */
 export function computeStrippedKind(
   state: TypeCheckerState, // For kind checks
   type: Type,
@@ -6017,6 +8768,7 @@ export function addTraitImpl(
   const binding = traitImplBinding(trait, type, dict);
   return addBinding(state, binding);
 }
+
 export function addDict(
   state: TypeCheckerState,
   name: string,
