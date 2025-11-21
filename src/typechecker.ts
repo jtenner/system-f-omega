@@ -1103,6 +1103,11 @@ export function substituteType(
   inType: Type,
   avoidInfinite: Set<string> = new Set(),
 ): Type {
+  // In substituteType top-level:
+  if ("con" in inType) {
+    return inType.con === target ? replacement : inType;
+  }
+
   if ("var" in inType) return inType.var === target ? replacement : inType;
 
   if ("arrow" in inType)
@@ -3557,11 +3562,14 @@ function inferDictType(state: TypeCheckerState, term: DictTerm) {
   const requiredMethods = new Set(traitDef.trait_def.methods.map((m) => m[0]));
   const providedMethods = new Set(term.dict.methods.map((m) => m[0]));
 
-  for (const required of requiredMethods)
-    if (!providedMethods.has(required))
+  // 1. Check all REQUIRED methods are provided
+  for (const [requiredName] of traitDef.trait_def.methods) {
+    if (!providedMethods.has(requiredName)) {
       return err({
-        missing_method: { trait: term.dict.trait, method: required },
+        missing_method: { trait: term.dict.trait, method: requiredName },
       });
+    }
+  }
 
   // Bind 'self' to dictType in a local method context for each impl inference
   const methodCtx: Context = [
@@ -3569,7 +3577,10 @@ function inferDictType(state: TypeCheckerState, term: DictTerm) {
     { term: { name: "self", type: dictType } },
   ];
 
+  // 2. Typecheck each PROVIDED method (skip extras)
   for (const [methodName, methodImpl] of term.dict.methods) {
+    if (!requiredMethods.has(methodName)) continue; // Extra OK!
+
     const expectedMethod = traitDef.trait_def.methods.find(
       (m) => m[0] === methodName,
     );
@@ -4257,25 +4268,28 @@ export function normalizeType(
               seen,
             );
           }
+          // For recursive enums, replace self-refs INSIDE fields
+          let fieldForMu = instField;
+          if (def.recursive) {
+            const muVar = `X${state.meta.counter++}`; // Reuse counter or freshMetaVar.evar
+            fieldForMu = substituteType(
+              def.name,
+              { var: muVar },
+              instField,
+              new Set([muVar]),
+            );
+          }
           structuralVariant.push([
             label,
-            normalizeType(state, instField, seen),
+            normalizeType(state, fieldForMu, seen),
           ]);
         }
 
-        // NEW: If recursive, wrap in mu and substitute self-ref to X
+        // Hoist mu creation outside loop (reuse same muVar)
         if (def.recursive) {
-          const muVar = freshMetaVar(state.meta, starKind).evar; // Or a fixed "X"
+          const muVar = `X${state.meta.counter++}`; // Consistent var
           let muBody = { variant: structuralVariant } as Type;
-
-          // Substitute enum name with muVar in body (to resolve self-refs)
-          muBody = substituteType(
-            def.name,
-            { var: muVar },
-            muBody,
-            new Set([muVar]),
-          );
-
+          // No need: already substituted inside fields!
           return muType(muVar, normalizeType(state, muBody, seen));
         }
 
@@ -5888,7 +5902,12 @@ export function addTypeAlias(
   kinds: Kind[],
   body: Type,
 ): Result<TypingError, TypeCheckerState> {
+  let aliasKind = starKind;
+  for (let i = params.length - 1; i >= 0; i--)
+    aliasKind = arrowKind(kinds[i]!, aliasKind);
+
   const extendedCtx: Context = [
+    { type: { name, kind: aliasKind } },
     ...params.map((p, i) => typeBinding(p, kinds[i]!)),
     ...state.ctx,
   ];
@@ -5908,7 +5927,14 @@ export function addEnum(
   variants: [string, FieldScheme][],
   recursive: boolean = true, // Optional flag: treat as recursive ADT (default: true)
 ): Result<TypingError, TypeCheckerState> {
+  // Step 1: compute List<T> kind
+  let enumKind: Kind = starKind;
+  for (let i = params.length - 1; i >= 0; i--)
+    enumKind = arrowKind(kinds[i]!, enumKind);
+
+  // Step 2: create a temporary binding for recursive kind checking
   const extendedCtx: Context = [
+    { type: { name, kind: enumKind } },
     ...params.map((p, i) => typeBinding(p, kinds[i]!)),
     ...state.ctx,
   ];
@@ -5943,12 +5969,6 @@ export function addEnum(
 
   // Only set recursive if flag + self-reference found
   const effectiveRecursive = recursive && hasSelfReference;
-
-  // Compute enum kind (unchanged: params → *)
-  let enumKind: Kind = starKind;
-  for (let i = params.length - 1; i >= 0; i--) {
-    enumKind = arrowKind(kinds[i]!, enumKind);
-  }
 
   // Bind with recursive flag
   const binding = enumDefBinding(

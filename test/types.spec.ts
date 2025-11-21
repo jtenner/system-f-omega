@@ -21,7 +21,6 @@ import {
   forallType,
   freshMetaVar,
   getSpineArgs,
-  getSpineHead,
   inferType,
   inferTypeWithMode,
   injectTerm,
@@ -72,7 +71,6 @@ import {
   varPattern,
   varTerm,
   varType,
-  type Worklist,
   wildcardPattern,
 } from "../src/typechecker.js";
 import {
@@ -87,6 +85,7 @@ import {
   type TraitImplBinding,
   type Type,
   type VariantType,
+  type Worklist,
 } from "../src/types.js";
 
 function assert(condition: boolean, message: string): asserts condition {
@@ -5219,6 +5218,7 @@ test("Enum definition and nominal Option type", () => {
       ["None", unitType],
       ["Some", varType("T")],
     ],
+    recursive: false,
   };
 
   const intType = conType("Int");
@@ -5274,6 +5274,7 @@ test("Nominal injection into enum (Option::Some)", () => {
       ["None", unitType],
       ["Some", varType("T")],
     ],
+    recursive: false,
   };
 
   const intType = conType("Int");
@@ -5310,6 +5311,7 @@ test("Nominal exhaustive matching on enum (Either)", () => {
       ["Left", varType("L")],
       ["Right", varType("R")],
     ],
+    recursive: false,
   };
 
   const intType = conType("Int");
@@ -5364,6 +5366,7 @@ test("Invalid label in nominal enum injection", () => {
       ["None", unitType],
       ["Some", varType("T")],
     ],
+    recursive: false,
   };
 
   const optionUnit = appType(conType("Option"), unitType);
@@ -6513,6 +6516,7 @@ test("checkKind of recursive type using enum", () => {
         tupleType([varType("t"), appType(conType("List"), varType("t"))]),
       ],
     ],
+    recursive: true,
   };
 
   const context = state([
@@ -6545,6 +6549,7 @@ test("infers parameter type from usage (pattern match on Result)", () => {
       ["Ok", varType("a")],
       ["Err", varType("b")],
     ],
+    recursive: false,
   } satisfies EnumDef;
 
   const ctx = state([{ enum: resultEnum }]);
