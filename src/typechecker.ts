@@ -4633,36 +4633,46 @@ function inferUnfoldType(state: TypeCheckerState, term: UnfoldTerm) {
 
   return ok(unfoldedType);
 }
-
 function inferFoldType(state: TypeCheckerState, term: FoldTerm) {
-  const muKind = checkKind(state, term.fold.type);
-  if ("err" in muKind) return muKind;
+  // Ensure the annotation is well-kinded
+  const kindRes = checkKind(state, term.fold.type);
+  if ("err" in kindRes) return kindRes;
 
-  if (!("mu" in term.fold.type))
-    return err({
-      type_mismatch: { expected: term.fold.type, actual: term.fold.type },
-    });
+  // Work on the normalized form
+  const norm = normalizeType(state, term.fold.type);
 
-  const unfoldedTypeSubstituded = substituteType(
-    term.fold.type.mu.var,
-    term.fold.type,
-    term.fold.type.mu.body,
-    new Set([term.fold.type.mu.var]),
-  );
-
-  const unfoldedType = normalizeType(state, unfoldedTypeSubstituded);
-
-  const termType = inferType(state, term.fold.term);
-  if ("err" in termType) return termType;
-
-  if (!isAssignableTo(state, termType.ok, unfoldedType))
+  if (!("mu" in norm)) {
     return err({
       type_mismatch: {
-        expected: unfoldedType,
-        actual: termType.ok,
+        expected: term.fold.type, // or norm, up to you
+        actual: term.fold.type,
       },
     });
+  }
 
+  // Unfold norm μX. body
+  const unfoldedSubst = substituteType(
+    norm.mu.var,
+    norm, // replace X with μX.body
+    norm.mu.body,
+    new Set([norm.mu.var]),
+  );
+  const unfolded = normalizeType(state, unfoldedSubst);
+
+  // Infer type of the inner term
+  const inner = inferType(state, term.fold.term);
+  if ("err" in inner) return inner;
+
+  if (!isAssignableTo(state, inner.ok, unfolded)) {
+    return err({
+      type_mismatch: {
+        expected: unfolded,
+        actual: inner.ok,
+      },
+    });
+  }
+
+  // fold[τ](e) has type τ
   return ok(term.fold.type);
 }
 

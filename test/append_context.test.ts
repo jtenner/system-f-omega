@@ -19,7 +19,6 @@ import {
   lamTerm,
   matchTerm,
   muType,
-  showError,
   starKind,
   tuplePattern,
   tupleType,
@@ -31,11 +30,12 @@ import {
   varType,
   wildcardPattern,
 } from "../src/typechecker.ts";
-import type {
-  EnumDefBinding,
-  Result,
-  TypeBinding,
-  TypingError,
+import {
+  type EnumDefBinding,
+  type Result,
+  showError,
+  type TypeBinding,
+  type TypingError,
 } from "../src/types.ts";
 import { freshState } from "./helpers.ts";
 

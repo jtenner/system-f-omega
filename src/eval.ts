@@ -6,11 +6,11 @@ import {
   injectTerm,
   lamTerm,
   recordTerm,
-  showType,
   tupleTerm,
   unitType,
   varTerm,
 } from "./typechecker.js";
+
 import {
   type AppTerm,
   type DictTerm,
@@ -27,6 +27,7 @@ import {
   type ProjectTerm,
   type RecordTerm,
   type Result,
+  showType,
   type Term,
   type TraitMethodTerm,
   type TupleProjectTerm,
@@ -37,7 +38,6 @@ import {
   type Value,
   type VarTerm,
 } from "./types.js";
-
 export function evaluate(
   term: Term,
   context: TypeCheckerState,

@@ -34,6 +34,7 @@ async function main() {
 
   // Check against expected
   const expected = arrowType(conType("Int"), conType("Bool"));
+  // This throws an error because `Bool` mismatches `Int`
   const checkRes = unwrap(checkType(state, id, expected));
   console.log("\nCheck λx:Int.x ⇐ Int→Bool →", showType(checkRes.type)); // "(Int → Bool)"
 }

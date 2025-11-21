@@ -5,8 +5,6 @@ import {
   enumDefBinding,
   importModule,
   normalizeType,
-  showError,
-  showType,
   starKind,
   termBinding,
   traitDefBinding,
@@ -17,6 +15,8 @@ import {
 import {
   type Binding,
   freshState,
+  showError,
+  showType,
   type Type,
   type TypeCheckerState,
   type TypingError,
