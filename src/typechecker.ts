@@ -7215,63 +7215,7 @@ export function collectTypeVars(
   return Array.from(vars);
 }
 
-/**
- * Strips trailing strippable-var apps, returns arity + remaining kind.
- *
- * **Purpose**: HKT trait matching: peel `F<t>` (t impl-var) → `F :: * → *`.
- * Validates app kinds during stripping.
- *
- * Used in `inferDictType` for partial impl kinds.
- *
- * @param state - Checker state (kind checks)
- * @param type - Possibly-applied type
- * @param strippableVars - Vars to peel (e.g., `["t"]`)
- * @returns `{ stripped: N, kind: remainingKind }` or error
- *
- * @example Success: Strip param var
- * ```ts
- * import { freshState, addType, computeStrippedKind, appType, varType, conType, starKind, arrowKind } from "./typechecker.js";
- *
- * let state = freshState();
- * state = addType(state, "Option", arrowKind(starKind, starKind)).ok;
- * state = addType(state, "Int", starKind).ok;
- *
- * const fInt = appType(conType("Option"), varType("t"));
- * const result = computeStrippedKind(state, fInt, ["t"]);
- * console.log("stripped:", result.ok.stripped);  // 1
- * console.log("kind:", showKind(result.ok.kind));  // "* → *"
- * ```
- *
- * @example Failure: Kind mismatch
- * ```ts
- * import { freshState, addType, computeStrippedKind, appType, varType, conType, starKind } from "./typechecker.js";
- *
- * let state = freshState();
- * state = addType(state, "Bad", starKind).ok;  // Wrong kind for app
- *
- * const badApp = appType(conType("Bad"), varType("t"));
- * const result = computeStrippedKind(state, badApp, ["t"]);
- * console.log("error:", "kind_mismatch" in result.err);  // true
- * ```
- *
- * @example No stripping (concrete arg)
- * ```ts
- * import { freshState, addType, computeStrippedKind, appType, conType, starKind } from "./typechecker.js";
- *
- * let state = freshState();
- * state = addType(state, "Option", starKind).ok;
- * state = addType(state, "Int", starKind).ok;
- *
- * const optInt = appType(conType("Option"), conType("Int"));
- * const result = computeStrippedKind(state, optInt, ["t"]);
- * console.log("no-strip:", result.ok.stripped);  // 0
- * ```
- *
- * @internal Trait HKT utility
- * @see {@link inferDictType} Impl validation
- * @see {@link kindArity} Related
- */
-export function computeStrippedKind(
+function computeStrippedKind(
   state: TypeCheckerState, // For kind checks
   type: Type,
   strippableVars: string[], // e.g., ["r", "u"] for impl params
@@ -7317,7 +7261,7 @@ export function computeStrippedKind(
     : ok({ stripped, kind: finalKindRes.ok });
 }
 
-export function stripAppsByArity(
+function stripAppsByArity(
   state: TypeCheckerState,
   type: Type,
   arity: number,
@@ -7338,29 +7282,536 @@ export function stripAppsByArity(
   return acc;
 }
 
+/**
+ * Constructs arrow kind `from → to`.
+ *
+ * **Purpose**: HKT constructors: `* → *` (List), `* → (* → *)` (nested).
+ * Used in `addType`, polymorphism binders.
+ *
+ * @param from - Domain kind
+ * @param to - Codomain kind
+ * @returns `{ arrow: { from, to } }`
+ *
+ * @example Unary HKT
+ * ```ts
+ * import { arrowKind, starKind, showKind } from "./typechecker.js";
+ *
+ * const listKind = arrowKind(starKind, starKind);
+ * console.log("List:", showKind(listKind));  // "(* → *)"
+ * ```
+ *
+ * @example Nested HKT
+ * ```ts
+ * import { arrowKind, starKind, showKind } from "./typechecker.js";
+ *
+ * const nested = arrowKind(starKind, arrowKind(starKind, starKind));
+ * console.log("nested:", showKind(nested));  // "(* → ((* → *) → *))"
+ * ```
+ *
+ * @example Usage: addType
+ * ```ts
+ * import { freshState, addType, arrowKind, starKind } from "./typechecker.js";
+ *
+ * const state = addType(freshState(), "List", arrowKind(starKind, starKind));
+ * console.log("added:", "ok" in state);  // true
+ * ```
+ *
+ * @see {@link starKind} Base kind
+ * @see {@link kindsEqual} Equality
+ * @see {@link addType} Binds HKTs
+ */
 export const arrowKind = (from: Kind, to: Kind): Kind => ({
   arrow: { from, to },
 });
 
-// Type Constructors:
+/**
+ * Constructs type variable `{ var: name }`.
+ *
+ * **Purpose**: Free/bound vars in arrows, foralls, records.
+ *
+ * @param name - Variable name (`"a"`, `"Self"`)
+ * @returns `{ var: name }`
+ *
+ * @example Basic var
+ * ```ts
+ * import { varType, showType } from "./typechecker.js";
+ *
+ * console.log("a:", showType(varType("a")));  // "a"
+ * ```
+ *
+ * @example Arrow/foralls
+ * ```ts
+ * import { varType, arrowType, forallType, starKind, showType } from "./typechecker.js";
+ *
+ * console.log("a→b:", showType(arrowType(varType("a"), varType("b"))));  // "(a → b)"
+ * console.log("∀a.a:", showType(forallType("a", starKind, varType("a"))));  // "∀a::*. a"
+ * ```
+ *
+ * @see {@link conType} Concrete types
+ * @see {@link arrowType} Usage
+ * @see {@link forallType} Bound vars
+ */
 export const varType = (name: string): VarType => ({ var: name });
+
+/**
+ * Constructs function type `from → to`.
+ *
+ * **Purpose**: Lambda/trait method types. Core to typing.
+ *
+ * @param from - Domain type
+ * @param to - Codomain type
+ * @returns `{ arrow: { from, to } }`
+ *
+ * @example Basic function
+ * ```ts
+ * import { arrowType, conType, showType } from "./typechecker.js";
+ *
+ * console.log("Int→Bool:", showType(arrowType(conType("Int"), conType("Bool"))));  // "(Int → Bool)"
+ * ```
+ *
+ * @example Nested/poly
+ * ```ts
+ * import { arrowType, varType, conType, showType } from "./typechecker.js";
+ *
+ * console.log("a→b:", showType(arrowType(varType("a"), varType("b"))));  // "(a → b)"
+ * console.log("((a→b)→c):", showType(arrowType(arrowType(varType("a"), varType("b")), conType("c"))));  // "((a → b) → c)"
+ * ```
+ *
+ * @example Lambda inference
+ * ```ts
+ * import { freshState, addType, inferType, lamTerm, varTerm, arrowType, conType, starKind, showType } from "./typechecker.js";
+ *
+ * let state = freshState();
+ * state = addType(state, "Int", starKind).ok;
+ *
+ * const id = lamTerm("x", conType("Int"), varTerm("x"));
+ * const result = inferType(state, id);
+ * console.log("inferred:", showType(result.ok));  // "(Int → Int)"
+ * ```
+ *
+ * @see {@link lamTerm} Usage
+ * @see {@link inferLamType} Infers arrows
+ * @see {@link varType} Domain/codomain vars
+ */
 export const arrowType = (from: Type, to: Type): Type => ({
   arrow: { from, to },
 });
+
+/**
+ * Constructs universal quantifier `∀name::kind. body`.
+ *
+ * **Purpose**: Polymorphism: type variables, trait bounds.
+ *
+ * @param name - Bound var (`"a"`, `"Self"`)
+ * @param kind - Var kind (`*`, `*→*`)
+ * @param body - Body type
+ * @returns `{ forall: { var, kind, body } }`
+ *
+ * @example Basic polymorphism
+ * ```ts
+ * import { forallType, varType, arrowType, starKind, showType } from "./typechecker.js";
+ *
+ * console.log("∀a.a→a:", showType(forallType("a", starKind, arrowType(varType("a"), varType("a")))));  // "∀a::*. (a → a)"
+ * ```
+ *
+ * @example HKT bound
+ * ```ts
+ * import { forallType, varType, arrowType, arrowKind, starKind, showType } from "./typechecker.js";
+ *
+ * console.log("∀F:F<A>:", showType(forallType("F", arrowKind(starKind, starKind), varType("F"))));  // "∀F::(* → *). F"
+ * ```
+ *
+ * @example Tylam inference
+ * ```ts
+ * import { freshState, inferType, tylamTerm, lamTerm, varTerm, forallType, varType, arrowType, starKind, showType } from "./typechecker.js";
+ *
+ * const state = freshState();
+ * const polyId = tylamTerm("a", starKind, lamTerm("x", varType("a"), varTerm("x")));
+ * const expected = forallType("a", starKind, arrowType(varType("a"), varType("a")));
+ * const result = inferType(state, polyId);
+ * console.log("inferred:", showType(result.ok));  // "∀a::*. (a → a)"
+ * ```
+ *
+ * @see {@link tylamTerm} Term counterpart
+ * @see {@link instantiateType} Skolemizes
+ * @see {@link starKind} Common kind
+ */
 export const forallType = (name: string, kind: Kind, body: Type) => ({
   forall: { var: name, kind, body },
 });
+
+/**
+ * Constructs type application `func arg`.
+ *
+ * **Purpose**: HKT saturation: `List<Int>`, `Either<Int,Bool>`.
+ *
+ * @param func - Type constructor/function
+ * @param arg - Argument type
+ * @returns `{ app: { func, arg } }`
+ *
+ * @example Unary HKT
+ * ```ts
+ * import { appType, conType, showType } from "./typechecker.js";
+ *
+ * const listInt = appType(conType("List"), conType("Int"));
+ * console.log("List<Int>:", showType(listInt));  // "List<Int>"
+ * ```
+ *
+ * @example Nested app (binary)
+ * ```ts
+ * import { appType, conType, showType } from "./typechecker.js";
+ *
+ * const eitherIntBool = appType(appType(conType("Either"), conType("Int")), conType("Bool"));
+ * console.log("Either<Int,Bool>:", showType(eitherIntBool));  // "Either<Int, Bool>"
+ * ```
+ *
+ * @example Normalized spine
+ * ```ts
+ * import { freshState, addType, normalizeType, appType, conType, starKind, showType } from "./typechecker.js";
+ *
+ * let state = freshState();
+ * state = addType(state, "List", starKind).ok;
+ * const listInt = appType(conType("List"), conType("Int"));
+ * const norm = normalizeType(state, listInt);
+ * console.log("normalized:", showType(norm));  // "List<Int>"
+ * ```
+ *
+ * @see {@link getSpineArgs} Deconstructs
+ * @see {@link normalizeType} β-reduces apps
+ * @see {@link showType} Pretty-prints
+ */
 export const appType = (func: Type, arg: Type) => ({ app: { func, arg } });
+
+/**
+ * Constructs type lambda `λname::kind. body` (HKT constructor).
+ *
+ * **Purpose**: Type functions: `λt::*. t → t` (id), `λF::(*→*). F<Int>`.
+ *
+ * @param name - Bound var
+ * @param kind - Var kind
+ * @param body - Body type
+ * @returns `{ lam: { var, kind, body } }`
+ *
+ * @example Basic type lambda
+ * ```ts
+ * import { lamType, varType, starKind, showType } from "./typechecker.js";
+ *
+ * const idLam = lamType("t", starKind, varType("t"));
+ * console.log("λt.t:", showType(idLam));  // "λt::*. t"
+ * ```
+ *
+ * @example HKT constructor
+ * ```ts
+ * import { lamType, arrowKind, starKind, varType, showType } from "./typechecker.js";
+ *
+ * const listLam = lamType("F", arrowKind(starKind, starKind), varType("F"));
+ * console.log("λF:F:", showType(listLam));  // "λF::(* → *). F"
+ * ```
+ *
+ * @example App + normalize
+ * ```ts
+ * import { freshState, normalizeType, lamType, appType, varType, starKind, conType, showType } from "./typechecker.js";
+ *
+ * const state = freshState();
+ * const idLam = lamType("t", starKind, varType("t"));
+ * const idInt = appType(idLam, conType("Int"));
+ * const norm = normalizeType(state, idInt);
+ * console.log("β-reduced:", showType(norm));  // "Int"
+ * ```
+ *
+ * @see {@link appType} Apply lambdas
+ * @see {@link normalizeType} β-reduces
+ * @see {@link tylamTerm} Term counterpart
+ */
 export const lamType = (name: string, kind: Kind, body: Type) => ({
   lam: { var: name, kind, body },
 });
+
+/**
+ * Constructs concrete type constructor `{ con: name }`.
+ *
+ * **Purpose**: Primitives/enums: `"Int"`, `"List"`, `"Either"`.
+ *
+ * @param con - Constructor name
+ * @returns `{ con: name }`
+ *
+ * @example Primitive
+ * ```ts
+ * import { conType, showType } from "./typechecker.js";
+ *
+ * console.log("Int:", showType(conType("Int")));  // "Int"
+ * ```
+ *
+ * @example Type constructor
+ * ```ts
+ * import { conType, showType } from "./typechecker.js";
+ *
+ * console.log("List:", showType(conType("List")));  // "List"
+ * ```
+ *
+ * @example App usage
+ * ```ts
+ * import { conType, appType, showType } from "./typechecker.js";
+ *
+ * console.log("List<Int>:", showType(appType(conType("List"), conType("Int"))));  // "List<Int>"
+ * ```
+ *
+ * @see {@link appType} HKT saturation
+ * @see {@link addType} Binds constructors
+ * @see {@link addEnum} Enum heads
+ */
 export const conType = (con: string) => ({ con });
+
+/**
+ * Constructs record type `{ label: τ, ... }` (structural rows).
+ *
+ * **Purpose**: Product types with labeled fields. Supports width subsumption.
+ *
+ * @param record - Field list `[[label, type], ...]`
+ * @returns `{ record: [[string, Type]] }`
+ *
+ * @example Basic record
+ * ```ts
+ * import { recordType, conType, showType } from "./typechecker.js";
+ *
+ * const person = recordType([
+ *   ["name", conType("String")],
+ *   ["age", conType("Int")]
+ * ]);
+ * console.log("record:", showType(person));  // "{name: String, age: Int}"
+ * ```
+ *
+ * @example Nested fields
+ * ```ts
+ * import { recordType, conType, arrowType, showType } from "./typechecker.js";
+ *
+ * const funcRec = recordType([
+ *   ["f", arrowType(conType("Int"), conType("Bool"))],
+ *   ["g", conType("String")]
+ * ]);
+ * console.log("nested:", showType(funcRec));  // "{f: (Int → Bool), g: String}"
+ * ```
+ *
+ * @example Inference
+ * ```ts
+ * import { freshState, addType, inferType, recordTerm, conTerm, recordType, conType, starKind, showType } from "./typechecker.js";
+ *
+ * let state = freshState();
+ * state = addType(state, "Int", starKind).ok;
+ * state = addType(state, "Bool", starKind).ok;
+ *
+ * const recVal = recordTerm([
+ *   ["x", conTerm("1", conType("Int"))],
+ *   ["y", conTerm("true", conType("Bool"))]
+ * ]);
+ * const result = inferType(state, recVal);
+ * console.log("inferred:", showType(result.ok));  // "{x: Int, y: Bool}"
+ * ```
+ *
+ * @see {@link recordTerm} Value constructor
+ * @see {@link inferRecordType} Inference rule
+ * @see {@link projectTerm} Field access
+ */
 export const recordType = (record: [string, Type][]) => ({ record });
+
+/**
+ * Constructs variant type `<label: τ | ...>` (sum types).
+ *
+ * **Purpose**: Disjoint unions. Used in enum expansion, injectTerm.
+ *
+ * @param variant - Case list `[[label, type], ...]`
+ * @returns `{ variant: [[string, Type]] }`
+ *
+ * @example Basic variant
+ * ```ts
+ * import { variantType, conType, showType } from "./typechecker.js";
+ *
+ * const either = variantType([
+ *   ["Left", conType("Int")],
+ *   ["Right", conType("String")]
+ * ]);
+ * console.log("variant:", showType(either));  // "<Left: Int | Right: String>"
+ * ```
+ *
+ * @example Nested cases
+ * ```ts
+ * import { variantType, conType, arrowType, showType } from "./typechecker.js";
+ *
+ * const result = variantType([
+ *   ["Ok", conType("Int")],
+ *   ["Err", arrowType(conType("String"), conType("String"))]
+ * ]);
+ * console.log("nested:", showType(result));  // "<Ok: Int | Err: (String → String)>"
+ * ```
+ *
+ * @example Enum expansion inference
+ * ```ts
+ * import { freshState, addType, addEnum, normalizeType, appType, conType, variantType, starKind, showType } from "./typechecker.js";
+ *
+ * let state = freshState();
+ * state = addType(state, "Int", starKind).ok;
+ * state = addEnum(state, "Option", ["T"], [starKind], [
+ *   ["None", { tuple: [] }],
+ *   ["Some", conType("T")]
+ * ]).ok;
+ *
+ * const optInt = appType(conType("Option"), conType("Int"));
+ * const expanded = normalizeType(state, optInt);
+ * console.log("expanded:", showType(expanded));  // "<None: ⊥ | Some: Int>"
+ * ```
+ *
+ * @see {@link injectTerm} Variant values
+ * @see {@link addEnum} Expands to variant
+ * @see {@link normalizeType} Enum normalization
+ */
 export const variantType = (variant: [string, Type][]) => ({ variant });
+
+/**
+ * Constructs recursive mu type `μvar. body` (equi-recursive).
+ *
+ * **Purpose**: Fixed-points: lists, trees. Unfolds via `substituteType`.
+ *
+ * @param var_name - Binder (`"L"`)
+ * @param body - Body (contains `var_name`)
+ * @returns `{ mu: { var, body } }`
+ *
+ * @example Basic mu
+ * ```ts
+ * import { muType, varType, showType } from "./typechecker.js";
+ *
+ * const listMu = muType("L", varType("L"));
+ * console.log("μL.L:", showType(listMu));  // "μL.L"
+ * ```
+ *
+ * @example Recursive list
+ * ```ts
+ * import { muType, tupleType, varType, conType, showType } from "./typechecker.js";
+ *
+ * const listInt = muType("L", tupleType([conType("Int"), varType("L")]));
+ * console.log("list:", showType(listInt));  // "μL.(Int, L)"
+ * ```
+ *
+ * @example Enum expansion
+ * ```ts
+ * import { freshState, addType, addEnum, normalizeType, appType, conType, muType, starKind, showType } from "./typechecker.js";
+ * import { tupleType, varType } from "./typechecker.js";
+ *
+ * let state = freshState();
+ * state = addType(state, "Int", starKind).ok;
+ * state = addEnum(state, "List", ["T"], [starKind], [
+ *   ["Nil", tupleType([])],
+ *   ["Cons", tupleType([conType("T"), appType(conType("List"), varType("T"))])]
+ * ], true).ok;
+ *
+ * const listInt = appType(conType("List"), conType("Int"));
+ * const expanded = normalizeType(state, listInt);
+ * console.log("expanded:", showType(expanded));  // "μX.<Nil: ⊥ | Cons: (Int, X<Int>)>"
+ * ```
+ *
+ * @see {@link normalizeType} Unfolds in enums
+ * @see {@link foldTerm} Packs into mu
+ * @see {@link inferFoldType} Typing rule
+ */
 export const muType = (var_name: string, body: Type): Type => ({
   mu: { var: var_name, body },
 });
+
+/**
+ * Constructs tuple type `(τ₁, τ₂, ...)` (product without labels).
+ *
+ * **Purpose**: Unlabeled products. Zero-arity = unit `()`.
+ *
+ * @param elements - Tuple element types
+ * @returns `{ tuple: Type[] }`
+ *
+ * @example Unit (empty tuple)
+ * ```ts
+ * import { tupleType, showType } from "./typechecker.js";
+ *
+ * const unit = tupleType([]);
+ * console.log("unit:", showType(unit));  // "()"
+ * ```
+ *
+ * @example Basic tuple
+ * ```ts
+ * import { tupleType, conType, showType } from "./typechecker.js";
+ *
+ * const pair = tupleType([conType("Int"), conType("Bool")]);
+ * console.log("pair:", showType(pair));  // "(Int, Bool)"
+ * ```
+ *
+ * @example Nested tuple
+ * ```ts
+ * import { tupleType, conType, showType } from "./typechecker.js";
+ *
+ * const nested = tupleType([conType("Int"), tupleType([conType("Bool"), conType("String")])]);
+ * console.log("nested:", showType(nested));  // "(Int, (Bool, String))"
+ * ```
+ *
+ * @example Inference
+ * ```ts
+ * import { freshState, addType, inferType, tupleTerm, conTerm, tupleType, conType, starKind, showType } from "./typechecker.js";
+ *
+ * let state = freshState();
+ * state = addType(state, "Int", starKind).ok;
+ * state = addType(state, "Bool", starKind).ok;
+ *
+ * const tupVal = tupleTerm([conTerm("1", conType("Int")), conTerm("true", conType("Bool"))]);
+ * const result = inferType(state, tupVal);
+ * console.log("inferred:", showType(result.ok));  // "(Int, Bool)"
+ * ```
+ *
+ * @see {@link tupleTerm} Value constructor
+ * @see {@link inferTupleType} Inference rule
+ * @see {@link tuplePattern} Pattern matching
+ */
 export const tupleType = (elements: Type[]): Type => ({ tuple: elements });
+/**
+ * Constructs bounded universal `∀name::kind where C₁, C₂. body`.
+ *
+ * **Purpose**: Trait-bounded polymorphism: `∀Self::*. Eq<Self>. Self → Self`.
+ *
+ * @param name - Bound var (`"Self"`)
+ * @param kind - Var kind
+ * @param constraints - Trait bounds `[{trait: "Eq", type: τ}, ...]`
+ * @param body - Body type
+ * @returns `{ bounded_forall: { var, kind, constraints, body } }`
+ *
+ * @example Basic bounded forall
+ * ```ts
+ * import { boundedForallType, varType, starKind, showType } from "./typechecker.js";
+ *
+ * const eqSelf = boundedForallType("Self", starKind, [], varType("Self"));
+ * console.log("basic:", showType(eqSelf));  // "∀Self::* where . Self"
+ * ```
+ *
+ * @example With constraints
+ * ```ts
+ * import { boundedForallType, varType, starKind, showType } from "./typechecker.js";
+ * import { conType } from "./typechecker.js";
+ *
+ * const eqId = boundedForallType("Self", starKind, [{ trait: "Eq", type: varType("Self") }], arrowType(varType("Self"), varType("Self")));
+ * console.log("constrained:", showType(eqId));  // "∀Self::* where Eq<Self>. (Self → Self)"
+ * ```
+ *
+ * @example Trait lambda checking
+ * ```ts
+ * import { freshState, addType, addTraitDef, checkType, traitLamTerm, boundedForallType, varType, arrowType, starKind, conType, showType } from "./typechecker.js";
+ *
+ * let state = freshState();
+ * state = addType(state, "Int", starKind).ok;
+ * state = addTraitDef(state, "Eq", "A", starKind, [["eq", arrowType(conType("A"), conType("Bool"))]]).ok;
+ *
+ * const traitLam = traitLamTerm("d", "Eq", "Self", starKind, [{ trait: "Eq", type: varType("Self") }], arrowType(varType("Self"), conType("Int")));
+ * const expected = boundedForallType("Self", starKind, [{ trait: "Eq", type: varType("Self") }], arrowType(varType("Self"), conType("Int")));
+ * const result = checkType(state, traitLam, expected);
+ * console.log("checked:", "ok" in result);  // true
+ * ```
+ *
+ * @see {@link traitLamTerm} Term counterpart
+ * @see {@link checkType} Validates bounds
+ * @see {@link instantiateWithTraits} Resolves constraints
+ */
 export const boundedForallType = (
   name: string,
   kind: Kind,
