@@ -6640,12 +6640,15 @@ test("folding and unfolding with List<t> via enum + normalization", () => {
 
   // 1. Calculate expected structural type
   const normList = normalizeType(state, listInt);
-  if (!("mu" in normList)) throw new Error("Expected μ type");
+  expect("mu" in normList).toBe(true); // Ensure μ
 
-  // FIX: Remove 'new Set(...)' to allow substitution
   const unfoldedBody = normalizeType(
     state,
-    substituteType(normList.mu.var, normList, normList.mu.body),
+    substituteType(
+      (normList as MuType).mu.var,
+      normList,
+      (normList as MuType).mu.body,
+    ),
   );
 
   // 2. Create structural term matching that type
@@ -6660,7 +6663,8 @@ test("folding and unfolding with List<t> via enum + normalization", () => {
   const unfolded = unfoldTerm(folded);
   const unfoldedType = unwrap(inferType(state, unfolded));
 
-  // Verify structure matches
-  const normUnfolded = normalizeType(state, unfoldedType);
-  expect(showType(normUnfolded)).toBe(showType(unfoldedBody));
+  // FIXED: Structural equality (alpha-equivalent → true)
+  expect(
+    typesEqual(state, normalizeType(state, unfoldedType), unfoldedBody),
+  ).toBe(true);
 });

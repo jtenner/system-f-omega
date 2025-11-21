@@ -6313,14 +6313,18 @@ export function normalizeType(
       const enumBinding = state.ctx.find(
         (b) => "enum" in b && b.enum.name === conName,
       );
+      // In normalizeType, for "con" in head (enum case):
       if (enumBinding && "enum" in enumBinding) {
         const def = enumBinding.enum;
         const spineArgs = getSpineArgs(ty);
-        if (spineArgs.length !== def.params.length) {
-          return ty; // Or error
+        if (spineArgs.length !== def.params.length) return ty;
+
+        // SINGLE muVar for entire normalization (if recursive)
+        let muVar: string | null = null;
+        if (def.recursive) {
+          muVar = `X${state.meta.counter++}`;
         }
 
-        // Build structural variants (unchanged)
         const structuralVariant: [string, Type][] = [];
         for (const [label, fieldScheme] of def.variants) {
           let instField = fieldScheme;
@@ -6329,18 +6333,17 @@ export function normalizeType(
               def.params[i]!,
               spineArgs[i]!,
               instField,
-              seen,
             );
           }
-          // For recursive enums, replace self-refs INSIDE fields
+
           let fieldForMu = instField;
           if (def.recursive) {
-            const muVar = `X${state.meta.counter++}`; // Reuse counter or freshMetaVar.evar
+            // Use SHARED muVar (consistent!)
             fieldForMu = substituteType(
               def.name,
-              { var: muVar },
+              { var: muVar! },
               instField,
-              new Set([muVar]),
+              new Set([muVar!]),
             );
           }
           structuralVariant.push([
@@ -6349,15 +6352,12 @@ export function normalizeType(
           ]);
         }
 
-        // Hoist mu creation outside loop (reuse same muVar)
         if (def.recursive) {
-          const muVar = `X${state.meta.counter++}`; // Consistent var
-          const muBody = { variant: structuralVariant } as Type;
-          // No need: already substituted inside fields!
-          return muType(muVar, normalizeType(state, muBody, seen));
+          // Use SAME muVar for outer binder
+          const muBody = { variant: structuralVariant } as VariantType;
+          return muType(muVar!, normalizeType(state, muBody, seen));
         }
 
-        // Non-recursive: plain variant
         return { variant: structuralVariant };
       }
     }
