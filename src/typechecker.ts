@@ -7766,6 +7766,7 @@ export const muType = (var_name: string, body: Type): Type => ({
  * @see {@link tuplePattern} Pattern matching
  */
 export const tupleType = (elements: Type[]): Type => ({ tuple: elements });
+
 /**
  * Constructs bounded universal `∀name::kind where C₁, C₂. body`.
  *
@@ -7821,42 +7822,921 @@ export const boundedForallType = (
   bounded_forall: { var: name, kind, constraints, body },
 });
 
-// Term Constructors:
+/**
+ * Constructs term variable `{ var: name }`.
+ *
+ * **Purpose**: References bound vars in lambdas/apps/lets.
+ *
+ * @param name - Variable name (`"x"`, `"self"`)
+ * @returns `{ var: name }`
+ *
+ * @example Basic variable
+ * ```ts
+ * import { varTerm, showTerm } from "./typechecker.js";
+ *
+ * console.log("x:", showTerm(varTerm("x")));  // "x"
+ * ```
+ *
+ * @example Lambda usage
+ * ```ts
+ * import { varTerm, lamTerm, conType, showTerm } from "./typechecker.js";
+ *
+ * const id = lamTerm("x", conType("Int"), varTerm("x"));
+ * console.log("λx.x:", showTerm(id));  // "λx:Int.x"
+ * ```
+ *
+ * @example Inference
+ * ```ts
+ * import { freshState, addType, addTerm, inferType, varTerm, conType, starKind, showType } from "./typechecker.js";
+ *
+ * let state = freshState();
+ * state = addType(state, "Int", starKind).ok;
+ * state = addTerm(state, "x", { con: { name: "42", type: conType("Int") } }).ok;
+ *
+ * const result = inferType(state, varTerm("x"));
+ * console.log("inferred:", showType(result.ok));  // "Int"
+ * ```
+ *
+ * @see {@link lamTerm} Bound usage
+ * @see {@link inferType} Lookup
+ * @see {@link addTerm} Binding
+ */
 export const varTerm = (name: string) => ({ var: name });
+
+/**
+ * Constructs lambda `λarg:τ. body`.
+ *
+ * **Purpose**: Function abstraction. Infers arrow type.
+ *
+ * @param arg - Parameter name
+ * @param type - Parameter type (annotated)
+ * @param body - Body term
+ * @returns `{ lam: { arg, type, body } }`
+ *
+ * @example Basic lambda
+ * ```ts
+ * import { lamTerm, conType, varTerm, showTerm } from "./typechecker.js";
+ *
+ * const id = lamTerm("x", conType("Int"), varTerm("x"));
+ * console.log("λx.x:", showTerm(id));  // "λx:Int.x"
+ * ```
+ *
+ * @example Inference
+ * ```ts
+ * import { freshState, addType, inferType, lamTerm, varTerm, conType, starKind, showType } from "./typechecker.js";
+ *
+ * let state = freshState();
+ * state = addType(state, "Int", starKind).ok;
+ *
+ * const id = lamTerm("x", conType("Int"), varTerm("x"));
+ * const result = inferType(state, id);
+ * console.log("inferred:", showType(result.ok));  // "(Int → Int)"
+ * ```
+ *
+ * @example Checking
+ * ```ts
+ * import { freshState, addType, checkType, lamTerm, varTerm, arrowType, conType, starKind, showType } from "./typechecker.js";
+ *
+ * let state = freshState();
+ * state = addType(state, "Int", starKind).ok;
+ *
+ * const id = lamTerm("x", conType("Int"), varTerm("x"));
+ * const expected = arrowType(conType("Int"), conType("Int"));
+ * const result = checkType(state, id, expected);
+ * console.log("checked:", showType(result.ok.type));  // "(Int → Int)"
+ * ```
+ *
+ * @see {@link inferLamType} Inference rule
+ * @see {@link varTerm} Body var
+ * @see {@link inferType} Usage
+ */
 export const lamTerm = (arg: string, type: Type, body: Term) => ({
   lam: { arg, type, body },
 });
+
+/**
+ * Constructs term application `(callee arg)`.
+ *
+ * **Purpose**: Function application. Infers result via callee type.
+ *
+ * @param callee - Function term
+ * @param arg - Argument term
+ * @returns `{ app: { callee, arg } }`
+ *
+ * @example Basic application
+ * ```ts
+ * import { appTerm, varTerm, showTerm } from "./typechecker.js";
+ *
+ * const app = appTerm(varTerm("f"), varTerm("x"));
+ * console.log("app:", showTerm(app));  // "(f x)"
+ * ```
+ *
+ * @example Inference
+ * ```ts
+ * import { freshState, addType, addTerm, inferType, appTerm, varTerm, lamTerm, conTerm, conType, starKind, showType } from "./typechecker.js";
+ *
+ * let state = freshState();
+ * state = addType(state, "Int", starKind).ok;
+ * state = addTerm(state, "id", lamTerm("x", conType("Int"), varTerm("x"))).ok;
+ *
+ * const app = appTerm(varTerm("id"), conTerm("0", conType("Int")));
+ * const result = inferType(state, app);
+ * console.log("inferred:", showType(result.ok));  // "Int"
+ * ```
+ *
+ * @example Checking
+ * ```ts
+ * import { freshState, addType, addTerm, checkType, appTerm, varTerm, lamTerm, conTerm, arrowType, conType, starKind, showType } from "./typechecker.js";
+ *
+ * let state = freshState();
+ * state = addType(state, "Int", starKind).ok;
+ * state = addTerm(state, "add1", lamTerm("x", conType("Int"), varTerm("x"))).ok;
+ *
+ * const app = appTerm(varTerm("add1"), conTerm("0", conType("Int")));
+ * const expected = conType("Int");
+ * const result = checkType(state, app, expected);
+ * console.log("checked:", showType(result.ok.type));  // "Int"
+ * ```
+ *
+ * @see {@link inferAppType} Inference rule
+ * @see {@link lamTerm} Callee usage
+ * @see {@link inferType} Full inference
+ */
 export const appTerm = (callee: Term, arg: Term) => ({ app: { callee, arg } });
+
+/**
+ * Constructs type lambda `Λname::kind. body` (polymorphic abstraction).
+ *
+ * **Purpose**: Type-level functions. Infers forall type.
+ *
+ * @param name - Bound type var
+ * @param kind - Var kind
+ * @param body - Body term
+ * @returns `{ tylam: { var, kind, body } }`
+ *
+ * @example Basic type lambda
+ * ```ts
+ * import { tylamTerm, showTerm } from "./typechecker.js";
+ * import { starKind } from "./typechecker.js";
+ *
+ * const polyId = tylamTerm("a", starKind, { var: "x" });
+ * console.log("Λa.x:", showTerm(polyId));  // "Λa::*. x"
+ * ```
+ *
+ * @example Inference
+ * ```ts
+ * import { freshState, inferType, tylamTerm, lamTerm, varTerm, varType, starKind, showType } from "./typechecker.js";
+ *
+ * const state = freshState();
+ * const polyId = tylamTerm("a", starKind, lamTerm("x", varType("a"), varTerm("x")));
+ * const result = inferType(state, polyId);
+ * console.log("inferred:", showType(result.ok));  // "∀a::*. (a → a)"
+ * ```
+ *
+ * @example Checking
+ * ```ts
+ * import { freshState, checkType, tylamTerm, lamTerm, varTerm, varType, forallType, arrowType, starKind, showType } from "./typechecker.js";
+ *
+ * const state = freshState();
+ * const polyId = tylamTerm("a", starKind, lamTerm("x", varType("a"), varTerm("x")));
+ * const expected = forallType("a", starKind, arrowType(varType("a"), varType("a")));
+ * const result = checkType(state, polyId, expected);
+ * console.log("checked:", showType(result.ok.type));  // "∀a::*. (a → a)"
+ * ```
+ *
+ * @see {@link inferTylamType} Inference rule
+ * @see {@link tyappTerm} Application
+ * @see {@link forallType} Inferred type
+ */
 export const tylamTerm = (name: string, kind: Kind, body: Term) => ({
   tylam: { var: name, kind, body },
 });
+/**
+ * Constructs type application `term [type]`.
+ *
+ * **Purpose**: Saturates type lambdas. Infers via callee forall.
+ *
+ * @param term - Polymorphic term (tylam)
+ * @param type - Type argument
+ * @returns `{ tyapp: { term, type } }`
+ *
+ * @example Basic type app
+ * ```ts
+ * import { tyappTerm, showTerm } from "./typechecker.js";
+ * import { conType } from "./typechecker.js";
+ *
+ * const app = tyappTerm({ var: "polyId" }, conType("Int"));
+ * console.log("app:", showTerm(app));  // "polyId [Int]"
+ * ```
+ *
+ * @example Inference
+ * ```ts
+ * import { freshState, inferType, tyappTerm, tylamTerm, lamTerm, varTerm, varType, conType, starKind, showType } from "./typechecker.js";
+ *
+ * let state = freshState();
+ * const polyId = tylamTerm("a", starKind, lamTerm("x", varType("a"), varTerm("x")));
+ * const idInt = tyappTerm(polyId, conType("Int"));
+ * const result = inferType(state, idInt);
+ * console.log("inferred:", showType(result.ok));  // "(Int → Int)"
+ * ```
+ *
+ * @example Checking
+ * ```ts
+ * import { freshState, checkType, tyappTerm, tylamTerm, lamTerm, varTerm, varType, arrowType, conType, starKind, showType } from "./typechecker.js";
+ *
+ * let state = freshState();
+ * const polyId = tylamTerm("a", starKind, lamTerm("x", varType("a"), varTerm("x")));
+ * const idInt = tyappTerm(polyId, conType("Int"));
+ * const expected = arrowType(conType("Int"), conType("Int"));
+ * const result = checkType(state, idInt, expected);
+ * console.log("checked:", showType(result.ok.type));  // "(Int → Int)"
+ * ```
+ *
+ * @see {@link inferTyappType} Inference rule
+ * @see {@link tylamTerm} Callee usage
+ * @see {@link inferType} Full inference
+ */
 export const tyappTerm = (term: Term, type: Type) => ({
   tyapp: { term, type },
 });
+/**
+ * Constructs typed constant `{ con: { name, type } }`.
+ *
+ * **Purpose**: Literals/promoted constructors with explicit type.
+ *
+ * @param name - Constant name/value (`"42"`, `"true"`)
+ * @param type - Type annotation
+ * @returns `{ con: { name, type } }`
+ *
+ * @example Basic constant
+ * ```ts
+ * import { conTerm, conType, showTerm } from "./typechecker.js";
+ *
+ * const num = conTerm("42", conType("Int"));
+ * console.log("con:", showTerm(num));  // "42"
+ * ```
+ *
+ * @example Inference
+ * ```ts
+ * import { freshState, addType, inferType, conTerm, conType, starKind, showType } from "./typechecker.js";
+ *
+ * let state = freshState();
+ * state = addType(state, "Int", starKind).ok;
+ *
+ * const num = conTerm("42", conType("Int"));
+ * const result = inferType(state, num);
+ * console.log("inferred:", showType(result.ok));  // "Int"
+ * ```
+ *
+ * @example Record field
+ * ```ts
+ * import { freshState, addType, inferType, recordTerm, conTerm, conType, starKind, showType } from "./typechecker.js";
+ *
+ * let state = freshState();
+ * state = addType(state, "Int", starKind).ok;
+ *
+ * const rec = recordTerm([["x", conTerm("1", conType("Int"))]]);
+ * const result = inferType(state, rec);
+ * console.log("record:", showType(result.ok));  // "{x: Int}"
+ * ```
+ *
+ * @see {@link inferType} Constant lookup
+ * @see {@link recordTerm} Field usage
+ * @see {@link injectTerm} Variant payload
+ */
 export const conTerm = (name: string, type: Type) => ({ con: { name, type } });
+
+/**
+ * Constructs record value `{ label = term, ... }`.
+ *
+ * **Purpose**: Labeled products. Infers record type.
+ *
+ * @param record - Field list `[[label, term], ...]`
+ * @returns `{ record: [[string, Term]] }`
+ *
+ * @example Basic record
+ * ```ts
+ * import { recordTerm, conTerm, conType, showTerm } from "./typechecker.js";
+ *
+ * const person = recordTerm([
+ *   ["name", conTerm("Alice", conType("String"))],
+ *   ["age", conTerm("30", conType("Int"))]
+ * ]);
+ * console.log("record:", showTerm(person));  // "{name = Alice, age = 30}"
+ * ```
+ *
+ * @example Inference
+ * ```ts
+ * import { freshState, addType, inferType, recordTerm, conTerm, conType, starKind, showType } from "./typechecker.js";
+ *
+ * let state = freshState();
+ * state = addType(state, "Int", starKind).ok;
+ * state = addType(state, "String", starKind).ok;
+ *
+ * const rec = recordTerm([
+ *   ["x", conTerm("1", conType("Int"))],
+ *   ["y", conTerm("hello", conType("String"))]
+ * ]);
+ * const result = inferType(state, rec);
+ * console.log("inferred:", showType(result.ok));  // "{x: Int, y: String}"
+ * ```
+ *
+ * @example Projection
+ * ```ts
+ * import { freshState, addType, inferType, recordTerm, projectTerm, conTerm, conType, starKind, showType } from "./typechecker.js";
+ *
+ * let state = freshState();
+ * state = addType(state, "Int", starKind).ok;
+ *
+ * const rec = recordTerm([["x", conTerm("1", conType("Int"))]]);
+ * const proj = projectTerm(rec, "x");
+ * const result = inferType(state, proj);
+ * console.log("project:", showType(result.ok));  // "Int"
+ * ```
+ *
+ * @see {@link inferRecordType} Inference rule
+ * @see {@link projectTerm} Field access
+ * @see {@link recordType} Type counterpart
+ */
 export const recordTerm = (record: [string, Term][]) => ({ record });
+
+/**
+ * Constructs record projection `record.label`.
+ *
+ * **Purpose**: Field access. Infers field type.
+ *
+ * @param record - Record term
+ * @param label - Field name
+ * @returns `{ project: { record, label } }`
+ *
+ * @example Basic projection
+ * ```ts
+ * import { projectTerm, recordTerm, conTerm, conType, showTerm } from "./typechecker.js";
+ *
+ * const rec = recordTerm([["x", conTerm("1", conType("Int"))]]);
+ * const proj = projectTerm(rec, "x");
+ * console.log("proj:", showTerm(proj));  // "{x = 1}.x"
+ * ```
+ *
+ * @example Inference
+ * ```ts
+ * import { freshState, addType, inferType, recordTerm, projectTerm, conTerm, conType, starKind, showType } from "./typechecker.js";
+ *
+ * let state = freshState();
+ * state = addType(state, "Int", starKind).ok;
+ * state = addType(state, "Bool", starKind).ok;
+ *
+ * const rec = recordTerm([
+ *   ["x", conTerm("1", conType("Int"))],
+ *   ["y", conTerm("true", conType("Bool"))]
+ * ]);
+ * const proj = projectTerm(rec, "x");
+ * const result = inferType(state, proj);
+ * console.log("inferred:", showType(result.ok));  // "Int"
+ * ```
+ *
+ * @example Checking
+ * ```ts
+ * import { freshState, addType, checkType, recordTerm, projectTerm, conTerm, conType, starKind, showType } from "./typechecker.js";
+ *
+ * let state = freshState();
+ * state = addType(state, "Int", starKind).ok;
+ *
+ * const rec = recordTerm([["x", conTerm("1", conType("Int"))]]);
+ * const proj = projectTerm(rec, "x");
+ * const expected = conType("Int");
+ * const result = checkType(state, proj, expected);
+ * console.log("checked:", showType(result.ok.type));  // "Int"
+ * ```
+ *
+ * @see {@link inferProjectType} Inference rule
+ * @see {@link recordTerm} Record values
+ * @see {@link inferType} Full inference
+ */
 export const projectTerm = (record: Term, label: string) => ({
   project: { record, label },
 });
+
+/**
+ * Constructs variant injection `<label=value> as variant_type`.
+ *
+ * **Purpose**: Tagged sum values. Infers via case lookup.
+ *
+ * @param label - Variant label (`"Left"`, `"Some"`)
+ * @param value - Payload term
+ * @param variant_type - Variant/enum type
+ * @returns `{ inject: { label, value, variant_type } }`
+ *
+ * @example Basic injection
+ * ```ts
+ * import { injectTerm, conTerm, conType, showTerm } from "./typechecker.js";
+ *
+ * const someInt = injectTerm("Some", conTerm("42", conType("Int")), conType("Option"));
+ * console.log("inject:", showTerm(someInt));  // "<Some=42> as Option"
+ * ```
+ *
+ * @example Inference (enum)
+ * ```ts
+ * import { freshState, addType, addEnum, inferType, injectTerm, conTerm, appType, conType, starKind, showType } from "./typechecker.js";
+ * import { tupleType } from "./typechecker.js";
+ *
+ * let state = freshState();
+ * state = addType(state, "Int", starKind).ok;
+ * state = addEnum(state, "Option", ["T"], [starKind], [
+ *   ["None", tupleType([])],
+ *   ["Some", conType("T")]
+ * ]).ok;
+ *
+ * const someInt = injectTerm("Some", conTerm("42", conType("Int")), appType(conType("Option"), conType("Int")));
+ * const result = inferType(state, someInt);
+ * console.log("inferred:", showType(result.ok));  // "Option<Int>"
+ * ```
+ *
+ * @example Checking (wrong label)
+ * ```ts
+ * import { freshState, addEnum, checkType, injectTerm, conTerm, appType, conType, starKind, showType } from "./typechecker.js";
+ * import { tupleType } from "./typechecker.js";
+ *
+ * let state = freshState();
+ * state = addEnum(state, "Option", ["T"], [starKind], [
+ *   ["None", tupleType([])],
+ *   ["Some", conType("T")]
+ * ]).ok;
+ *
+ * const badInject = injectTerm("Bad", conTerm("42", conType("Int")), appType(conType("Option"), conType("Int")));
+ * const expected = appType(conType("Option"), conType("Int"));
+ * const result = checkType(state, badInject, expected);
+ * console.log("error:", "invalid_variant_label" in result.err);  // true
+ * ```
+ *
+ * @see {@link inferInjectType} Inference rule
+ * @see {@link addEnum} Enum variants
+ * @see {@link variantType} Structural type
+ */
 export const injectTerm = (label: string, value: Term, variant_type: Type) => ({
   inject: { label, value, variant_type },
 });
+
+/**
+ * Constructs pattern match `match scrutinee { pat => body | ... }`.
+ *
+ * **Purpose**: Exhaustive destructuring. Infers common branch type.
+ *
+ * @param scrutinee - Value to match
+ * @param cases - Pattern-body pairs
+ * @returns `{ match: { scrutinee, cases } }`
+ *
+ * @example Basic enum match
+ * ```ts
+ * import { freshState, addType, addEnum, inferType, matchTerm, variantPattern, varPattern, conTerm, appType, conType, starKind, showType } from "./typechecker.js";
+ * import { tupleType } from "./typechecker.js";
+ *
+ * let state = freshState();
+ * state = addType(state, "Int", starKind).ok;
+ * state = addEnum(state, "Option", ["T"], [starKind], [
+ *   ["None", tupleType([])],
+ *   ["Some", conType("T")]
+ * ]).ok;
+ *
+ * const scrut = conTerm("opt", appType(conType("Option"), conType("Int")));
+ * const match = matchTerm(scrut, [
+ *   [variantPattern("None", varPattern("x")), conTerm("0", conType("Int"))],
+ *   [variantPattern("Some", varPattern("x")), varTerm("x")]
+ * ]);
+ * const result = inferType(state, match);
+ * console.log("inferred:", showType(result.ok));  // "Int"
+ * ```
+ *
+ * @example Checking exhaustive
+ * ```ts
+ * import { freshState, addEnum, checkExhaustive, variantPattern, varPattern, conType, starKind } from "./typechecker.js";
+ *
+ * let state = freshState();
+ * state = addEnum(state, "Color", [], [], [["Red", { var: "Unit" }], ["Blue", { var: "Unit" }]]).ok;
+ *
+ * const patterns = [variantPattern("Red", varPattern("x")), variantPattern("Blue", varPattern("y"))];
+ * const result = checkExhaustive(state, patterns, conType("Color"));
+ * console.log("exhaustive:", "ok" in result);  // true
+ * ```
+ *
+ * @example Failure: Non-exhaustive
+ * ```ts
+ * import { freshState, addEnum, checkExhaustive, variantPattern, varPattern, conType, starKind } from "./typechecker.js";
+ *
+ * let state = freshState();
+ * state = addEnum(state, "Color", [], [], [["Red", { var: "Unit" }], ["Blue", { var: "Unit" }]]).ok;
+ *
+ * const patterns = [variantPattern("Red", varPattern("x"))];  // Missing Blue
+ * const result = checkExhaustive(state, patterns, conType("Color"));
+ * console.log("missing:", "missing_case" in result.err);  // true
+ * ```
+ *
+ * @see {@link inferMatchType} Inference rule
+ * @see {@link checkExhaustive} Coverage check
+ * @see {@link checkPattern} Pattern validation
+ */
 export const matchTerm = (scrutinee: Term, cases: [Pattern, Term][]): Term => ({
   match: { scrutinee, cases },
 });
+
+/**
+ * Constructs fold `fold[μ-type](term)` (packs into recursive type).
+ *
+ * **Purpose**: Recursive injection: wraps term matching unfolded μ-body.
+ *
+ * @param type - Mu type (`μX. <Cons: (a, X)>`)
+ * @param term - Body term (must match unfolded type)
+ * @returns `{ fold: { type, term } }`
+ *
+ * @example Basic fold construction
+ * ```ts
+ * import { foldTerm, muType, showTerm } from "./typechecker.js";
+ * import { tupleType, conType } from "./typechecker.js";
+ *
+ * const listMu = muType("L", tupleType([conType("Int"), { var: "L" }]));
+ * const foldVal = foldTerm(listMu, { tuple: [{ con: { name: "1", type: conType("Int") } }, { var: "prev" }] });
+ * console.log("fold:", showTerm(foldVal));  // "fold[μL.(Int, L)]((1, prev))"
+ * ```
+ *
+ * @example Inference (recursive enum)
+ * ```ts
+ * import { freshState, addType, addEnum, inferType, foldTerm, injectTerm, appType, conType, muType, starKind, showType } from "./typechecker.js";
+ * import { tupleType, varType } from "./typechecker.js";
+ *
+ * let state = freshState();
+ * state = addType(state, "Int", starKind).ok;
+ * state = addEnum(state, "List", ["T"], [starKind], [
+ *   ["Nil", tupleType([])],
+ *   ["Cons", tupleType([conType("T"), appType(conType("List"), varType("T"))])]
+ * ], true).ok;
+ *
+ * const listInt = appType(conType("List"), conType("Int"));
+ * const nil = injectTerm("Nil", { tuple: [] }, listInt);
+ * const folded = foldTerm(listInt, nil);
+ * const result = inferType(state, folded);
+ * console.log("inferred:", showType(result.ok));  // "List<Int>"
+ * ```
+ *
+ * @example Checking success
+ * ```ts
+ * import { freshState, addType, addEnum, checkType, foldTerm, injectTerm, appType, conType, starKind, showType } from "./typechecker.js";
+ * import { tupleType } from "./typechecker.js";
+ *
+ * let state = freshState();
+ * state = addType(state, "Int", starKind).ok;
+ * state = addEnum(state, "List", ["T"], [starKind], [
+ *   ["Nil", tupleType([])],
+ *   ["Cons", tupleType([conType("T"), appType(conType("List"), conType("T"))])]
+ * ], true).ok;
+ *
+ * const listInt = appType(conType("List"), conType("Int"));
+ * const nil = injectTerm("Nil", { tuple: [] }, listInt);
+ * const folded = foldTerm(listInt, nil);
+ * const expected = listInt;
+ * const result = checkType(state, folded, expected);
+ * console.log("checked:", showType(result.ok.type));  // "List<Int>"
+ * ```
+ *
+ * @example Failure: Non-mu type
+ * ```ts
+ * import { freshState, addType, checkType, foldTerm, conType, starKind, showType } from "./typechecker.js";
+ *
+ * let state = freshState();
+ * state = addType(state, "Int", starKind).ok;
+ *
+ * const folded = foldTerm(conType("Int"), { var: "x" });  // Wrong mu-type
+ * const expected = conType("Int");
+ * const result = checkType(state, folded, expected);
+ * console.log("error:", "type_mismatch" in result.err);  // true
+ * ```
+ *
+ * @see {@link inferFoldType} Inference rule
+ * @see {@link muType} Recursive type
+ * @see {@link unfoldTerm} Dual operation
+ */
 export const foldTerm = (type: Type, term: Term): Term => ({
   fold: { type, term },
 });
+
+/**
+ * Constructs unfold `unfold(term)` (unpacks recursive mu type).
+ *
+ * **Purpose**: Recursive projection: extracts from folded μ-body.
+ * Dual to `foldTerm`.
+
+ * @param term - Folded mu term
+ * @returns `{ unfold: term }`
+ *
+ * @example Basic unfold construction
+ * ```ts
+ * import { unfoldTerm, showTerm } from "./typechecker.js";
+ *
+ * const unfolded = unfoldTerm({ var: "foldedList" });
+ * console.log("unfold:", showTerm(unfolded));  // "unfold(foldedList)"
+ * ```
+ *
+ * @example Inference (recursive enum)
+ * ```ts
+ * import { freshState, addType, addEnum, inferType, unfoldTerm, foldTerm, injectTerm, appType, conType, starKind, showType } from "./typechecker.js";
+ * import { tupleType } from "./typechecker.js";
+ *
+ * let state = freshState();
+ * state = addType(state, "Int", starKind).ok;
+ * state = addEnum(state, "List", ["T"], [starKind], [
+ *   ["Nil", tupleType([])],
+ *   ["Cons", tupleType([conType("T"), appType(conType("List"), conType("T"))])]
+ * ], true).ok;
+ *
+ * const listInt = appType(conType("List"), conType("Int"));
+ * const nil = injectTerm("Nil", { tuple: [] }, listInt);
+ * const folded = foldTerm(listInt, nil);
+ * const unfolded = unfoldTerm(folded);
+ * const result = inferType(state, unfolded);
+ * console.log("inferred:", showType(result.ok));  // "(Int, List<Int>)"
+ * ```
+ *
+ * @example Checking success
+ * ```ts
+ * import { freshState, addType, addEnum, checkType, unfoldTerm, foldTerm, injectTerm, appType, conType, starKind, tupleType, showType } from "./typechecker.js";
+ *
+ * let state = freshState();
+ * state = addType(state, "Int", starKind).ok;
+ * state = addEnum(state, "List", ["T"], [starKind], [
+ *   ["Nil", tupleType([])],
+ *   ["Cons", tupleType([conType("T"), appType(conType("List"), conType("T"))])]
+ * ], true).ok;
+ *
+ * const listInt = appType(conType("List"), conType("Int"));
+ * const nil = injectTerm("Nil", { tuple: [] }, listInt);
+ * const folded = foldTerm(listInt, nil);
+ * const unfolded = unfoldTerm(folded);
+ * const expected = tupleType([conType("Int"), listInt]);
+ * const result = checkType(state, unfolded, expected);
+ * console.log("checked:", showType(result.ok.type));  // "(Int, List<Int>)"
+ * ```
+ *
+ * @see {@link inferUnfoldType} Inference rule
+ * @see {@link foldTerm} Dual packing
+ * @see {@link muType} Recursive type
+ */
 export const unfoldTerm = (term: Term): Term => ({
   unfold: term,
 });
+
+/**
+ * Constructs tuple value `(term₁, term₂, ...)` (unlabeled product).
+ *
+ * **Purpose**: Unlabeled sequences. Zero-arity = unit `{}`.
+ *
+ * @param elements - Tuple element terms
+ * @returns `{ tuple: Term[] }`
+ *
+ * @example Unit (empty tuple)
+ * ```ts
+ * import { tupleTerm, showTerm } from "./typechecker.js";
+ *
+ * const unit = tupleTerm([]);
+ * console.log("unit:", showTerm(unit));  // "()"
+ * ```
+ *
+ * @example Basic tuple
+ * ```ts
+ * import { tupleTerm, conTerm, conType, showTerm } from "./typechecker.js";
+ *
+ * const pair = tupleTerm([
+ *   conTerm("1", conType("Int")),
+ *   conTerm("true", conType("Bool"))
+ * ]);
+ * console.log("pair:", showTerm(pair));  // "(1, true)"
+ * ```
+ *
+ * @example Inference
+ * ```ts
+ * import { freshState, addType, inferType, tupleTerm, conTerm, conType, starKind, showType } from "./typechecker.js";
+ *
+ * let state = freshState();
+ * state = addType(state, "Int", starKind).ok;
+ * state = addType(state, "Bool", starKind).ok;
+ *
+ * const tup = tupleTerm([
+ *   conTerm("1", conType("Int")),
+ *   conTerm("true", conType("Bool"))
+ * ]);
+ * const result = inferType(state, tup);
+ * console.log("inferred:", showType(result.ok));  // "(Int, Bool)"
+ * ```
+ *
+ * @example Projection
+ * ```ts
+ * import { freshState, addType, inferType, tupleTerm, tupleProjectTerm, conTerm, conType, starKind, showType } from "./typechecker.js";
+ *
+ * let state = freshState();
+ * state = addType(state, "Int", starKind).ok;
+ * state = addType(state, "Bool", starKind).ok;
+ *
+ * const tup = tupleTerm([
+ *   conTerm("1", conType("Int")),
+ *   conTerm("true", conType("Bool"))
+ * ]);
+ * const proj = tupleProjectTerm(tup, 0);
+ * const result = inferType(state, proj);
+ * console.log("proj0:", showType(result.ok));  // "Int"
+ * ```
+ *
+ * @see {@link inferTupleType} Inference rule
+ * @see {@link tupleType} Type counterpart
+ * @see {@link tupleProjectTerm} Access
+ */
 export const tupleTerm = (elements: Term[]): Term => ({ tuple: elements });
+
+/**
+ * Constructs tuple projection `tuple.index`.
+ *
+ * **Purpose**: Nth element access. Infers element type.
+ *
+ * @param tuple - Tuple term
+ * @param index - 0-based index
+ * @returns `{ tuple_project: { tuple, index } }`
+ *
+ * @example Basic projection
+ * ```ts
+ * import { tupleProjectTerm, tupleTerm, conTerm, conType, showTerm } from "./typechecker.js";
+ *
+ * const tup = tupleTerm([conTerm("1", conType("Int")), conTerm("true", conType("Bool"))]);
+ * const proj = tupleProjectTerm(tup, 0);
+ * console.log("proj:", showTerm(proj));  // "((1, true)).0"
+ * ```
+ *
+ * @example Inference
+ * ```ts
+ * import { freshState, addType, inferType, tupleTerm, tupleProjectTerm, conTerm, conType, starKind, showType } from "./typechecker.js";
+ *
+ * let state = freshState();
+ * state = addType(state, "Int", starKind).ok;
+ * state = addType(state, "Bool", starKind).ok;
+ *
+ * const tup = tupleTerm([
+ *   conTerm("1", conType("Int")),
+ *   conTerm("true", conType("Bool"))
+ * ]);
+ * const proj = tupleProjectTerm(tup, 0);
+ * const result = inferType(state, proj);
+ * console.log("inferred:", showType(result.ok));  // "Int"
+ * ```
+ *
+ * @example Checking success
+ * ```ts
+ * import { freshState, addType, checkType, tupleTerm, tupleProjectTerm, conTerm, conType, starKind, showType } from "./typechecker.js";
+ *
+ * let state = freshState();
+ * state = addType(state, "Int", starKind).ok;
+ *
+ * const tup = tupleTerm([conTerm("1", conType("Int")), conTerm("true", conType("Bool"))]);
+ * const proj = tupleProjectTerm(tup, 0);
+ * const expected = conType("Int");
+ * const result = checkType(state, proj, expected);
+ * console.log("checked:", showType(result.ok.type));  // "Int"
+ * ```
+ *
+ * @example Failure: Out-of-bounds (inferred)
+ * ```ts
+ * import { freshState, addType, inferType, tupleTerm, tupleProjectTerm, conTerm, conType, starKind, showType } from "./typechecker.js";
+ *
+ * let state = freshState();
+ * state = addType(state, "Int", starKind).ok;
+ *
+ * const tup = tupleTerm([conTerm("1", conType("Int"))]);
+ * const proj = tupleProjectTerm(tup, 1);  // Out-of-bounds
+ * const result = inferType(state, proj);
+ * console.log("error:", "tuple_index_out_of_bounds" in result.err);  // true
+ * ```
+ *
+ * @see {@link inferTupleProjectType} Inference rule
+ * @see {@link tupleTerm} Tuple values
+ * @see {@link tupleType} Tuple types
+ */
 export const tupleProjectTerm = (tuple: Term, index: number): Term => ({
   tuple_project: { tuple, index },
 });
+
+/**
+ * Constructs let-binding `let name = value in body`.
+ *
+ * **Purpose**: Non-recursive binding. Infers via `value` type in `body` context.
+ *
+ * @param name - Bound name
+ * @param value - Value term
+ * @param body - Body term (uses `name`)
+ * @returns `{ let: { name, value, body } }`
+ *
+ * @example Basic let construction
+ * ```ts
+ * import { letTerm, conTerm, conType, varTerm, showTerm } from "./typechecker.js";
+ *
+ * const letExpr = letTerm("x", conTerm("42", conType("Int")), varTerm("x"));
+ * console.log("let:", showTerm(letExpr));  // "let x = 42 in x"
+ * ```
+ *
+ * @example Inference
+ * ```ts
+ * import { freshState, addType, inferType, letTerm, conTerm, varTerm, conType, starKind, showType } from "./typechecker.js";
+ *
+ * let state = freshState();
+ * state = addType(state, "Int", starKind).ok;
+ *
+ * const letExpr = letTerm("x", conTerm("42", conType("Int")), varTerm("x"));
+ * const result = inferType(state, letExpr);
+ * console.log("inferred:", showType(result.ok));  // "Int"
+ * ```
+ *
+ * @example Nested let
+ * ```ts
+ * import { freshState, addType, inferType, letTerm, conTerm, varTerm, appTerm, conType, starKind, showType } from "./typechecker.js";
+ *
+ * let state = freshState();
+ * state = addType(state, "Int", starKind).ok;
+ * state = addType(state, "Bool", starKind).ok;
+ *
+ * const inner = letTerm("y", conTerm("true", conType("Bool")), varTerm("y"));
+ * const outer = letTerm("x", conTerm("1", conType("Int")), appTerm(varTerm("x"), inner));
+ * const result = inferType(state, outer);
+ * console.log("nested:", showType(result.ok));  // "(Int, Bool)"
+ * ```
+ *
+ * @example Checking
+ * ```ts
+ * import { freshState, addType, checkType, letTerm, conTerm, varTerm, conType, starKind, showType } from "./typechecker.js";
+ *
+ * let state = freshState();
+ * state = addType(state, "Int", starKind).ok;
+ *
+ * const letExpr = letTerm("x", conTerm("42", conType("Int")), varTerm("x"));
+ * const expected = conType("Int");
+ * const result = checkType(state, letExpr, expected);
+ * console.log("checked:", showType(result.ok.type));  // "Int"
+ * ```
+ *
+ * @see {@link inferLetType} Inference rule
+ * @see {@link addTerm} Context binding
+ * @see {@link inferType} Full inference
+ */
 export const letTerm = (name: string, value: Term, body: Term): Term => ({
   let: { name, value, body },
 });
+
+/**
+ * Constructs trait lambda `Λtrait_var<trait<type_var>>::kind where C. body`.
+ *
+ * **Purpose**: Bounded polymorphism abstraction. Infers bounded forall.
+ *
+ * @param trait_var - Dict var (`"d"`)
+ * @param trait - Trait name (`"Eq"`)
+ * @param type_var - Type var (`"Self"`)
+ * @param kind - Type var kind
+ * @param constraints - Bounds `[{trait, type}, ...]`
+ * @param body - Body term
+ * @returns `{ trait_lam: { ... } }`
+ *
+ * @example Basic construction
+ * ```ts
+ * import { traitLamTerm, showTerm } from "./typechecker.js";
+ * import { starKind } from "./typechecker.js";
+ *
+ * const traitLam = traitLamTerm("d", "Eq", "Self", starKind, [], { var: "x" });
+ * console.log("traitLam:", showTerm(traitLam));  // "ΛSelf::* where . x"
+ * ```
+ *
+ * @example Inference
+ * ```ts
+ * import { freshState, addType, addTraitDef, inferType, traitLamTerm, varType, arrowType, starKind, showType } from "./typechecker.js";
+ *
+ * let state = freshState();
+ * state = addType(state, "Int", starKind).ok;
+ * state = addTraitDef(state, "Eq", "A", starKind, [["eq", arrowType(varType("A"), varType("Bool"))]]).ok;
+ *
+ * const traitLam = traitLamTerm("d", "Eq", "Self", starKind, [{ trait: "Eq", type: varType("Self") }], arrowType(varType("Self"), varType("Int")));
+ * const result = inferType(state, traitLam);
+ * console.log("inferred:", showType(result.ok));  // "∀Self::* where Eq<Self>. (Self → Int)"
+ * ```
+ *
+ * @example Checking
+ * ```ts
+ * import { freshState, addType, addTraitDef, checkType, traitLamTerm, boundedForallType, varType, arrowType, starKind, showType } from "./typechecker.js";
+ *
+ * let state = freshState();
+ * state = addType(state, "Int", starKind).ok;
+ * state = addTraitDef(state, "Eq", "A", starKind, [["eq", arrowType(varType("A"), varType("Bool"))]]).ok;
+ *
+ * const traitLam = traitLamTerm("d", "Eq", "Self", starKind, [{ trait: "Eq", type: varType("Self") }], arrowType(varType("Self"), varType("Int")));
+ * const expected = boundedForallType("Self", starKind, [{ trait: "Eq", type: varType("Self") }], arrowType(varType("Self"), varType("Int")));
+ * const result = checkType(state, traitLam, expected);
+ * console.log("checked:", showType(result.ok.type));  // "∀Self::* where Eq<Self>. (Self → Int)"
+ * ```
+ *
+ * @see {@link inferTraitLamType} Inference rule
+ * @see {@link boundedForallType} Inferred type
+ * @see {@link traitAppTerm} Application
+ */
 export const traitLamTerm = (
   trait_var: string,
   trait: string,
@@ -7867,10 +8747,124 @@ export const traitLamTerm = (
 ): Term => ({
   trait_lam: { trait_var, trait, type_var, kind, constraints, body },
 });
+
+/**
+ * Constructs trait application `term [type] with dicts`.
+ *
+ * **Purpose**: Saturates trait lambdas. Infers via constraints resolution.
+ *
+ * @param term - Trait lambda term
+ * @param type - Type argument
+ * @param dicts - Resolved dictionaries
+ * @returns `{ trait_app: { term, type, dicts } }`
+ *
+ * @example Basic construction
+ * ```ts
+ * import { traitAppTerm, showTerm } from "./typechecker.js";
+ * import { conType } from "./typechecker.js";
+ *
+ * const app = traitAppTerm({ var: "traitLam" }, conType("Int"), [{ var: "eqDict" }]);
+ * console.log("traitApp:", showTerm(app));  // "traitLam [Int] with dicts {eqDict}"
+ * ```
+ *
+ * @example Inference
+ * ```ts
+ * import { freshState, addType, addTraitDef, traitImplBinding, dictTerm, inferType, traitAppTerm, traitLamTerm, conType, starKind, arrowType, varType, lamTerm, conTerm, showType } from "./typechecker.js";
+ *
+ * let state = freshState();
+ * state = addType(state, "Int", starKind).ok;
+ * state = addType(state, "Bool", starKind).ok;
+ * state = addTraitDef(state, "Eq", "A", starKind, [["eq", arrowType(conType("A"), conType("Bool"))]]).ok;
+ * const dict = dictTerm("Eq", conType("Int"), [["eq", lamTerm("x", conType("Int"), conTerm("true", conType("Bool")))]]);
+ * state.ctx.push(traitImplBinding("Eq", conType("Int"), dict));
+ *
+ * const traitLam = traitLamTerm("d", "Eq", "Self", starKind, [{ trait: "Eq", type: varType("Self") }], arrowType(varType("Self"), conType("Int")));
+ * const app = traitAppTerm(traitLam, conType("Int"), [{ var: "eqDict" }]);
+ * const result = inferType(state, app);
+ * console.log("inferred:", showType(result.ok));  // "Int"
+ * ```
+ *
+ * @example Checking
+ * ```ts
+ * import { freshState, addType, addTraitDef, traitImplBinding, dictTerm, checkType, traitAppTerm, traitLamTerm, conType, starKind, arrowType, varType, lamTerm, conTerm, showType } from "./typechecker.js";
+ *
+ * let state = freshState();
+ * state = addType(state, "Int", starKind).ok;
+ * state = addTraitDef(state, "Eq", "A", starKind, [["eq", arrowType(conType("A"), conType("Bool"))]]).ok;
+ * const dict = dictTerm("Eq", conType("Int"), [["eq", lamTerm("x", conType("Int"), conTerm("true", conType("Bool")))]]);
+ * state.ctx.push(traitImplBinding("Eq", conType("Int"), dict));
+ *
+ * const traitLam = traitLamTerm("d", "Eq", "Self", starKind, [{ trait: "Eq", type: varType("Self") }], arrowType(varType("Self"), conType("Int")));
+ * const app = traitAppTerm(traitLam, conType("Int"), [{ var: "eqDict" }]);
+ * const expected = conType("Int");
+ * const result = checkType(state, app, expected);
+ * console.log("checked:", showType(result.ok.type));  // "Int"
+ * ```
+ *
+ * @see {@link inferTraitAppType} Inference rule
+ * @see {@link traitLamTerm} Callee usage
+ * @see {@link checkTraitConstraints} Resolves dicts
+ */
 export const traitAppTerm = (term: Term, type: Type, dicts: Term[]): Term => ({
   trait_app: { term, type, dicts },
 });
 
+/**
+ * Constructs trait dictionary `dict trait<type> { method = impl, ... }`.
+ *
+ * **Purpose**: Explicit impl proof. Used in traitImplBinding, inferDictType.
+ *
+ * @param trait - Trait name (`"Eq"`)
+ * @param type - Impl type (`Int`)
+ * @param methods - Method impls `[[name, term], ...]`
+ * @returns `{ dict: { trait, type, methods } }`
+ *
+ * @example Basic dictionary
+ * ```ts
+ * import { dictTerm, conType, showTerm } from "./typechecker.js";
+ * import { lamTerm, varTerm } from "./typechecker.js";
+ *
+ * const eqDict = dictTerm("Eq", conType("Int"), [
+ *   ["eq", lamTerm("x", conType("Int"), varTerm("x"))]
+ * ]);
+ * console.log("dict:", showTerm(eqDict));  // "dict Eq<Int> { eq = λx:Int.x }"
+ * ```
+ *
+ * @example Trait impl binding + inference
+ * ```ts
+ * import { freshState, addType, addTraitDef, traitImplBinding, dictTerm, inferType, traitMethodTerm, conType, starKind, arrowType, lamTerm, varTerm, showType } from "./typechecker.js";
+ *
+ * let state = freshState();
+ * state = addType(state, "Int", starKind).ok;
+ * state = addType(state, "Bool", starKind).ok;
+ * state = addTraitDef(state, "Eq", "A", starKind, [["eq", arrowType(conType("A"), conType("Bool"))]]).ok;
+ *
+ * const eqDict = dictTerm("Eq", conType("Int"), [["eq", lamTerm("x", conType("Int"), conTerm("true", conType("Bool")))]]);
+ * state.ctx.push(traitImplBinding("Eq", conType("Int"), eqDict));
+ *
+ * const method = traitMethodTerm(eqDict, "eq");
+ * const result = inferType(state, method);
+ * console.log("method:", showType(result.ok));  // "(Int → Bool)"
+ * ```
+ *
+ * @example inferDictType validation
+ * ```ts
+ * import { freshState, addType, addTraitDef, inferType, dictTerm, conType, starKind, arrowType, lamTerm, varTerm, conTerm, showType } from "./typechecker.js";
+ *
+ * let state = freshState();
+ * state = addType(state, "Int", starKind).ok;
+ * state = addType(state, "Bool", starKind).ok;
+ * state = addTraitDef(state, "Eq", "A", starKind, [["eq", arrowType(conType("A"), conType("Bool"))]]).ok;
+ *
+ * const eqDict = dictTerm("Eq", conType("Int"), [["eq", lamTerm("x", conType("Int"), conTerm("true", conType("Bool")))]]);
+ * const result = inferType(state, eqDict);
+ * console.log("dictType:", showType(result.ok));  // "Dict<Eq, Int>"
+ * ```
+ *
+ * @see {@link inferDictType} Validates methods
+ * @see {@link traitImplBinding} Context storage
+ * @see {@link traitMethodTerm} Method access
+ */
 export const dictTerm = (
   trait: string,
   type: Type,
@@ -7879,36 +8873,659 @@ export const dictTerm = (
   dict: { trait, type, methods },
 });
 
+/**
+ * Constructs trait method access `dict.method`.
+ *
+ * **Purpose**: Dictionary method projection. Infers method signature.
+ *
+ * @param dict - Dictionary term
+ * @param method - Method name
+ * @returns `{ trait_method: { dict, method } }`
+ *
+ * @example Basic construction
+ * ```ts
+ * import { traitMethodTerm, showTerm } from "./typechecker.js";
+ *
+ * const method = traitMethodTerm({ var: "eqDict" }, "eq");
+ * console.log("method:", showTerm(method));  // "eqDict.eq"
+ * ```
+ *
+ * @example Inference
+ * ```ts
+ * import { freshState, addType, addTraitDef, traitImplBinding, dictTerm, inferType, traitMethodTerm, conType, starKind, arrowType, lamTerm, varTerm, conTerm, showType } from "./typechecker.js";
+ *
+ * let state = freshState();
+ * state = addType(state, "Int", starKind).ok;
+ * state = addType(state, "Bool", starKind).ok;
+ * state = addTraitDef(state, "Eq", "A", starKind, [["eq", arrowType(conType("A"), conType("Bool"))]]).ok;
+ * const eqDict = dictTerm("Eq", conType("Int"), [["eq", lamTerm("x", conType("Int"), conTerm("true", conType("Bool")))]]);
+ * state.ctx.push(traitImplBinding("Eq", conType("Int"), eqDict));
+ *
+ * const method = traitMethodTerm(eqDict, "eq");
+ * const result = inferType(state, method);
+ * console.log("inferred:", showType(result.ok));  // "(Int → Bool)"
+ * ```
+ *
+ * @example Checking
+ * ```ts
+ * import { freshState, addType, addTraitDef, traitImplBinding, dictTerm, checkType, traitMethodTerm, conType, starKind, arrowType, lamTerm, varTerm, conTerm, showType } from "./typechecker.js";
+ *
+ * let state = freshState();
+ * state = addType(state, "Int", starKind).ok;
+ * state = addType(state, "Bool", starKind).ok;
+ * state = addTraitDef(state, "Eq", "A", starKind, [["eq", arrowType(conType("A"), conType("Bool"))]]).ok;
+ * const eqDict = dictTerm("Eq", conType("Int"), [["eq", lamTerm("x", conType("Int"), conTerm("true", conType("Bool")))]]);
+ * state.ctx.push(traitImplBinding("Eq", conType("Int"), eqDict));
+ *
+ * const method = traitMethodTerm(eqDict, "eq");
+ * const expected = arrowType(conType("Int"), conType("Bool"));
+ * const result = checkType(state, method, expected);
+ * console.log("checked:", showType(result.ok.type));  // "(Int → Bool)"
+ * ```
+ *
+ * @see {@link inferTraitMethodType} Inference rule
+ * @see {@link dictTerm} Dictionary values
+ * @see {@link inferType} Full inference
+ */
 export const traitMethodTerm = (dict: Term, method: string): Term => ({
   trait_method: { dict, method },
 });
 
-// Pattern Constructors
+/**
+ * Constructs variable pattern `var` (binds whole value).
+ *
+ * **Purpose**: Captures matched value as binding. Wildcard-like for exhaustiveness.
+ *
+ * @param name - Binding name
+ * @returns `{ var: name }`
+ *
+ * @example Basic construction
+ * ```ts
+ * import { varPattern, showPattern } from "./typechecker.js";
+ *
+ * console.log("x:", showPattern(varPattern("x")));  // "x"
+ * ```
+ *
+ * @example Pattern checking (binds type)
+ * ```ts
+ * import { freshState, addType, checkPattern, varPattern, conType, starKind } from "./typechecker.js";
+ *
+ * let state = freshState();
+ * state = addType(state, "Int", starKind).ok;
+ *
+ * const result = checkPattern(state, varPattern("x"), conType("Int"));
+ * console.log("binds:", result.ok.length === 1);  // true
+ * ```
+ *
+ * @example Match inference (wildcard-like)
+ * ```ts
+ * import { freshState, addType, addEnum, inferType, matchTerm, varPattern, conTerm, appType, conType, starKind, showType } from "./typechecker.js";
+ *
+ * let state = freshState();
+ * state = addType(state, "Int", starKind).ok;
+ * state = addEnum(state, "Option", ["T"], [starKind], [["None", { tuple: [] }], ["Some", conType("T")]]).ok;
+ *
+ * const scrut = conTerm("opt", appType(conType("Option"), conType("Int")));
+ * const match = matchTerm(scrut, [[varPattern("x"), varTerm("x")]]);
+ * const result = inferType(state, match);
+ * console.log("inferred:", showType(result.ok));  // "Option<Int>"
+ * ```
+ *
+ * @see {@link checkPattern} Binding extraction
+ * @see {@link matchTerm} Usage in cases
+ * @see {@link wildcardPattern} No-binding alternative
+ */
 export const varPattern = (name: string): Pattern => ({ var: name });
+
+/**
+ * Constructs wildcard pattern `_` (matches anything, no binding).
+ *
+ * **Purpose**: Ignore values. Exhaustive for any type.
+ *
+ * @returns `{ wildcard: null }`
+ *
+ * @example Basic construction
+ * ```ts
+ * import { wildcardPattern, showPattern } from "./typechecker.js";
+ *
+ * console.log("wildcard:", showPattern(wildcardPattern()));  // "_"
+ * ```
+ *
+ * @example Pattern checking (no bindings)
+ * ```ts
+ * import { freshState, addType, checkPattern, wildcardPattern, conType, starKind } from "./typechecker.js";
+ *
+ * let state = freshState();
+ * state = addType(state, "Int", starKind).ok;
+ *
+ * const result = checkPattern(state, wildcardPattern(), conType("Int"));
+ * console.log("no bindings:", result.ok.length === 0);  // true
+ * ```
+ *
+ * @example Match inference (exhaustive)
+ * ```ts
+ * import { freshState, addType, addEnum, inferType, matchTerm, wildcardPattern, conTerm, appType, conType, starKind, showType } from "./typechecker.js";
+ *
+ * let state = freshState();
+ * state = addType(state, "Int", starKind).ok;
+ * state = addEnum(state, "Option", ["T"], [starKind], [["None", { tuple: [] }], ["Some", conType("T")]]).ok;
+ *
+ * const scrut = conTerm("opt", appType(conType("Option"), conType("Int")));
+ * const match = matchTerm(scrut, [[wildcardPattern(), conTerm("default", conType("Int"))]]);
+ * const result = inferType(state, match);
+ * console.log("inferred:", showType(result.ok));  // "Int"
+ * ```
+ *
+ * @see {@link checkPattern} Empty bindings
+ * @see {@link checkExhaustive} Always exhaustive
+ * @see {@link varPattern} Binding alternative
+ */
 export const wildcardPattern = (): Pattern => ({ wildcard: null });
+
+/**
+ * Constructs constructor pattern `con` (exact constant/tag match).
+ *
+ * **Purpose**: Matches literals/enum constructors. No bindings.
+ *
+ * @param name - Constructor name (`"None"`, `"true"`)
+ * @param type - Expected type
+ * @returns `{ con: { name, type } }`
+ *
+ * @example Basic construction
+ * ```ts
+ * import { conPattern, conType, showPattern } from "./typechecker.js";
+ *
+ * console.log("None:", showPattern(conPattern("None", conType("Unit"))));  // "None"
+ * ```
+ *
+ * @example Pattern checking success
+ * ```ts
+ * import { freshState, addType, checkPattern, conPattern, conType, starKind } from "./typechecker.js";
+ *
+ * let state = freshState();
+ * state = addType(state, "Unit", starKind).ok;
+ *
+ * const result = checkPattern(state, conPattern("true", conType("Bool")), conType("Bool"));
+ * console.log("matches:", "ok" in result && result.ok.length === 0);  // true
+ * ```
+ *
+ * @example Pattern checking failure
+ * ```ts
+ * import { freshState, addType, checkPattern, conPattern, conType, starKind } from "./typechecker.js";
+ *
+ * let state = freshState();
+ * state = addType(state, "Int", starKind).ok;
+ *
+ * const result = checkPattern(state, conPattern("true", conType("Bool")), conType("Int"));
+ * console.log("mismatch:", "type_mismatch" in result.err);  // true
+ * ```
+ *
+ * @example Match inference
+ * ```ts
+ * import { freshState, addType, addEnum, inferType, matchTerm, conPattern, conTerm, appType, conType, starKind, showType } from "./typechecker.js";
+ *
+ * let state = freshState();
+ * state = addEnum(state, "Option", ["T"], [starKind], [["None", conType("Unit")]]).ok;
+ *
+ * const scrut = conTerm("opt", appType(conType("Option"), conType("Bool")));
+ * const match = matchTerm(scrut, [[conPattern("None", conType("Unit")), conTerm("default", conType("Bool"))]]);
+ * const result = inferType(state, match);
+ * console.log("inferred:", showType(result.ok));  // "Bool"
+ * ```
+ *
+ * @see {@link checkPattern} Constant matching
+ * @see {@link matchTerm} Case usage
+ * @see {@link varPattern} Variable alternative
+ */
 export const conPattern = (name: string, type: Type): Pattern => ({
   con: { name, type },
 });
+/**
+ * Constructs record pattern `{ label: pat, ... }`.
+ *
+ * **Purpose**: Destructures records. Binds nested patterns.
+ *
+ * @param fields - Field patterns `[[label, pattern], ...]`
+ * @returns `{ record: [[string, Pattern]] }`
+ *
+ * @example Basic construction
+ * ```ts
+ * import { recordPattern, varPattern, showPattern } from "./typechecker.js";
+ *
+ * const pat = recordPattern([["x", varPattern("a")], ["y", varPattern("b")]]);
+ * console.log("record:", showPattern(pat));  // "{x: a, y: b}"
+ * ```
+ *
+ * @example Pattern checking success
+ * ```ts
+ * import { freshState, addType, checkPattern, recordPattern, varPattern, recordType, conType, starKind } from "./typechecker.js";
+ *
+ * let state = freshState();
+ * state = addType(state, "Int", starKind).ok;
+ * state = addType(state, "Bool", starKind).ok;
+ *
+ * const pat = recordPattern([["x", varPattern("a")], ["y", varPattern("b")]]);
+ * const ty = recordType([["x", conType("Int")], ["y", conType("Bool")]]);
+ * const result = checkPattern(state, pat, ty);
+ * console.log("binds:", result.ok.length === 2);  // true
+ * ```
+ *
+ * @example Match inference
+ * ```ts
+ * import { freshState, addType, inferType, matchTerm, recordPattern, varPattern, recordTerm, conTerm, recordType, conType, starKind, showType } from "./typechecker.js";
+ *
+ * let state = freshState();
+ * state = addType(state, "Int", starKind).ok;
+ *
+ * const scrut = recordTerm([["x", conTerm("1", conType("Int"))]]);
+ * const pat = recordPattern([["x", varPattern("a")]]);
+ * const match = matchTerm(scrut, [[pat, varTerm("a")]]);
+ * const result = inferType(state, match);
+ * console.log("inferred:", showType(result.ok));  // "Int"
+ * ```
+ *
+ * @example Failure: Label mismatch
+ * ```ts
+ * import { freshState, addType, checkPattern, recordPattern, varPattern, recordType, conType, starKind } from "./typechecker.js";
+ *
+ * let state = freshState();
+ * state = addType(state, "Int", starKind).ok;
+ *
+ * const pat = recordPattern([["y", varPattern("b")]]);  // Wrong label
+ * const ty = recordType([["x", conType("Int")]]);
+ * const result = checkPattern(state, pat, ty);
+ * console.log("missing:", "missing_field" in result.err);  // true
+ * ```
+ *
+ * @see {@link checkPattern} Record validation
+ * @see {@link matchTerm} Nested usage
+ * @see {@link recordType} Matching type
+ */
 export const recordPattern = (fields: [string, Pattern][]): Pattern => ({
   record: fields,
 });
+
+/**
+ * Constructs variant pattern `label(pat)` (tagged destructuring).
+ *
+ * **Purpose**: Matches enum/variant cases. Recurses on payload.
+ *
+ * @param label - Variant label (`"Cons"`, `"Some"`)
+ * @param pattern - Payload pattern
+ * @returns `{ variant: { label, pattern } }`
+ *
+ * @example Basic construction
+ * ```ts
+ * import { variantPattern, varPattern, showPattern } from "./typechecker.js";
+ *
+ * const pat = variantPattern("Cons", varPattern("x"));
+ * console.log("variant:", showPattern(pat));  // "Cons(x)"
+ * ```
+ *
+ * @example Pattern checking success
+ * ```ts
+ * import { freshState, addType, addEnum, checkPattern, variantPattern, varPattern, appType, conType, starKind } from "./typechecker.js";
+ * import { tupleType } from "./typechecker.js";
+ *
+ * let state = freshState();
+ * state = addType(state, "Int", starKind).ok;
+ * state = addEnum(state, "List", ["T"], [starKind], [
+ *   ["Nil", tupleType([])],
+ *   ["Cons", tupleType([conType("T"), appType(conType("List"), conType("T"))])]
+ * ]).ok;
+ *
+ * const result = checkPattern(state, variantPattern("Cons", varPattern("x")), appType(conType("List"), conType("Int")));
+ * console.log("binds:", result.ok.length === 1);  // true
+ * ```
+ *
+ * @example Match inference
+ * ```ts
+ * import { freshState, addType, addEnum, inferType, matchTerm, variantPattern, varPattern, conTerm, appType, conType, starKind, showType } from "./typechecker.js";
+ * import { tupleType } from "./typechecker.js";
+ *
+ * let state = freshState();
+ * state = addType(state, "Int", starKind).ok;
+ * state = addEnum(state, "Option", ["T"], [starKind], [
+ *   ["None", tupleType([])],
+ *   ["Some", conType("T")]
+ * ]).ok;
+ *
+ * const scrut = conTerm("opt", appType(conType("Option"), conType("Int")));
+ * const match = matchTerm(scrut, [
+ *   [variantPattern("Some", varPattern("x")), varTerm("x")]
+ * ]);
+ * const result = inferType(state, match);
+ * console.log("inferred:", showType(result.ok));  // "Int"
+ * ```
+ *
+ * @example Failure: Invalid label
+ * ```ts
+ * import { freshState, addEnum, checkPattern, variantPattern, varPattern, appType, conType, starKind } from "./typechecker.js";
+ *
+ * let state = freshState();
+ * state = addEnum(state, "Option", ["T"], [starKind], [["None", { tuple: [] }]]).ok;
+ *
+ * const result = checkPattern(state, variantPattern("Some", varPattern("x")), appType(conType("Option"), conType("Int")));
+ * console.log("invalid:", "invalid_variant_label" in result.err);  // true
+ * ```
+ *
+ * @see {@link checkPattern} Variant case lookup
+ * @see {@link matchTerm} Case usage
+ * @see {@link injectTerm} Matching injection
+ */
 export const variantPattern = (label: string, pattern: Pattern): Pattern => ({
   variant: { label, pattern },
 });
+
+/**
+ * Constructs tuple pattern `(pat₁, pat₂, ...)` (unlabeled destructuring).
+ *
+ * **Purpose**: Matches tuples. Binds nested patterns.
+ *
+ * @param elements - Pattern elements
+ * @returns `{ tuple: Pattern[] }`
+ *
+ * @example Basic construction
+ * ```ts
+ * import { tuplePattern, varPattern, showPattern } from "./typechecker.js";
+ *
+ * const pat = tuplePattern([varPattern("a"), varPattern("b")]);
+ * console.log("tuple:", showPattern(pat));  // "(a, b)"
+ * ```
+ *
+ * @example Pattern checking success
+ * ```ts
+ * import { freshState, addType, checkPattern, tuplePattern, varPattern, tupleType, conType, starKind } from "./typechecker.js";
+ *
+ * let state = freshState();
+ * state = addType(state, "Int", starKind).ok;
+ * state = addType(state, "Bool", starKind).ok;
+ *
+ * const pat = tuplePattern([varPattern("a"), varPattern("b")]);
+ * const ty = tupleType([conType("Int"), conType("Bool")]);
+ * const result = checkPattern(state, pat, ty);
+ * console.log("binds:", result.ok.length === 2);  // true
+ * ```
+ *
+ * @example Match inference
+ * ```ts
+ * import { freshState, addType, inferType, matchTerm, tuplePattern, varPattern, tupleTerm, conTerm, tupleType, conType, starKind, showType } from "./typechecker.js";
+ *
+ * let state = freshState();
+ * state = addType(state, "Int", starKind).ok;
+ *
+ * const scrut = tupleTerm([conTerm("1", conType("Int"))]);
+ * const pat = tuplePattern([varPattern("x")]);
+ * const match = matchTerm(scrut, [[pat, varTerm("x")]]);
+ * const result = inferType(state, match);
+ * console.log("inferred:", showType(result.ok));  // "Int"
+ * ```
+ *
+ * @example Failure: Length mismatch
+ * ```ts
+ * import { freshState, addType, checkPattern, tuplePattern, varPattern, tupleType, conType, starKind } from "./typechecker.js";
+ *
+ * let state = freshState();
+ * state = addType(state, "Int", starKind).ok;
+ *
+ * const pat = tuplePattern([varPattern("x"), varPattern("y")]);  // 2 elems
+ * const ty = tupleType([conType("Int")]);  // 1 elem
+ * const result = checkPattern(state, pat, ty);
+ * console.log("mismatch:", "type_mismatch" in result.err);  // true
+ * ```
+ *
+ * @see {@link checkPattern} Tuple validation
+ * @see {@link matchTerm} Case usage
+ * @see {@link tupleType} Matching type
+ */
 export const tuplePattern = (elements: Pattern[]): Pattern => ({
   tuple: elements,
 });
 
+/**
+ * Unit type `()` (zero-arity tuple, inhabited by one value).
+ *
+ * **Purpose**: Terminal object. Used in empty variants (`None`), enums.
+ *
+ * @example Pretty-print
+ * ```ts
+ * import { unitType, showType } from "./typechecker.js";
+ *
+ * console.log("unit:", showType(unitType));  // "()"
+ * ```
+ *
+ * @example Enum None case
+ * ```ts
+ * import { freshState, addEnum, normalizeType, appType, conType, unitType, starKind, showType } from "./typechecker.js";
+ *
+ * let state = freshState();
+ * state = addEnum(state, "Option", ["T"], [starKind], [["None", unitType]]).ok;
+ *
+ * const optBool = appType(conType("Option"), conType("Bool"));
+ * const expanded = normalizeType(state, optBool);
+ * console.log("None:", showType(expanded));  // "<None: ⊥ | ...>"
+ * ```
+ *
+ * @example Tuple extension
+ * ```ts
+ * import { tupleType, unitType, conType, showType } from "./typechecker.js";
+ *
+ * const extended = tupleType([conType("Int"), unitType]);
+ * console.log("extended:", showType(extended));  // "(Int, ())"
+ * ```
+ *
+ * @see {@link unitValue} Unit value
+ * @see {@link tupleType} General tuples
+ */
 export const unitType: Type = { tuple: [] };
+
+/**
+ * Unit value `{}` (empty tuple, sole inhabitant of `unitType`).
+ *
+ * **Purpose**: Terminal value. Used in empty injections (`None = {}`).
+ *
+ * @example Pretty-print
+ * ```ts
+ * import { unitValue, showTerm } from "./typechecker.js";
+ *
+ * console.log("unit val:", showTerm(unitValue));  // "()"
+ * ```
+ *
+ * @example Inference
+ * ```ts
+ * import { freshState, inferType, unitValue, showType } from "./typechecker.js";
+ *
+ * const state = freshState();
+ * const result = inferType(state, unitValue);
+ * console.log("inferred:", showType(result.ok));  // "()"
+ * ```
+ *
+ * @example Enum injection
+ * ```ts
+ * import { freshState, addEnum, inferType, injectTerm, unitValue, appType, conType, starKind, showType } from "./typechecker.js";
+ *
+ * let state = freshState();
+ * state = addEnum(state, "Option", ["T"], [starKind], [["None", { tuple: [] }]]).ok;
+ *
+ * const noneBool = injectTerm("None", unitValue, appType(conType("Option"), conType("Bool")));
+ * const result = inferType(state, noneBool);
+ * console.log("None:", showType(result.ok));  // "Option<Bool>"
+ * ```
+ *
+ * @see {@link unitType} Unit type
+ * @see {@link injectTerm} Empty variant payload
+ */
 export const unitValue: Term = { tuple: [] };
 
+/**
+ * Pretty-prints context bindings (multi-line).
+ *
+ * **Purpose**: Debugs `TypeCheckerState.ctx`. Uses `showBinding`.
+ *
+ * @param context - Binding list
+ * @returns Newline-joined strings
+ *
+ * @example Empty context
+ * ```ts
+ * import { freshState, showContext } from "./typechecker.js";
+ *
+ * const state = freshState();
+ * console.log(showContext(state.ctx));  // ""
+ * ```
+ *
+ * @example Basic bindings
+ * ```ts
+ * import { freshState, addType, addTerm, showContext, starKind, conType } from "./typechecker.js";
+ *
+ * let state = freshState();
+ * state = addType(state, "Int", starKind).ok;
+ * state = addTerm(state, "x", { con: { name: "42", type: conType("Int") } }).ok;
+ * console.log(showContext(state.ctx));
+ * // "Type: Int = *\nTerm: x = Int"
+ * ```
+ *
+ * @example Complex (trait/enum)
+ * ```ts
+ * import { freshState, addType, addEnum, addTraitDef, showContext, starKind } from "./typechecker.js";
+ *
+ * let state = freshState();
+ * state = addType(state, "Int", starKind).ok;
+ * state = addEnum(state, "Option", ["T"], [starKind], [["None", { tuple: [] }]]).ok;
+ * state = addTraitDef(state, "Eq", "A", starKind, [["eq", { arrow: { from: { var: "A" }, to: { var: "Bool" } }}]]).ok;
+ * console.log(showContext(state.ctx));
+ * // Multi-line: Type, Enum, TraitDef...
+ * ```
+ *
+ * @see {@link showBinding} Single binding
+ * @see {@link freshState} Empty ctx
+ */
 export const showContext = (context: Context) =>
   context.map((t) => showBinding(t)).join("\n");
 
+/**
+ * Pretty-prints trait definition (multi-line methods).
+ *
+ * **Purpose**: Debugs `TraitDef` bindings. Used in `showBinding`.
+ *
+ * @param t - Trait definition
+ * @returns Formatted string
+ *
+ * @example Basic trait
+ * ```ts
+ * import { showTraitDef } from "./typechecker.js";
+ * import { starKind, arrowType, varType } from "./typechecker.js";
+ *
+ * const eqTrait = {
+ *   name: "Eq",
+ *   type_param: "A",
+ *   kind: starKind,
+ *   methods: [["eq", arrowType(varType("A"), varType("Bool"))]]
+ * };
+ * console.log(showTraitDef(eqTrait));
+ * // "TraitDef (Eq A = *\n  eq : (A → Bool))"
+ * ```
+ *
+ * @example Multi-method
+ * ```ts
+ * import { showTraitDef } from "./typechecker.js";
+ * import { starKind, arrowType, varType } from "./typechecker.js";
+ *
+ * const ordTrait = {
+ *   name: "Ord",
+ *   type_param: "A",
+ *   kind: starKind,
+ *   methods: [
+ *     ["eq", arrowType(varType("A"), varType("Bool"))],
+ *     ["lt", arrowType(varType("A"), varType("Bool"))]
+ *   ]
+ * };
+ * console.log(showTraitDef(ordTrait));
+ * // "TraitDef (Ord A = *\n  eq : (A → Bool)\n  lt : (A → Bool))"
+ * ```
+ *
+ * @example HKT trait
+ * ```ts
+ * import { showTraitDef, arrowKind, starKind } from "./typechecker.js";
+ * import { varType, arrowType } from "./typechecker.js";
+ *
+ * const functorTrait = {
+ *   name: "Functor",
+ *   type_param: "F",
+ *   kind: arrowKind(starKind, starKind),
+ *   methods: [["map", arrowType(varType("F"), varType("F"))]]
+ * };
+ * console.log(showTraitDef(functorTrait));
+ * // "TraitDef (Functor F = (* → *)\n  map : (F → F))"
+ * ```
+ *
+ * @internal Used by {@link showBinding}
+ * @see {@link showBinding} Context printer
+ */
 export const showTraitDef = (t: TraitDef) => {
   return `TraitDef (${t.name} ${t.type_param} = ${showKind(t.kind)}\n${t.methods.map((y) => `  ${y[0]} : ${showType(y[1])}`).join("\n")})`;
 };
 
+/**
+ * Pretty-prints single binding for context display.
+ *
+ * **Purpose**: Formats `Context` entries. Used by `showContext`.
+ *
+ * @param bind - Binding variant
+ * @returns Formatted string
+ *
+ * @example Term binding
+ * ```ts
+ * import { showBinding } from "./typechecker.js";
+ * import { conType } from "./typechecker.js";
+ *
+ * const termBind = { term: { name: "x", type: conType("Int") } };
+ * console.log(showBinding(termBind));  // "Term: x = Int"
+ * ```
+ *
+ * @example Type binding
+ * ```ts
+ * import { showBinding, starKind } from "./typechecker.js";
+ *
+ * const typeBind = { type: { name: "Int", kind: starKind } };
+ * console.log(showBinding(typeBind));  // "Type: Int = *"
+ * ```
+ *
+ * @example Trait def
+ * ```ts
+ * import { showBinding } from "./typechecker.js";
+ * import { starKind, arrowType, varType } from "./typechecker.js";
+ *
+ * const traitBind = {
+ *   trait_def: {
+ *     name: "Eq",
+ *     type_param: "A",
+ *     kind: starKind,
+ *     methods: [["eq", arrowType(varType("A"), varType("Bool"))]]
+ *   }
+ * };
+ * console.log(showBinding(traitBind));  // "Trait: Eq = TraitDef (Eq A = *\n  eq : (A → Bool))"
+ * ```
+ *
+ * @example Trait impl + dict + alias
+ * ```ts
+ * import { showBinding, conType } from "./typechecker.js";
+ *
+ * const implBind = { trait_impl: { trait: "Eq", type: conType("Int"), dict: { var: "d" } } };
+ * console.log(showBinding(implBind));  // "Impl: Eq = d: Int"
+ *
+ * const dictBind = { dict: { name: "eqInt", trait: "Eq", type: conType("Int") } };
+ * console.log(showBinding(dictBind));  // "Dict: eqInt = Trait Eq : Int"
+ *
+ * const aliasBind = {
+ *   type_alias: { name: "Id", params: ["A"], kinds: [starKind], body: conType("A") }
+ * };
+ * console.log(showBinding(aliasBind));  // "Type Alias: Id<A::*> = A"
+ * ```
+ *
+ * @see {@link showContext} Multi-binding printer
+ * @see {@link showType} Embedded types
+ * @see {@link showTraitDef} Trait methods
+ */
 export const showBinding = (bind: Binding) => {
   if ("term" in bind)
     return `Term: ${bind.term.name} = ${showType(bind.term.type)}`;
@@ -7928,12 +9545,134 @@ export const showBinding = (bind: Binding) => {
   }
 };
 
+/**
+ * Constructs term binding `{ term: { name, type } }`.
+ *
+ * **Purpose**: Binds value names to types in context.
+ *
+ * @param name - Term name (`"x"`)
+ * @param type - Type
+ * @returns Binding
+ *
+ * @example Basic construction
+ * ```ts
+ * import { termBinding, conType, showBinding } from "./typechecker.js";
+ *
+ * const bind = termBinding("x", conType("Int"));
+ * console.log(showBinding(bind));  // "Term: x = Int"
+ * ```
+ *
+ * @example Context usage
+ * ```ts
+ * import { freshState, termBinding, conType, showContext } from "./typechecker.js";
+ *
+ * const state = freshState();
+ * const ctx = state.ctx.concat([termBinding("x", conType("Int"))]);
+ * console.log(showContext(ctx));  // "Term: x = Int"
+ * ```
+ *
+ * @example addTerm equivalent
+ * ```ts
+ * import { freshState, addType, addTerm, conTerm, conType, starKind, showContext } from "./typechecker.js";
+ *
+ * let state = freshState();
+ * state = addType(state, "Int", starKind).ok;
+ * state = addTerm(state, "x", conTerm("42", conType("Int"))).ok;
+ * console.log(showContext(state.ctx));  // "...\nTerm: x = Int"
+ * ```
+ *
+ * @see {@link addTerm} Stateful adder
+ * @see {@link typeBinding} Type counterpart
+ */
 export const termBinding = (name: string, type: Type) => ({
   term: { name, type },
 });
+
+/**
+ * Constructs type binding `{ type: { name, kind } }`.
+ *
+ * **Purpose**: Binds type constructors/kind vars in context.
+ *
+ * @param name - Type name (`"Int"`)
+ * @param kind - Kind (`*`, `*→*`)
+ * @returns Binding
+ *
+ * @example Basic construction
+ * ```ts
+ * import { typeBinding, starKind, showBinding } from "./typechecker.js";
+ *
+ * const bind = typeBinding("Int", starKind);
+ * console.log(showBinding(bind));  // "Type: Int = *"
+ * ```
+ *
+ * @example Context usage
+ * ```ts
+ * import { freshState, typeBinding, starKind, showContext } from "./typechecker.js";
+ *
+ * const state = freshState();
+ * const ctx = state.ctx.concat([typeBinding("Int", starKind)]);
+ * console.log(showContext(ctx));  // "Type: Int = *"
+ * ```
+ *
+ * @example addType equivalent
+ * ```ts
+ * import { freshState, addType, typeBinding, starKind, showContext } from "./typechecker.js";
+ *
+ * let state = freshState();
+ * state = addType(state, "Int", starKind).ok;
+ * console.log(showContext(state.ctx));  // "Type: Int = *"
+ * ```
+ *
+ * @see {@link addType} Stateful adder
+ * @see {@link termBinding} Term counterpart
+ */
 export const typeBinding = (name: string, kind: Kind) => ({
   type: { name, kind },
 });
+
+/**
+ * Constructs type alias binding for context.
+ *
+ * **Purpose**: Parametric aliases: `Id<A> = A`. Used in `addTypeAlias`.
+ *
+ * @param name - Alias name (`"Id"`)
+ * @param params - Param names `["A"]`
+ * @param kinds - Param kinds `[starKind]`
+ * @param body - Right-hand side
+ * @returns Alias binding
+ *
+ * @example Basic alias
+ * ```ts
+ * import { typeAliasBinding, varType, starKind, showBinding } from "./typechecker.js";
+ *
+ * const idAlias = typeAliasBinding("Id", ["A"], [starKind], varType("A"));
+ * console.log(showBinding(idAlias));  // "Type Alias: Id<A::*> = A"
+ * ```
+ *
+ * @example Context + expansion
+ * ```ts
+ * import { freshState, addTypeAlias, normalizeType, appType, conType, typeAliasBinding, varType, starKind, showType } from "./typechecker.js";
+ *
+ * let state = freshState();
+ * state = addTypeAlias(state, "Id", ["A"], [starKind], varType("A")).ok;
+ *
+ * const idInt = appType({ con: "Id" }, conType("Int"));
+ * const expanded = normalizeType(state, idInt);
+ * console.log("expanded:", showType(expanded));  // "Int"
+ * ```
+ *
+ * @example Multi-param
+ * ```ts
+ * import { typeAliasBinding, tupleType, varType, starKind, showBinding } from "./typechecker.js";
+ *
+ * const pairAlias = typeAliasBinding("Pair", ["A", "B"], [starKind, starKind], tupleType([varType("A"), varType("B")]));
+ * console.log(showBinding(pairAlias));  // "Type Alias: Pair<A::*,B::*> = (A, B)"
+ * ```
+ *
+ * @see {@link addTypeAlias} Stateful adder
+ * @see {@link normalizeType} Expands aliases
+ * @see {@link appType} Alias application
+ */
 export const typeAliasBinding = (
   name: string,
   params: string[],
@@ -7942,6 +9681,70 @@ export const typeAliasBinding = (
 ) => ({
   type_alias: { name, params, kinds, body },
 });
+
+/**
+ * Constructs trait definition binding for context.
+ *
+ * **Purpose**: Defines interfaces: `trait Eq<A::*>: eq : A → Bool`.
+ * Used in `addTraitDef`.
+
+ * @param name - Trait name (`"Eq"`)
+ * @param type_param - Type param (`"A"`)
+ * @param kind - Param kind
+ * @param methods - Signatures `[[name, type], ...]`
+ * @returns TraitDef binding
+ *
+ * @example Basic trait
+ * ```ts
+ * import { traitDefBinding, starKind, arrowType, varType, showBinding } from "./typechecker.js";
+ *
+ * const eqDef = traitDefBinding("Eq", "A", starKind, [
+ *   ["eq", arrowType(varType("A"), varType("Bool"))]
+ * ]);
+ * console.log(showBinding({ trait_def: eqDef }));
+ * // "Trait: Eq = TraitDef (Eq A = *\n  eq : (A → Bool))"
+ * ```
+ *
+ * @example Context usage (addTraitDef equivalent)
+ * ```ts
+ * import { freshState, addType, addTraitDef, showContext, starKind, arrowType, varType } from "./typechecker.js";
+ *
+ * let state = freshState();
+ * state = addType(state, "Bool", starKind).ok;
+ * state = addTraitDef(state, "Eq", "A", starKind, [
+ *   ["eq", arrowType(varType("A"), varType("Bool"))]
+ * ]).ok;
+ * console.log(showContext(state.ctx));
+ * // "...\nTrait: Eq = TraitDef (Eq A = *\n  eq : (A → Bool))"
+ * ```
+ *
+ * @example HKT trait
+ * ```ts
+ * import { traitDefBinding, arrowKind, starKind, arrowType, varType, showBinding } from "./typechecker.js";
+ *
+ * const functorDef = traitDefBinding("Functor", "F", arrowKind(starKind, starKind), [
+ *   ["map", arrowType(varType("F"), varType("F"))]
+ * ]);
+ * console.log(showBinding({ trait_def: functorDef }));
+ * // "Trait: Functor = TraitDef (Functor F = (* → *)\n  map : (F → F))"
+ * ```
+ *
+ * @example Multi-method
+ * ```ts
+ * import { traitDefBinding, starKind, arrowType, varType, showBinding } from "./typechecker.js";
+ *
+ * const ordDef = traitDefBinding("Ord", "A", starKind, [
+ *   ["eq", arrowType(varType("A"), varType("Bool"))],
+ *   ["lt", arrowType(varType("A"), varType("Bool"))]
+ * ]);
+ * console.log(showBinding({ trait_def: ordDef }));
+ * // "Trait: Ord = TraitDef (Ord A = *\n  eq : (A → Bool)\n  lt : (A → Bool))"
+ * ```
+ *
+ * @see {@link addTraitDef} Stateful adder
+ * @see {@link showTraitDef} Pretty-printer
+ * @see {@link traitImplBinding} Implementations
+ */
 export const traitDefBinding = (
   name: string,
   type_param: string,
@@ -7956,13 +9759,182 @@ export const traitDefBinding = (
   },
 });
 
+/**
+ * Constructs trait impl binding for context.
+ *
+ * **Purpose**: Registers `trait` impl for `type` with `dict`. Used in `addTraitImpl`.
+ *
+ * @param trait - Trait name (`"Eq"`)
+ * @param type - Impl type (`Int`)
+ * @param dict - Dictionary term
+ * @returns Impl binding
+ *
+ * @example Basic construction
+ * ```ts
+ * import { traitImplBinding, dictTerm, conType, showBinding } from "./typechecker.js";
+ *
+ * const impl = traitImplBinding("Eq", conType("Int"), dictTerm("Eq", conType("Int"), []));
+ * console.log(showBinding(impl));  // "Impl: Eq = dict Eq<Int> { }: Int"
+ * ```
+ *
+ * @example Context usage (addTraitImpl equivalent)
+ * ```ts
+ * import { freshState, addType, addTraitDef, traitImplBinding, dictTerm, conType, starKind, arrowType, lamTerm, varTerm, conTerm, showContext } from "./typechecker.js";
+ *
+ * let state = freshState();
+ * state = addType(state, "Int", starKind).ok;
+ * state = addType(state, "Bool", starKind).ok;
+ * state = addTraitDef(state, "Eq", "A", starKind, [["eq", arrowType(conType("A"), conType("Bool"))]]).ok;
+ * const dict = dictTerm("Eq", conType("Int"), [["eq", lamTerm("x", conType("Int"), conTerm("true", conType("Bool")))]]);
+ * const impl = traitImplBinding("Eq", conType("Int"), dict);
+ * state.ctx.push(impl);
+ * console.log(showContext(state.ctx));
+ * // "...\nImpl: Eq = dict Eq<Int> { eq = λx:Int.true }: Int"
+ * ```
+ *
+ * @example Resolution usage
+ * ```ts
+ * import { freshState, addType, addTraitDef, traitImplBinding, dictTerm, checkTraitImplementation, conType, starKind, arrowType, lamTerm, varTerm, conTerm, showType } from "./typechecker.js";
+ *
+ * let state = freshState();
+ * state = addType(state, "Int", starKind).ok;
+ * state = addTraitDef(state, "Eq", "A", starKind, [["eq", arrowType(conType("A"), conType("Bool"))]]).ok;
+ * const dict = dictTerm("Eq", conType("Int"), [["eq", lamTerm("x", conType("Int"), conTerm("true", conType("Bool")))]]);
+ * state.ctx.push(traitImplBinding("Eq", conType("Int"), dict));
+ *
+ * const result = checkTraitImplementation(state, "Eq", conType("Int"));
+ * console.log("resolved:", "ok" in result);  // true
+ * ```
+ *
+ * @see {@link addTraitImpl} Stateful adder
+ * @see {@link checkTraitImplementation} Uses impls
+ * @see {@link dictTerm} Dictionary construction
+ */
 export const traitImplBinding = (trait: string, type: Type, dict: Term) => ({
   trait_impl: { trait, type, dict },
 });
 
+/**
+ * Constructs dictionary binding `{ dict: { name, trait, type } }`.
+ *
+ * **Purpose**: Binds dict var to trait+type in context (trait_lam env).
+ * Used in `addDict`.
+
+ * @param name - Dict var (`"eqInt"`)
+ * @param trait - Trait name (`"Eq"`)
+ * @param type - Type param (`Int`)
+ * @returns Dict binding
+ *
+ * @example Basic construction
+ * ```ts
+ * import { dictBinding, conType, showBinding } from "./typechecker.js";
+ *
+ * const dictBind = dictBinding("eqInt", "Eq", conType("Int"));
+ * console.log(showBinding(dictBind));  // "Dict: eqInt = Trait Eq : Int"
+ * ```
+ *
+ * @example Context usage (addDict equivalent)
+ * ```ts
+ * import { freshState, addType, addDict, dictTerm, conTerm, conType, starKind, showContext } from "./typechecker.js";
+ * import { arrowType, lamTerm, varTerm } from "./typechecker.js";
+ *
+ * let state = freshState();
+ * state = addType(state, "Int", starKind).ok;
+ * state = addType(state, "Bool", starKind).ok;
+ * const dt = dictTerm("Eq", conType("Int"), [["eq", lamTerm("x", conType("Int"), conTerm("true", conType("Bool")))]]);
+ * state = addDict(state, "eqInt", dt).ok;
+ * console.log(showContext(state.ctx));
+ * // "...\nDict: eqInt = Trait Eq : Int"
+ * ```
+ *
+ * @example Trait method lookup
+ * ```ts
+ * import { freshState, addType, addTraitDef, dictBinding, inferType, traitMethodTerm, conType, starKind, arrowType, varType, showType } from "./typechecker.js";
+ *
+ * let state = freshState();
+ * state = addType(state, "Int", starKind).ok;
+ * state = addType(state, "Bool", starKind).ok;
+ * state = addTraitDef(state, "Eq", "A", starKind, [["eq", arrowType(conType("A"), conType("Bool"))]]).ok;
+ * state.ctx.push(dictBinding("eqInt", "Eq", conType("Int")));
+ *
+ * const method = traitMethodTerm({ var: "eqInt" }, "eq");
+ * const result = inferType(state, method);
+ * console.log("method:", showType(result.ok));  // "(Int → Bool)"
+ * ```
+ *
+ * @see {@link addDict} Stateful adder
+ * @see {@link traitMethodTerm} Uses dict bindings
+ * @see {@link inferTraitMethodType} Lookup
+ */
 export const dictBinding = (name: string, trait: string, type: Type) => ({
   dict: { name, trait, type },
 });
+
+/**
+ * Constructs enum definition binding for context.
+ *
+ * **Purpose**: Defines ADTs: `enum Option<T::*>: None | Some(T)`.
+ * Used in `addEnum`.
+
+ * @param name - Enum name (`"Option"`)
+ * @param kind - Enum kind (`* → *`)
+ * @param params - Param names `["T"]`
+ * @param variants - Cases `[[label, scheme], ...]`
+ * @param recursive - Recursive? (defaults `false`)
+ * @returns Enum binding
+ *
+ * @example Basic non-recursive
+ * ```ts
+ * import { enumDefBinding, tupleType, conType, starKind, showBinding } from "./typechecker.js";
+ *
+ * const optionDef = enumDefBinding("Option", arrowKind(starKind, starKind), ["T"], [
+ *   ["None", tupleType([])],
+ *   ["Some", conType("T")]
+ * ]);
+ * console.log(showBinding({ enum: optionDef }));
+ * // "Enum: Option = { name: 'Option', kind: (* → *), params: ['T'], ... }"
+ * ```
+ *
+ * @example Recursive list
+ * ```ts
+ * import { enumDefBinding, tupleType, appType, conType, varType, starKind, showBinding } from "./typechecker.js";
+ * import { arrowKind } from "./typechecker.js";
+ *
+ * const listDef = enumDefBinding("List", arrowKind(starKind, starKind), ["T"], [
+ *   ["Nil", tupleType([])],
+ *   ["Cons", tupleType([conType("T"), appType(conType("List"), varType("T"))])]
+ * ], true);
+ * console.log("recursive:", listDef.recursive);  // true
+ * ```
+ *
+ * @example Context usage (addEnum equivalent)
+ * ```ts
+ * import { freshState, addType, addEnum, showContext, starKind } from "./typechecker.js";
+ *
+ * let state = freshState();
+ * state = addType(state, "Int", starKind).ok;
+ * state = addEnum(state, "Color", [], [], [["Red", { tuple: [] }]]).ok;
+ * console.log(showContext(state.ctx));
+ * // "...\nEnum: Color = { name: 'Color', ... }"
+ * ```
+ *
+ * @example Normalization after enum
+ * ```ts
+ * import { freshState, addType, addEnum, normalizeType, appType, conType, starKind, showType } from "./typechecker.js";
+ *
+ * let state = freshState();
+ * state = addType(state, "Int", starKind).ok;
+ * state = addEnum(state, "Option", ["T"], [starKind], [["None", { tuple: [] }], ["Some", conType("T")]]).ok;
+ *
+ * const optInt = appType(conType("Option"), conType("Int"));
+ * const expanded = normalizeType(state, optInt);
+ * console.log("expanded:", showType(expanded));  // "<None: ⊥ | Some: Int>"
+ * ```
+ *
+ * @see {@link addEnum} Stateful adder
+ * @see {@link normalizeType} Expands enums
+ * @see {@link variantType} Structural form
+ */
 export const enumDefBinding = (
   name: string,
   kind: Kind,
@@ -7973,6 +9945,70 @@ export const enumDefBinding = (
   enum: { name, kind, params, variants, recursive },
 });
 
+/**
+ * Renames free vars/cons/labels/traits via `ren` map (binder-safe).
+ *
+ * **Purpose**: Module import renaming, alpha-conversion. Skips bound vars.
+ * Renames: vars/cons/labels/traits. Structural recurse.
+ *
+ * Used in module system (`importModule`).
+ *
+ * @param state - Checker state (unused)
+ * @param ty - Input type
+ * @param ren - Rename map `Map<old, new>`
+ * @param bound - Bound vars set (defaults empty)
+ * @returns Renamed type
+ *
+ * @example Basic var rename
+ * ```ts
+ * import { renameType, varType, arrowType, showType } from "./typechecker.js";
+ *
+ * const ren = new Map([["a", "X"]]);
+ * const ty = arrowType(varType("a"), varType("b"));
+ * const renamed = renameType({ ctx: [], meta: { counter: 0, kinds: new Map(), solutions: new Map() } }, ty, ren);
+ * console.log(showType(renamed));  // "(X → b)"
+ * ```
+ *
+ * @example Skip bound binder
+ * ```ts
+ * import { renameType, forallType, arrowType, varType, starKind, showType } from "./typechecker.js";
+ *
+ * const ren = new Map([["a", "X"]]);
+ * const bound = new Set(["a"]);
+ * const poly = forallType("a", starKind, arrowType(varType("a"), varType("b")));
+ * const renamed = renameType({ ctx: [], meta: { counter: 0, kinds: new Map(), solutions: new Map() } }, poly, ren, bound);
+ * console.log(showType(renamed));  // "∀a::*. (a → b)"
+ * ```
+ *
+ * @example Record/variant labels
+ * ```ts
+ * import { renameType, recordType, variantType, showType } from "./typechecker.js";
+ * import { conType } from "./typechecker.js";
+ *
+ * const ren = new Map([["x", "field"], ["Left", "L"]]);
+ * const rec = recordType([["x", conType("Int")], ["y", conType("Bool")]]);
+ * const renamedRec = renameType({ ctx: [], meta: { counter: 0, kinds: new Map(), solutions: new Map() } }, rec, ren);
+ * console.log(showType(renamedRec));  // "{field: Int, y: Bool}"
+ *
+ * const varn = variantType([["Left", conType("Int")], ["Right", conType("Bool")]]);
+ * const renamedVarn = renameType({ ctx: [], meta: { counter: 0, kinds: new Map(), solutions: new Map() } }, varn, ren);
+ * console.log(showType(renamedVarn));  // "<L: Int | Right: Bool>"
+ * ```
+ *
+ * @example Bounded forall traits
+ * ```ts
+ * import { renameType, boundedForallType, showType } from "./typechecker.js";
+ * import { varType, starKind } from "./typechecker.js";
+ *
+ * const ren = new Map([["Eq", "PartialEq"]]);
+ * const bounded = boundedForallType("a", starKind, [{ trait: "Eq", type: varType("a") }], varType("a"));
+ * const renamed = renameType({ ctx: [], meta: { counter: 0, kinds: new Map(), solutions: new Map() } }, bounded, ren);
+ * console.log(showType(renamed));  // "∀a::* where PartialEq<a>. a"
+ * ```
+ *
+ * @see {@link importModule} Module renaming
+ * @see {@link renameTerm} Term counterpart
+ */
 export function renameType(
   state: TypeCheckerState,
   ty: Type,
@@ -8093,6 +10129,76 @@ export function renameType(
   return ty;
 }
 
+/**
+ * Renames free vars/cons/labels/traits in term (binder-safe).
+ *
+ * **Purpose**: Module imports, alpha-conversion. Skips bound vars.
+ * Renames: vars/cons/labels/traits/methods. Calls `renameType`.
+ *
+ * Used with `renameType` in `importModule`.
+ *
+ * @param state - Checker state (`renameType`)
+ * @param term - Input term
+ * @param ren - Rename map `Map<old,new>`
+ * @param bound - Bound vars set (defaults empty)
+ * @returns Renamed term
+ *
+ * @example Basic var rename
+ * ```ts
+ * import { renameTerm, varTerm, arrowType, showTerm } from "./typechecker.js";
+ * import { freshState } from "./helpers.js";
+ *
+ * const state = freshState();
+ * const ren = new Map([["x", "y"]]);
+ * const app = { app: { callee: varTerm("f"), arg: varTerm("x") } };
+ * const renamed = renameTerm(state, app, ren);
+ * console.log(showTerm(renamed));  // "(f y)"
+ * ```
+ *
+ * @example Skip bound lambda
+ * ```ts
+ * import { renameTerm, lamTerm, varTerm, conType, showTerm } from "./typechecker.js";
+ * import { freshState } from "./helpers.js";
+ *
+ * const state = freshState();
+ * const ren = new Map([["x", "y"]]);
+ * const id = lamTerm("x", conType("Int"), varTerm("x"));
+ * const renamed = renameTerm(state, id, ren);
+ * console.log(showTerm(renamed));  // "λx:Int.x" (skipped!)
+ * ```
+ *
+ * @example Record/trait labels
+ * ```ts
+ * import { renameTerm, recordTerm, dictTerm, showTerm } from "./typechecker.js";
+ * import { conTerm, conType, freshState } from "./typechecker.js";
+ *
+ * const state = freshState();
+ * const ren = new Map([["x", "field"], ["eq", "equals"]]);
+ * const rec = recordTerm([["x", conTerm("1", conType("Int"))]]);
+ * const renamedRec = renameTerm(state, rec, ren);
+ * console.log(showTerm(renamedRec));  // "{field = 1}"
+ *
+ * const dict = dictTerm("Eq", conType("Int"), [["eq", conTerm("impl", conType("Bool"))]]);
+ * const renamedDict = renameTerm(state, dict, ren);
+ * console.log(showTerm(renamedDict));  // "dict Eq<Int> { equals = impl }"
+ * ```
+ *
+ * @example Trait lambda (bounds)
+ * ```ts
+ * import { renameTerm, traitLamTerm, showTerm } from "./typechecker.js";
+ * import { freshState, starKind } from "./typechecker.js";
+ *
+ * const state = freshState();
+ * const ren = new Map([["Eq", "PartialEq"]]);
+ * const traitLam = traitLamTerm("d", "Eq", "Self", starKind, [{ trait: "Eq", type: { var: "Self" } }], { var: "body" });
+ * const renamed = renameTerm(state, traitLam, ren);
+ * console.log(showTerm(renamed));  // "ΛSelf::* where PartialEq<Self>. body"
+ * ```
+ *
+ * @see {@link renameType} Type counterpart
+ * @see {@link importModule} Module renaming
+ * @see {@link renamePattern} Pattern counterpart
+ */
 export function renameTerm(
   state: TypeCheckerState,
   term: Term,
@@ -8287,6 +10393,77 @@ export function renameTerm(
   return term;
 }
 
+/**
+ * Renames free vars/cons/labels in pattern (binder-safe).
+ *
+ * **Purpose**: Module imports. Skips wildcards, binds vars.
+ *
+ * @param state - Checker state (`renameType`)
+ * @param pat - Input pattern
+ * @param ren - Rename map `Map<old,new>`
+ * @param bound - Bound vars set
+ * @returns Renamed pattern
+ *
+ * @example Var rename
+ * ```ts
+ * import { renamePattern, varPattern, showPattern } from "./typechecker.js";
+ * import { freshState } from "./helpers.js";
+ *
+ * const state = freshState();
+ * const ren = new Map([["x", "y"]]);
+ * const bound = new Set();
+ * const renamed = renamePattern(state, varPattern("x"), ren, bound);
+ * console.log(showPattern(renamed));  // "y"
+ * ```
+ *
+ * @example Con/record labels
+ * ```ts
+ * import { renamePattern, conPattern, recordPattern, showPattern } from "./typechecker.js";
+ * import { freshState, conType } from "./helpers.js";
+ *
+ * const state = freshState();
+ * const ren = new Map([["None", "Empty"], ["x", "field"]]);
+ * const bound = new Set();
+ *
+ * const conRen = renamePattern(state, conPattern("None", conType("Unit")), ren, bound);
+ * console.log(showPattern(conRen));  // "Empty"
+ *
+ * const recRen = renamePattern(state, recordPattern([["x", varPattern("a")]]), ren, bound);
+ * console.log(showPattern(recRen));  // "{field: a}"
+ * ```
+ *
+ * @example Variant/tuple nested
+ * ```ts
+ * import { renamePattern, variantPattern, tuplePattern, showPattern } from "./typechecker.js";
+ * import { freshState } from "./helpers.js";
+ *
+ * const state = freshState();
+ * const ren = new Map([["Cons", "Node"], ["hd", "head"]]);
+ * const bound = new Set();
+ *
+ * const varRen = renamePattern(state, variantPattern("Cons", varPattern("hd")), ren, bound);
+ * console.log(showPattern(varRen));  // "Node(head)"
+ *
+ * const tupRen = renamePattern(state, tuplePattern([varPattern("hd"), varPattern("tl")]), ren, bound);
+ * console.log(showPattern(tupRen));  // "(head, tl)"
+ * ```
+ *
+ * @example Wildcard no-op
+ * ```ts
+ * import { renamePattern, wildcardPattern, showPattern } from "./typechecker.js";
+ * import { freshState } from "./helpers.js";
+ *
+ * const state = freshState();
+ * const ren = new Map([["x", "y"]]);
+ * const bound = new Set();
+ * const renamed = renamePattern(state, wildcardPattern(), ren, bound);
+ * console.log(showPattern(renamed));  // "_"
+ * ```
+ *
+ * @see {@link renameType} Type counterpart
+ * @see {@link renameTerm} Term counterpart
+ * @see {@link importModule} Module usage
+ */
 export function renamePattern(
   state: TypeCheckerState,
   pat: Pattern,
@@ -8335,6 +10512,71 @@ export function renamePattern(
   return pat;
 }
 
+/**
+ * Renames binding identifiers for module imports (all variants).
+ *
+ * **Purpose**: Applies `ren` map to bindings in `importModule`.
+ * Renames: names/params/traits/methods/types. Calls `renameType/Term`.
+
+ * @param state - Checker state (`renameType`)
+ * @param b - Input binding
+ * @param ren - Rename map `Map<old,new>`
+ * @returns Renamed binding
+ *
+ * @example Term/type bindings
+ * ```ts
+ * import { renameBinding, termBinding, typeBinding, showBinding } from "./typechecker.js";
+ * import { conType, starKind } from "./typechecker.js";
+ * import { freshState } from "./helpers.js";
+ *
+ * const state = freshState();
+ * const ren = new Map([["x", "y"], ["Int", "Number"]]);
+ *
+ * const termB = renameBinding(state, termBinding("x", conType("Int")), ren);
+ * console.log(showBinding(termB));  // "Term: y = Number"
+ *
+ * const typeB = renameBinding(state, typeBinding("Int", starKind), ren);
+ * console.log(showBinding(typeB));  // "Type: Number = *"
+ * ```
+ *
+ * @example TraitDef/impl
+ * ```ts
+ * import { renameBinding, traitDefBinding, traitImplBinding, showBinding } from "./typechecker.js";
+ * import { starKind, arrowType, varType, dictTerm, conType, freshState } from "./helpers.js";
+ *
+ * const state = freshState();
+ * const ren = new Map([["Eq", "PartialEq"], ["eq", "equals"]]);
+ *
+ * const traitD = renameBinding(state, traitDefBinding("Eq", "A", starKind, [["eq", arrowType(varType("A"), varType("Bool"))]]), ren);
+ * console.log(showBinding({ trait_def: traitD }));
+ * // "Trait: PartialEq = TraitDef (PartialEq A = *\n  equals : (A → Bool))"
+ *
+ * const impl = renameBinding(state, traitImplBinding("Eq", conType("Int"), dictTerm("Eq", conType("Int"), [])), ren);
+ * console.log(showBinding(impl));  // "Impl: PartialEq = dict Eq<Int> { }: Int"
+ * ```
+ *
+ * @example Dict/enum/alias
+ * ```ts
+ * import { renameBinding, dictBinding, enumDefBinding, typeAliasBinding, showBinding } from "./typechecker.js";
+ * import { starKind, tupleType, conType, freshState } from "./helpers.js";
+ *
+ * const state = freshState();
+ * const ren = new Map([["eqInt", "equalsInt"], ["Color", "Colour"], ["RGB", "Id"]]);
+ *
+ * const dictB = renameBinding(state, dictBinding("eqInt", "Eq", conType("Int")), ren);
+ * console.log(showBinding(dictB));  // "Dict: equalsInt = Trait Eq : Int"
+ *
+ * const enumB = renameBinding(state, enumDefBinding("Color", starKind, [], [["Red", tupleType([])]]), ren);
+ * console.log("enum renamed:", enumB.enum!.name);  // "Colour"
+ *
+ * const aliasB = renameBinding(state, typeAliasBinding("RGB", ["A"], [starKind], conType("A")), ren);
+ * console.log(showBinding(aliasB));  // "Type Alias: Id<A::*> = A"
+ * ```
+ *
+ * @see {@link importModule} Module importer
+ * @see {@link renameType} Type renamer
+ * @see {@link renameTerm} Term renamer
+ */
 export function renameBinding(
   state: TypeCheckerState,
   b: Binding,
@@ -8403,6 +10645,55 @@ export function renameBinding(
   return b;
 }
 
+/**
+ * Computes free names in `type` (binder-respecting).
+ *
+ * **Purpose**: Dependency analysis for imports/renaming.
+ * Collects: typeVars/cons/traits/labels. Skips bound ∀/λ/μ.
+ *
+ * @param _state - Unused
+ * @param ty - Input type
+ * @param bound - Bound vars (defaults empty)
+ * @returns `{ typeVars/traits/typeCons/labels: Set<string> }`
+ *
+ * @example Basic vars/cons
+ * ```ts
+ * import { computeFreeTypes, arrowType, varType, conType } from "./typechecker.js";
+ *
+ * const ty = arrowType(varType("a"), appType(conType("List"), varType("b")));
+ * const free = computeFreeTypes({ ctx: [], meta: { counter: 0, kinds: new Map(), solutions: new Map() } }, ty);
+ * console.log("vars:", Array.from(free.typeVars));  // ["a", "b"]
+ * console.log("cons:", Array.from(free.typeCons));  // ["List"]
+ * ```
+ *
+ * @example Bound forall (skips binder)
+ * ```ts
+ * import { computeFreeTypes, forallType, arrowType, varType, starKind } from "./typechecker.js";
+ *
+ * const poly = forallType("a", starKind, arrowType(varType("a"), varType("b")));
+ * const free = computeFreeTypes({ ctx: [], meta: { counter: 0, kinds: new Map(), solutions: new Map() } }, poly);
+ * console.log("free vars:", Array.from(free.typeVars));  // ["b"] (a bound)
+ * ```
+ *
+ * @example Data + traits
+ * ```ts
+ * import { computeFreeTypes, recordType, variantType, boundedForallType } from "./typechecker.js";
+ * import { varType, conType, starKind } from "./typechecker.js";
+ *
+ * const rec = recordType([["x", varType("a")], ["y", conType("Int")]]);
+ * const freeRec = computeFreeTypes({ ctx: [], meta: { counter: 0, kinds: new Map(), solutions: new Map() } }, rec);
+ * console.log("labels:", Array.from(freeRec.labels));  // ["x", "y"]
+ * console.log("vars:", Array.from(freeRec.typeVars));  // ["a"]
+ *
+ * const bounded = boundedForallType("a", starKind, [{ trait: "Eq", type: varType("a") }], varType("b"));
+ * const freeBound = computeFreeTypes({ ctx: [], meta: { counter: 0, kinds: new Map(), solutions: new Map() } }, bounded);
+ * console.log("traits:", Array.from(freeBound.traits));  // ["Eq"]
+ * ```
+ *
+ * @internal Dependency analysis
+ * @see {@link importModule} Uses for deps
+ * @see {@link collectTypeVars} Vars only
+ */
 export function computeFreeTypes(
   _state: TypeCheckerState,
   ty: Type,
@@ -8500,6 +10791,55 @@ export function computeFreeTypes(
   return out;
 }
 
+/**
+ * Computes free names in `pat`: vars/constructors/labels.
+ *
+ * **Purpose**: Pattern dependency analysis for imports.
+ * No binders (collects all vars).
+ *
+ * @param _state - Unused
+ * @param pat - Input pattern
+ * @returns `{ vars/constructors/labels: Set<string> }`
+ *
+ * @example Basic vars/cons
+ * ```ts
+ * import { computeFreePatterns, varPattern, conPattern } from "./typechecker.js";
+ *
+ * const vars = computeFreePatterns({ ctx: [], meta: { counter: 0, kinds: new Map(), solutions: new Map() } }, varPattern("x"));
+ * console.log("vars:", Array.from(vars.vars));  // ["x"]
+ *
+ * const cons = computeFreePatterns({ ctx: [], meta: { counter: 0, kinds: new Map(), solutions: new Map() } }, conPattern("None", { con: "Unit" }));
+ * console.log("cons:", Array.from(cons.constructors));  // ["None"]
+ * ```
+ *
+ * @example Nested record/variant
+ * ```ts
+ * import { computeFreePatterns, recordPattern, variantPattern, varPattern } from "./typechecker.js";
+ *
+ * const rec = computeFreePatterns({ ctx: [], meta: { counter: 0, kinds: new Map(), solutions: new Map() } }, recordPattern([["x", varPattern("a")]]));
+ * console.log("labels:", Array.from(rec.labels));  // ["x"]
+ * console.log("vars:", Array.from(rec.vars));      // ["a"]
+ *
+ * const varn = computeFreePatterns({ ctx: [], meta: { counter: 0, kinds: new Map(), solutions: new Map() } }, variantPattern("Cons", varPattern("hd")));
+ * console.log("labels:", Array.from(varn.labels));  // ["Cons"]
+ * console.log("vars:", Array.from(varn.vars));      // ["hd"]
+ * ```
+ *
+ * @example Tuple/wildcard empty
+ * ```ts
+ * import { computeFreePatterns, tuplePattern, varPattern, wildcardPattern } from "./typechecker.js";
+ *
+ * const tup = computeFreePatterns({ ctx: [], meta: { counter: 0, kinds: new Map(), solutions: new Map() } }, tuplePattern([varPattern("a"), varPattern("b")]));
+ * console.log("tuple vars:", Array.from(tup.vars));  // ["a", "b"]
+ *
+ * const wc = computeFreePatterns({ ctx: [], meta: { counter: 0, kinds: new Map(), solutions: new Map() } }, wildcardPattern());
+ * console.log("wildcard empty:", wc.vars.size === 0);  // true
+ * ```
+ *
+ * @internal Pattern dependency analysis
+ * @see {@link computeFreeTypes} Type counterpart
+ * @see {@link importModule} Uses for deps
+ */
 export function computeFreePatterns(
   _state: TypeCheckerState,
   pat: Pattern,
@@ -8547,6 +10887,83 @@ export function computeFreePatterns(
   return out;
 }
 
+/**
+ * Computes free names in `term` (binder-respecting).
+ *
+ * **Purpose**: Dependency analysis for imports/renaming.
+ * Collects: terms/cons/traits/dicts/labels + type vars/cons.
+ * Calls `computeFreeTypes`/`computeFreePatterns`.
+ *
+ * @param state - Checker state (`computeFreeTypes`)
+ * @param term - Input term
+ * @param bound - Bound term vars (defaults empty)
+ * @returns `{ terms/cons/traits/dicts/labels/typeVars/typeCons: Set }`
+ *
+ * @example Basic terms/cons
+ * ```ts
+ * import { computeFreeTerms, varTerm, conTerm } from "./typechecker.js";
+ * import { freshState } from "./helpers.js";
+ *
+ * const state = freshState();
+ * const app = { app: { callee: varTerm("f"), arg: conTerm("42", { con: "Int" }) } };
+ * const free = computeFreeTerms(state, app);
+ * console.log("terms:", Array.from(free.terms));     // ["f"]
+ * console.log("cons:", Array.from(free.constructors));  // ["42"]
+ * ```
+ *
+ * @example Binder skip (lam/let)
+ * ```ts
+ * import { computeFreeTerms, lamTerm, letTerm, varTerm, conTerm } from "./typechecker.js";
+ * import { freshState, conType } from "./helpers.js";
+ *
+ * const state = freshState();
+ * const lam = lamTerm("x", conType("Int"), varTerm("y"));
+ * const freeLam = computeFreeTerms(state, lam);
+ * console.log("lam terms:", Array.from(freeLam.terms));  // ["y"] (x bound)
+ *
+ * const letE = letTerm("x", conTerm("1", conType("Int")), varTerm("x"));
+ * const freeLet = computeFreeTerms(state, letE);
+ * console.log("let terms:", Array.from(freeLet.terms));  // [] (x bound)
+ * ```
+ *
+ * @example Traits/dicts/labels
+ * ```ts
+ * import { computeFreeTerms, dictTerm, traitMethodTerm, recordTerm } from "./typechecker.js";
+ * import { freshState, conType } from "./helpers.js";
+ *
+ * const state = freshState();
+ * const dict = dictTerm("Eq", conType("Int"), [["eq", { var: "impl" }]]);
+ * const freeDict = computeFreeTerms(state, dict);
+ * console.log("traits:", Array.from(freeDict.traits));  // ["Eq"]
+ * console.log("labels:", Array.from(freeDict.labels));  // ["eq"]
+ *
+ * const method = traitMethodTerm(dict, "lt");
+ * const freeMethod = computeFreeTerms(state, method);
+ * console.log("method labels:", Array.from(freeMethod.labels));  // ["lt"]
+ * ```
+ *
+ * @example Match patterns
+ * ```ts
+ * import { computeFreeTerms, matchTerm, recordPattern, varPattern } from "./typechecker.js";
+ * import { freshState } from "./helpers.js";
+ *
+ * const state = freshState();
+ * const match = {
+ *   match: {
+ *     scrutinee: { var: "rec" },
+ *     cases: [[recordPattern([["x", varPattern("a")]]), { var: "a" }]]
+ *   }
+ * };
+ * const freeMatch = computeFreeTerms(state, match);
+ * console.log("match terms:", Array.from(freeMatch.terms));  // ["rec"]
+ * console.log("pat vars:", Array.from(freeMatch.labels));    // ["x"]
+ * ```
+ *
+ * @internal Dependency analysis
+ * @see {@link computeFreeTypes} Type names
+ * @see {@link computeFreePatterns} Pat names
+ * @see {@link importModule} Uses for deps
+ */
 export function computeFreeTerms(
   state: TypeCheckerState,
   term: Term,
@@ -8715,6 +11132,110 @@ export function computeFreeTerms(
   return out;
 }
 
+/**
+ * Imports module `from` into `into` (deps + renaming + topo-sort).
+ *
+ * **Purpose**: Module system:
+ * 1. Collect deps (`roots` + transitive).
+ * 2. Check root conflicts.
+ * 3. Auto-rename deps (`allowOverrides` or fresh names).
+ * 4. Topo-sort → rename → append/merge.
+ *
+ * Errors: `circular_import`, `duplicate_binding`.
+ *
+ * @param args.from - Source state
+ * @param args.into - Target state
+ * @param args.roots - Root names
+ * @param args.aliases - User renames (optional)
+ * @param args.allowOverrides - Replace conflicts (optional)
+ * @returns New state or error
+ *
+ * @example Success: Simple import
+ * ```ts
+ * import { freshState, addType, addTerm, importModule, starKind, conType, showContext } from "./typechecker.js";
+ *
+ * let from = freshState();
+ * from = addType(from, "Int", starKind).ok;
+ * from = addTerm(from, "x", { con: { name: "42", type: conType("Int") } }).ok;
+ *
+ * let into = freshState();
+ * into = addType(into, "Bool", starKind).ok;
+ *
+ * const result = importModule({ from, into, roots: ["Int", "x"] });
+ * console.log("imported:", "ok" in result);
+ * console.log(showContext(result.ok.ctx));
+ * // "...Type: Bool = *\nType: Int = *\nTerm: x = Int"
+ * ```
+ *
+ * @example User aliases
+ * ```ts
+ * import { freshState, addType, importModule, starKind, conType, showContext } from "./typechecker.js";
+ *
+ * let from = freshState();
+ * from = addType(from, "Int32", starKind).ok;
+ *
+ * let into = freshState();
+ * const result = importModule({
+ *   from,
+ *   into,
+ *   roots: ["Int32"],
+ *   aliases: { types: { "Int32": "Int" } }
+ * });
+ * console.log("aliased:", "ok" in result);
+ * console.log(showContext(result.ok.ctx));
+ * // "Type: Int = *"
+ * ```
+ *
+ * @example Auto-rename conflict (deps)
+ * ```ts
+ * import { freshState, addType, importModule, starKind, showContext } from "./typechecker.js";
+ *
+ * let from = freshState();
+ * from = addType(from, "Int", starKind).ok;  // Dep
+ * from.ctx.push({ type: { name: "Conflict", kind: starKind } });  // Root + dep
+ *
+ * let into = freshState();
+ * into = addType(into, "Conflict", starKind).ok;  // Conflicts dep
+ *
+ * const result = importModule({ from, into, roots: ["Conflict"] });
+ * console.log("renamed:", "ok" in result);
+ * console.log("new Int:", result.ok.ctx.find(b => b.type?.name === "Int"));  // Exists
+ * console.log("dep Int:", result.ok.ctx.find(b => b.type?.name === "Int_1"));  // Renamed
+ * ```
+ *
+ * @example Duplicate root error
+ * ```ts
+ * import { freshState, addType, importModule, starKind } from "./typechecker.js";
+ *
+ * let from = freshState();
+ * from = addType(from, "Int", starKind).ok;
+ *
+ * let into = freshState();
+ * into = addType(into, "Int", starKind).ok;  // Duplicate
+ *
+ * const result = importModule({ from, into, roots: ["Int"] });
+ * console.log("duplicate err:", "duplicate_binding" in result.err);  // true
+ * ```
+ *
+ * @example allowOverrides merges
+ * ```ts
+ * import { freshState, addType, importModule, starKind, showContext } from "./typechecker.js";
+ *
+ * let from = freshState();
+ * from = addType(from, "Int", starKind).ok;  // Override target
+ *
+ * let into = freshState();
+ * into = addType(into, "Int", starKind).ok;
+ *
+ * const result = importModule({ from, into, roots: ["Int"], allowOverrides: true });
+ * console.log("overridden:", "ok" in result);
+ * console.log(showContext(result.ok.ctx));  // Single Int
+ * ```
+ *
+ * @see {@link collectDependencies} Dep collection
+ * @see {@link renameBinding} Applies renames
+ * @see {@link topoSortBindings} Ordering
+ */
 export function importModule(args: {
   from: TypeCheckerState;
   into: TypeCheckerState;
@@ -8806,6 +11327,56 @@ export function importModule(args: {
   return ok({ ctx: newCtx, meta: into.meta });
 }
 
+/**
+ * Collects transitive dependencies from `roots` (DFS + cycle detection).
+ *
+ * **Purpose**: Module deps: `roots` → all referenced names.
+ * Detects cycles via visiting stack.
+ *
+ * @param state - Source state
+ * @param roots - Root binding names
+ * @returns Dep set or `circular_import`
+ *
+ * @example Success: Transitive chain
+ * ```ts
+ * import { freshState, addType, addTypeAlias, collectDependencies, starKind, varType, conType } from "./typechecker.js";
+ *
+ * let state = freshState();
+ * state = addType(state, "A", starKind).ok;  // Root
+ * state = addType(state, "B", starKind).ok;  // A deps B
+ * state = addType(state, "C", starKind).ok;  // B deps C
+ * state.ctx.push({ type_alias: { name: "AliasA", params: [], kinds: [], body: conType("B") } });  // A → AliasA → B
+ * state.ctx.push({ type_alias: "AliasB", params: [], kinds: [], body: conType("C") });
+ *
+ * const result = collectDependencies(state, ["A"]);
+ * console.log("deps:", Array.from(result.ok));  // ["A", "AliasA", "B", "AliasB", "C"]
+ * ```
+ *
+ * @example Cycle error
+ * ```ts
+ * import { freshState, addType, addTypeAlias, collectDependencies, starKind, conType } from "./typechecker.js";
+ *
+ * let state = freshState();
+ * state = addType(state, "A", starKind).ok;
+ * state.ctx.push({ type_alias: { name: "AliasA", params: [], kinds: [], body: conType("A") } });  // A → AliasA → A (cycle)
+ *
+ * const result = collectDependencies(state, ["A"]);
+ * console.log("cycle:", "circular_import" in result.err);  // true
+ * ```
+ *
+ * @example Missing binding (silent)
+ * ```ts
+ * import { freshState, collectDependencies } from "./typechecker.js";
+ *
+ * const state = freshState();
+ * const result = collectDependencies(state, ["Missing"]);
+ * console.log("missing ok:", "ok" in result && result.ok.size === 0);  // true
+ * ```
+ *
+ * @internal Module dep collector
+ * @see {@link importModule} Uses deps
+ * @see {@link bindingDependencies} Single binding deps
+ */
 export function collectDependencies(
   state: TypeCheckerState,
   roots: string[],
@@ -8964,6 +11535,93 @@ function bindingName(b: Binding): string {
   return "<unknown>";
 }
 
+/**
+ * Pretty-prints `TypingError` for user-facing diagnostics.
+ *
+ * **Purpose**: Human-readable errors with context (types/kinds shown).
+ * Covers all variants: unbound, mismatch, missing impl/case/field, cyclic, etc.
+
+ * @param err - Typing error
+ * @returns Formatted string
+ *
+ * @example Unbound identifier
+ * ```ts
+ * import { freshState, inferType, varTerm, showError } from "./typechecker.js";
+ *
+ * const state = freshState();
+ * const result = inferType(state, varTerm("missing"));
+ * console.log(showError(result.err));  // "Unbound identifier: missing"
+ * ```
+ *
+ * @example Type mismatch
+ * ```ts
+ * import { freshState, addType, inferType, conTerm, appTerm, lamTerm, varTerm, arrowType, conType, starKind, showError, showType } from "./typechecker.js";
+ *
+ * let state = freshState();
+ * state = addType(state, "Int", starKind).ok;
+ * state = addType(state, "Bool", starKind).ok;
+ *
+ * const id = lamTerm("x", conType("Int"), varTerm("x"));
+ * const badApp = appTerm(id, conTerm("true", conType("Bool")));
+ * const result = inferType(state, badApp);
+ * console.log(showError(result.err));
+ * // "Type mismatch:
+ * //   Expected: (Int → Int)
+ * //   Actual:   Bool"
+ * ```
+ *
+ * @example Missing trait impl
+ * ```ts
+ * import { freshState, addType, addTraitDef, checkTraitImplementation, conType, starKind, showError } from "./typechecker.js";
+ *
+ * let state = freshState();
+ * state = addType(state, "String", starKind).ok;
+ * state = addTraitDef(state, "Eq", "A", starKind, [["eq", conType("Bool")]]).ok;
+ *
+ * const result = checkTraitImplementation(state, "Eq", conType("String"));
+ * console.log(showError(result.err));  // "Missing trait implementation:\n  Trait: Eq\n  Type:  String"
+ * ```
+ *
+ * @example Non-exhaustive match
+ * ```ts
+ * import { freshState, addEnum, checkExhaustive, variantPattern, varPattern, conType, starKind, showError } from "./typechecker.js";
+ *
+ * let state = freshState();
+ * state = addEnum(state, "Color", [], [], [["Red", { var: "Unit" }], ["Blue", { var: "Unit" }]]).ok;
+ *
+ * const patterns = [variantPattern("Red", varPattern("x"))];  // Missing Blue
+ * const result = checkExhaustive(state, patterns, conType("Color"));
+ * console.log(showError(result.err));  // "Non-exhaustive match: missing case 'Blue'"
+ * ```
+ *
+ * @example Cyclic type
+ * ```ts
+ * import { freshState, unifyTypes, arrowType, varType, showError } from "./typechecker.js";
+ *
+ * const state = freshState();
+ * const subst = new Map<string, Type>();
+ * const result = unifyTypes(state, varType("a"), arrowType(varType("a"), varType("Int")), [], subst);
+ * console.log(showError(result.err));  // "Cyclic type detected involving: a"
+ * ```
+ *
+ * @example Duplicate binding (import)
+ * ```ts
+ * import { freshState, addType, importModule, starKind, showError } from "./typechecker.js";
+ *
+ * let from = freshState();
+ * from = addType(from, "Int", starKind).ok;
+ *
+ * let into = freshState();
+ * into = addType(into, "Int", starKind).ok;
+ *
+ * const result = importModule({ from, into, roots: ["Int"] });
+ * console.log(showError(result.err));
+ * // "Duplicate binding for 'Int':\n  Existing: Type: Int = *\n  Incoming: Type: Int = *"
+ * ```
+ *
+ * @see {@link inferType} Common caller
+ * @see {@link checkType} Checking errors
+ */
 export function showError(err: TypingError): string {
   if ("unbound" in err) return `Unbound identifier: ${err.unbound}`;
 
@@ -9075,6 +11733,55 @@ function addBinding(
   return ok({ ctx: [...state.ctx, binding], meta: state.meta });
 }
 
+/**
+ * Adds term binding after inferring its type.
+ *
+ * **Purpose**: REPL-style: `let x = term` → infer + bind.
+ * Errors from `inferType`/`addBinding`.
+
+ * @param state - Checker state
+ * @param name - Binding name
+ * @param term - Term to bind
+ * @returns New state or error
+ *
+ * @example Success: Constant
+ * ```ts
+ * import { freshState, addType, addTerm, conTerm, conType, starKind, showContext, inferType, varTerm, showType } from "./typechecker.js";
+ *
+ * let state = freshState();
+ * state = addType(state, "Int", starKind).ok;
+ * state = addTerm(state, "fortyTwo", conTerm("42", conType("Int"))).ok;
+ *
+ * const result = inferType(state, varTerm("fortyTwo"));
+ * console.log("added:", "ok" in result);  // true
+ * console.log("type:", showType(result.ok));  // "Int"
+ * console.log("ctx:", showContext(state.ctx));  // "Term: fortyTwo = Int"
+ * ```
+ *
+ * @example Success: Lambda
+ * ```ts
+ * import { freshState, addType, addTerm, lamTerm, varTerm, conType, starKind, showContext, inferType, showType } from "./typechecker.js";
+ *
+ * let state = freshState();
+ * state = addType(state, "Int", starKind).ok;
+ * state = addTerm(state, "id", lamTerm("x", conType("Int"), varTerm("x"))).ok;
+ *
+ * console.log("ctx:", showContext(state.ctx));  // "Term: id = (Int → Int)"
+ * ```
+ *
+ * @example Failure: Unbound var
+ * ```ts
+ * import { freshState, addTerm, varTerm, showError } from "./typechecker.js";
+ *
+ * const state = freshState();
+ * const result = addTerm(state, "bad", varTerm("missing"));
+ * console.log("error:", showError(result.err));  // "Unbound identifier: missing"
+ * ```
+ *
+ * @see {@link inferType} Infers type
+ * @see {@link termBinding} Creates binding
+ * @see {@link addBinding} Adds to ctx
+ */
 export function addTerm(
   state: TypeCheckerState,
   name: string,
@@ -9087,6 +11794,59 @@ export function addTerm(
   return addBinding(state, binding);
 }
 
+/**
+ * Adds type constructor binding (no kind inference).
+ *
+ * **Purpose**: Binds type names to kinds: `Int :: *`, `List :: * → *`.
+ * Errors only on duplicates.
+
+ * @param state - Checker state
+ * @param name - Type name (`"Int"`)
+ * @param kind - Kind (`*`, `*→*`)
+ * @returns New state or error
+ *
+ * @example Success: Primitive type
+ * ```ts
+ * import { freshState, addType, starKind, showContext } from "./typechecker.js";
+ *
+ * let state = freshState();
+ * state = addType(state, "Int", starKind).ok;
+ * console.log(showContext(state.ctx));  // "Type: Int = *"
+ * ```
+ *
+ * @example Success: HKT constructor
+ * ```ts
+ * import { freshState, addType, starKind, arrowKind, showContext } from "./typechecker.js";
+ *
+ * let state = freshState();
+ * state = addType(state, "List", arrowKind(starKind, starKind)).ok;
+ * console.log(showContext(state.ctx));  // "Type: List = (* → *)"
+ * ```
+ *
+ * @example Failure: Duplicate
+ * ```ts
+ * import { freshState, addType, starKind, showError } from "./typechecker.js";
+ *
+ * let state = freshState();
+ * state = addType(state, "Int", starKind).ok;
+ * const result = addType(state, "Int", starKind);
+ * console.log("duplicate:", showError(result.err));  // "Duplicate binding for 'Int'..."
+ * ```
+ *
+ * @example Usage: Type in inference
+ * ```ts
+ * import { freshState, addType, inferType, conTerm, starKind, showType } from "./typechecker.js";
+ *
+ * let state = freshState();
+ * state = addType(state, "Int", starKind).ok;
+ * const result = inferType(state, conTerm("42", { con: "Int" }));
+ * console.log("inferred:", showType(result.ok));  // "Int"
+ * ```
+ *
+ * @see {@link typeBinding} Creates binding
+ * @see {@link addBinding} Adds to ctx
+ * @see {@link checkKind} Uses bindings
+ */
 export function addType(
   state: TypeCheckerState,
   name: string,
@@ -9097,6 +11857,66 @@ export function addType(
   return addBinding(state, binding);
 }
 
+/**
+ * Adds parametric type alias after kind-checking body.
+ *
+ * **Purpose**: Defines aliases: `type Id<A> = A`. Recursive ctx includes self.
+ * Errors: unbound/kind mismatch in body.
+ *
+ * @param state - Checker state
+ * @param name - Alias name (`"Id"`)
+ * @param params - Param names `["A"]`
+ * @param kinds - Param kinds `[starKind]`
+ * @param body - RHS type
+ * @returns New state or error
+ *
+ * @example Success: Basic alias
+ * ```ts
+ * import { freshState, addType, addTypeAlias, starKind, varType, showContext } from "./typechecker.js";
+ *
+ * let state = freshState();
+ * state = addType(state, "Int", starKind).ok;
+ * state = addTypeAlias(state, "Id", ["A"], [starKind], varType("A")).ok;
+ * console.log(showContext(state.ctx));
+ * // "...\nType Alias: Id<A::*> = A"
+ * ```
+ *
+ * @example Success: Recursive alias
+ * ```ts
+ * import { freshState, addType, addTypeAlias, starKind, muType, tupleType, varType, appType, conType, showContext } from "./typechecker.js";
+ *
+ * let state = freshState();
+ * state = addType(state, "Int", starKind).ok;
+ * state = addTypeAlias(state, "Stream", ["A"], [starKind],
+ *   muType("self", tupleType([varType("A"), appType(conType("Stream"), varType("A"))]))
+ * ).ok;
+ * console.log("recursive ok:", "ok" in state);  // true
+ * ```
+ *
+ * @example Failure: Unbound var
+ * ```ts
+ * import { freshState, addTypeAlias, starKind, varType, showError } from "./typechecker.js";
+ *
+ * const state = freshState();
+ * const result = addTypeAlias(state, "Bad", ["A"], [starKind], varType("B"));
+ * console.log("unbound:", showError(result.err));  // "Unbound identifier: B"
+ * ```
+ *
+ * @example Failure: Wrong body kind
+ * ```ts
+ * import { freshState, addTypeAlias, starKind, lamType, varType, showError } from "./typechecker.js";
+ *
+ * const state = freshState();
+ * const result = addTypeAlias(state, "Bad", ["A"], [starKind],
+ *   lamType("X", starKind, varType("X"))  // * → * (not *)
+ * );
+ * console.log("kind err:", showError(result.err));  // "Kind mismatch..."
+ * ```
+ *
+ * @see {@link typeAliasBinding} Creates binding
+ * @see {@link normalizeType} Expands aliases
+ * @see {@link checkKind} Validates body
+ */
 export function addTypeAlias(
   state: TypeCheckerState,
   name: string,
@@ -9121,6 +11941,85 @@ export function addTypeAlias(
   return addBinding(state, binding);
 }
 
+/**
+ * Adds enum definition after kind-checking variants (recursive-aware).
+ *
+ * **Purpose**: Defines ADTs: `enum Option<T>: None | Some(T)`.
+ * - Computes kind (`params → *`).
+ * - Validates fields `:: *` (self ctx).
+ * - Detects self-refs → `recursive`.
+ * Errors: kind/unbound/dup.
+
+ * @param state - Checker state
+ * @param name - Enum name
+ * @param params - Param names/kinds
+ * @param variants - Cases `[[label, scheme], ...]`
+ * @param recursive - Assume recursive (defaults `true`)
+ * @returns New state or error
+ *
+ * @example Success: Non-recursive enum
+ * ```ts
+ * import { freshState, addType, addEnum, starKind, showContext } from "./typechecker.js";
+ * import { tupleType } from "./typechecker.js";
+ *
+ * let state = freshState();
+ * state = addType(state, "Unit", starKind).ok;
+ * state = addEnum(state, "Color", [], [], [
+ *   ["Red", tupleType([])],
+ *   ["Blue", tupleType([])]
+ * ]).ok;
+ * console.log("added:", showContext(state.ctx));  // "Enum: Color = ..."
+ * ```
+ *
+ * @example Success: Recursive list
+ * ```ts
+ * import { freshState, addType, addEnum, starKind, varType, appType, conType, showContext } from "./typechecker.js";
+ * import { tupleType } from "./typechecker.js";
+ *
+ * let state = freshState();
+ * state = addType(state, "Int", starKind).ok;
+ * state = addEnum(state, "List", ["T"], [starKind], [
+ *   ["Nil", tupleType([])],
+ *   ["Cons", tupleType([conType("T"), appType(conType("List"), varType("T"))])]
+ * ], true).ok;
+ * console.log("recursive:", state.ctx.find(b => b.enum?.recursive));  // true
+ * ```
+ *
+ * @example Failure: Wrong variant kind
+ * ```ts
+ * import { freshState, addEnum, starKind, showError } from "./typechecker.js";
+ * import { lamType, varType } from "./typechecker.js";
+ *
+ * const state = freshState();
+ * const result = addEnum(state, "Bad", ["T"], [starKind], [
+ *   ["Case", lamType("X", starKind, varType("X"))]  // * → * (not *)
+ * ]);
+ * console.log("kind err:", showError(result.err));  // "Kind mismatch... in enum Bad variant Case"
+ * ```
+ *
+ * @example Failure: Unbound in variant
+ * ```ts
+ * import { freshState, addEnum, starKind, varType, showError } from "./typechecker.js";
+ *
+ * const state = freshState();
+ * const result = addEnum(state, "Bad", ["T"], [starKind], [["Case", varType("Missing")]]);
+ * console.log("unbound:", showError(result.err));  // "Unbound identifier: Missing"
+ * ```
+ *
+ * @example Failure: Duplicate enum
+ * ```ts
+ * import { freshState, addEnum, starKind, tupleType, showError } from "./typechecker.js";
+ *
+ * let state = freshState();
+ * state = addEnum(state, "Color", [], [], [["Red", tupleType([])]]).ok;
+ * const result = addEnum(state, "Color", [], [], [["Blue", tupleType([])]]);
+ * console.log("duplicate:", showError(result.err));  // "Duplicate binding for 'Color'..."
+ * ```
+ *
+ * @see {@link enumDefBinding} Creates binding
+ * @see {@link normalizeType} Expands enums
+ * @see {@link checkKind} Validates fields
+ */
 export function addEnum(
   state: TypeCheckerState,
   name: string,
@@ -9183,6 +12082,77 @@ export function addEnum(
   return addBinding(state, binding);
 }
 
+/**
+ * Adds trait definition after kind-checking methods `:: *`.
+ *
+ * **Purpose**: Defines interfaces: `trait Eq<A>: eq : A → Bool`.
+ * Validates methods in extended ctx (`typeParam` bound).
+ * Errors: unbound/kind/dup.
+
+ * @param state - Checker state
+ * @param name - Trait name (`"Eq"`)
+ * @param typeParam - Param (`"A"`)
+ * @param kind - Param kind
+ * @param methods - Signatures `[[name, type], ...]`
+ * @returns New state or error
+ *
+ * @example Success: Basic trait
+ * ```ts
+ * import { freshState, addType, addTraitDef, starKind, arrowType, varType, showContext } from "./typechecker.js";
+ *
+ * let state = freshState();
+ * state = addType(state, "Bool", starKind).ok;
+ * state = addTraitDef(state, "Eq", "A", starKind, [
+ *   ["eq", arrowType(varType("A"), varType("Bool"))]
+ * ]).ok;
+ * console.log(showContext(state.ctx));
+ * // "...\nTrait: Eq = TraitDef (Eq A = *\n  eq : (A → Bool))"
+ * ```
+ *
+ * @example Success: HKT trait
+ * ```ts
+ * import { freshState, addType, addTraitDef, starKind, arrowKind, arrowType, varType, showContext } from "./typechecker.js";
+ *
+ * let state = freshState();
+ * state = addTraitDef(state, "Functor", "F", arrowKind(starKind, starKind), [
+ *   ["map", arrowType(varType("F"), varType("F"))]
+ * ]).ok;
+ * console.log(showContext(state.ctx));
+ * // "...\nTrait: Functor = TraitDef (Functor F = (* → *)\n  map : (F → F))"
+ * ```
+ *
+ * @example Failure: Wrong method kind
+ * ```ts
+ * import { freshState, addTraitDef, starKind, varType, showError } from "./typechecker.js";
+ *
+ * const state = freshState();
+ * const result = addTraitDef(state, "Bad", "A", starKind, [["m", varType("A")]]);
+ * console.log("kind err:", showError(result.err));  // "Kind mismatch..."
+ * ```
+ *
+ * @example Failure: Unbound in method
+ * ```ts
+ * import { freshState, addTraitDef, starKind, varType, showError } from "./typechecker.js";
+ *
+ * const state = freshState();
+ * const result = addTraitDef(state, "Bad", "A", starKind, [["m", varType("Missing")]]);
+ * console.log("unbound:", showError(result.err));  // "Unbound identifier: Missing"
+ * ```
+ *
+ * @example Failure: Duplicate trait
+ * ```ts
+ * import { freshState, addTraitDef, starKind, arrowType, varType, showError } from "./typechecker.js";
+ *
+ * let state = freshState();
+ * state = addTraitDef(state, "Eq", "A", starKind, [["eq", arrowType(varType("A"), varType("Bool"))]]).ok;
+ * const result = addTraitDef(state, "Eq", "A", starKind, [["eq", varType("Bool")]]);
+ * console.log("duplicate:", showError(result.err));  // "Duplicate binding for 'Eq'..."
+ * ```
+ *
+ * @see {@link traitDefBinding} Creates binding
+ * @see {@link checkKind} Validates methods
+ * @see {@link addBinding} Adds to ctx
+ */
 export function addTraitDef(
   state: TypeCheckerState,
   name: string,
@@ -9205,6 +12175,61 @@ export function addTraitDef(
   return addBinding(state, binding);
 }
 
+/**
+ * Adds trait impl after validating dictionary.
+ *
+ * **Purpose**: Registers `trait` impl for `type` via `dict`.
+ * Calls `inferDictType` → `traitImplBinding` → `addBinding`.
+ * Errors: dict validation, dup.
+
+ * @param state - Checker state
+ * @param trait - Trait name (`"Eq"`)
+ * @param type - Impl type (`Int`)
+ * @param dict - Dictionary term
+ * @returns New state or error
+ *
+ * @example Success: Valid impl
+ * ```ts
+ * import { freshState, addType, addTraitDef, addTraitImpl, dictTerm, conType, lamTerm, varTerm, conTerm, starKind, arrowType, showContext } from "./typechecker.js";
+ *
+ * let state = freshState();
+ * state = addType(state, "Int", starKind).ok;
+ * state = addType(state, "Bool", starKind).ok;
+ * state = addTraitDef(state, "Eq", "A", starKind, [["eq", arrowType(conType("A"), conType("Bool"))]]).ok;
+ * const dict = dictTerm("Eq", conType("Int"), [["eq", lamTerm("x", conType("Int"), conTerm("true", conType("Bool")))]]);
+ * state = addTraitImpl(state, "Eq", conType("Int"), dict).ok;
+ * console.log(showContext(state.ctx));
+ * // "...\nImpl: Eq = dict Eq<Int> { eq = λx:Int.true }: Int"
+ * ```
+ *
+ * @example Failure: Missing method
+ * ```ts
+ * import { freshState, addType, addTraitDef, addTraitImpl, dictTerm, conType, starKind, showError } from "./typechecker.js";
+ *
+ * let state = freshState();
+ * state = addType(state, "Int", starKind).ok;
+ * state = addTraitDef(state, "Eq", "A", starKind, [["eq", conType("Bool")], ["lt", conType("Bool")]]).ok;
+ * const badDict = dictTerm("Eq", conType("Int"), [["eq", conType("Int")]]);
+ * const result = addTraitImpl(state, "Eq", conType("Int"), badDict);
+ * console.log("missing:", showError(result.err));  // "Missing method 'lt'..."
+ * ```
+ *
+ * @example Failure: Wrong dict trait/type
+ * ```ts
+ * import { freshState, addType, addTraitDef, addTraitImpl, dictTerm, conType, starKind, showError } from "./typechecker.js";
+ *
+ * let state = freshState();
+ * state = addType(state, "Int", starKind).ok;
+ * state = addTraitDef(state, "Eq", "A", starKind, [["eq", conType("Bool")]]).ok;
+ * const wrongDict = dictTerm("WrongTrait", conType("String"), [["eq", conType("Bool")]]);
+ * const result = addTraitImpl(state, "Eq", conType("Int"), wrongDict);
+ * console.log("wrong dict:", showError(result.err));  // Dict validation error
+ * ```
+ *
+ * @see {@link inferDictType} Validates dict
+ * @see {@link traitImplBinding} Creates binding
+ * @see {@link addBinding} Adds to ctx
+ */
 export function addTraitImpl(
   state: TypeCheckerState,
   trait: string,
@@ -9220,6 +12245,64 @@ export function addTraitImpl(
   return addBinding(state, binding);
 }
 
+/**
+ * Adds dictionary binding after inferring dict type.
+ *
+ * **Purpose**: Binds dict var: `let eqInt = dict Eq<Int> { ... }`.
+ * Calls `inferType(dict)` → `dictBinding`.
+ * Errors from inference/dup.
+
+ * @param state - Checker state
+ * @param name - Dict var (`"eqInt"`)
+ * @param dict - DictTerm
+ * @returns New state or error
+ *
+ * @example Success: Basic dict
+ * ```ts
+ * import { freshState, addType, addTraitDef, addDict, dictTerm, conType, lamTerm, varTerm, conTerm, starKind, arrowType, showContext } from "./typechecker.js";
+ *
+ * let state = freshState();
+ * state = addType(state, "Int", starKind).ok;
+ * state = addType(state, "Bool", starKind).ok;
+ * state = addTraitDef(state, "Eq", "A", starKind, [["eq", arrowType(conType("A"), conType("Bool"))]]).ok;
+ * const dt = dictTerm("Eq", conType("Int"), [["eq", lamTerm("x", conType("Int"), conTerm("true", conType("Bool")))]]);
+ * state = addDict(state, "eqInt", dt).ok;
+ * console.log(showContext(state.ctx));
+ * // "...\nDict: eqInt = Trait Eq : Int"
+ * ```
+ *
+ * @example Inference after add
+ * ```ts
+ * import { freshState, addType, addTraitDef, addDict, dictTerm, inferType, traitMethodTerm, conType, starKind, arrowType, lamTerm, varTerm, conTerm, showType } from "./typechecker.js";
+ *
+ * let state = freshState();
+ * state = addType(state, "Int", starKind).ok;
+ * state = addType(state, "Bool", starKind).ok;
+ * state = addTraitDef(state, "Eq", "A", starKind, [["eq", arrowType(conType("A"), conType("Bool"))]]).ok;
+ * const dt = dictTerm("Eq", conType("Int"), [["eq", lamTerm("x", conType("Int"), conTerm("true", conType("Bool")))]]);
+ * state = addDict(state, "eqInt", dt).ok;
+ *
+ * const method = traitMethodTerm({ var: "eqInt" }, "eq");
+ * const result = inferType(state, method);
+ * console.log("method:", showType(result.ok));  // "(Int → Bool)"
+ * ```
+ *
+ * @example Failure: Missing method
+ * ```ts
+ * import { freshState, addType, addTraitDef, addDict, dictTerm, conType, starKind, showError } from "./typechecker.js";
+ *
+ * let state = freshState();
+ * state = addType(state, "Int", starKind).ok;
+ * state = addTraitDef(state, "Eq", "A", starKind, [["eq", conType("Bool")], ["lt", conType("Bool")]]).ok;
+ * const badDict = dictTerm("Eq", conType("Int"), [["eq", conType("Int")]]);
+ * const result = addDict(state, "bad", badDict);
+ * console.log("missing:", showError(result.err));  // "Missing method 'lt'..."
+ * ```
+ *
+ * @see {@link inferType} Infers dict
+ * @see {@link dictBinding} Creates binding
+ * @see {@link addBinding} Adds to ctx
+ */
 export function addDict(
   state: TypeCheckerState,
   name: string,
