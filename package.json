@@ -30,7 +30,8 @@
   "scripts": {
     "build": "tsc",
     "clean": "rm -rf lib",
-    "test": "bun test"
+    "test": "bun test",
+    "publish-docs": "git subtree push --prefix docs origin gh-pages"
   },
   "keywords": [
     "system-f",
