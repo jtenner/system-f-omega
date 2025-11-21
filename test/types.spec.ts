@@ -1,6 +1,8 @@
 // ./test/types.spec.ts
 import { describe, expect, it, test } from "bun:test";
 import {
+  addEnum,
+  addType,
   applySubstitution,
   appTerm,
   appType,
@@ -86,6 +88,7 @@ import {
   type Type,
   type VariantType,
   type Worklist,
+  unwrap,
 } from "../src/types.js";
 
 function assert(condition: boolean, message: string): asserts condition {
@@ -6610,4 +6613,54 @@ test("infers parameter type from usage (pattern match on Result)", () => {
   // Return type must be the first type argument of the enum
   const okCase = (from as VariantType).variant.find(([l]) => l === "Ok")!;
   expect(typesEqual(ctx, to, okCase[1]!)).toBe(true);
+});
+
+test("folding and unfolding with List<t> via enum + normalization", () => {
+  let state = freshState();
+  state = unwrap(addType(state, "Int", starKind));
+
+  state = unwrap(
+    addEnum(
+      state,
+      "List",
+      ["T"],
+      [starKind],
+      [
+        ["Nil", tupleType([])],
+        [
+          "Cons",
+          tupleType([varType("T"), appType(conType("List"), varType("T"))]),
+        ],
+      ],
+      true,
+    ),
+  );
+
+  const listInt = appType(conType("List"), conType("Int"));
+
+  // 1. Calculate expected structural type
+  const normList = normalizeType(state, listInt);
+  if (!("mu" in normList)) throw new Error("Expected μ type");
+
+  // FIX: Remove 'new Set(...)' to allow substitution
+  const unfoldedBody = normalizeType(
+    state,
+    substituteType(normList.mu.var, normList, normList.mu.body),
+  );
+
+  // 2. Create structural term matching that type
+  const nilStructural = injectTerm("Nil", unitValue, unfoldedBody);
+
+  // 3. Fold
+  const folded = foldTerm(listInt, nilStructural);
+  const foldedType = unwrap(inferType(state, folded));
+  expect(showType(foldedType)).toBe("List<Int>");
+
+  // 4. Unfold
+  const unfolded = unfoldTerm(folded);
+  const unfoldedType = unwrap(inferType(state, unfolded));
+
+  // Verify structure matches
+  const normUnfolded = normalizeType(state, unfoldedType);
+  expect(showType(normUnfolded)).toBe(showType(unfoldedBody));
 });

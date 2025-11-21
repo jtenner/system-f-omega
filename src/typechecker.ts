@@ -4618,61 +4618,78 @@ function inferTupleType(state: TypeCheckerState, term: TupleTerm) {
   return ok(tupleType(elementTypes));
 }
 
-function inferUnfoldType(state: TypeCheckerState, term: UnfoldTerm) {
-  const termType = inferType(state, term.unfold);
-  if ("err" in termType) return termType;
+function inferUnfoldType(
+  state: TypeCheckerState,
+  term: UnfoldTerm,
+): Result<TypingError, Type> {
+  const termTypeRes = inferType(state, term.unfold);
+  if ("err" in termTypeRes) return termTypeRes;
 
-  if (!("mu" in termType.ok)) return err({ not_a_function: termType.ok });
+  const norm = normalizeType(state, termTypeRes.ok);
 
-  const unfoldedType = substituteType(
-    termType.ok.mu.var,
-    termType.ok,
-    termType.ok.mu.body,
-    new Set([termType.ok.mu.var]),
-  );
+  if (!("mu" in norm)) {
+    return err({ not_a_function: termTypeRes.ok });
+  }
 
+  // FIX: Do not pass avoidInfinite set
+  const unfoldedSubstituted = substituteType(norm.mu.var, norm, norm.mu.body);
+
+  const unfoldedType = normalizeType(state, unfoldedSubstituted);
   return ok(unfoldedType);
 }
-function inferFoldType(state: TypeCheckerState, term: FoldTerm) {
-  // Ensure the annotation is well-kinded
+
+/**
+ * Infers type of fold term: `fold[τ](e)`.
+ *
+ * **Typing rule**:
+ * - `Γ ⊢ τ` (well-kinded annotation).
+ * - `norm(τ) = μX.body` (must normalize to recursive type).
+ * - `Γ ⊢ e : body[μX.body/X]` (inner term must match unfolded body).
+ * - Result: `τ`.
+ */
+function inferFoldType(
+  state: TypeCheckerState,
+  term: FoldTerm,
+): Result<TypingError, Type> {
+  // 1. Ensure the annotation is well-kinded
   const kindRes = checkKind(state, term.fold.type);
   if ("err" in kindRes) return kindRes;
 
-  // Work on the normalized form
+  // 2. Normalize the annotation to see the structural μ-type
   const norm = normalizeType(state, term.fold.type);
 
   if (!("mu" in norm)) {
     return err({
       type_mismatch: {
-        expected: term.fold.type, // or norm, up to you
+        expected: norm,
         actual: term.fold.type,
       },
     });
   }
 
-  // Unfold norm μX. body
-  const unfoldedSubst = substituteType(
-    norm.mu.var,
-    norm, // replace X with μX.body
-    norm.mu.body,
-    new Set([norm.mu.var]),
-  );
-  const unfolded = normalizeType(state, unfoldedSubst);
+  // 3. Compute the unfolded body: body[μX.body / X]
+  //    CRITICAL: Do not pass 'avoidInfinite' set here; we WANT to substitute X.
+  const unfoldedSubstituted = substituteType(norm.mu.var, norm, norm.mu.body);
+  const unfoldedType = normalizeType(state, unfoldedSubstituted);
 
-  // Infer type of the inner term
-  const inner = inferType(state, term.fold.term);
-  if ("err" in inner) return inner;
+  // 4. Infer type of the inner term
+  const innerRes = inferType(state, term.fold.term);
+  if ("err" in innerRes) return innerRes;
 
-  if (!isAssignableTo(state, inner.ok, unfolded)) {
+  // Normalize inner type to ensure structural comparison works
+  const normInner = normalizeType(state, innerRes.ok);
+
+  // 5. Check: Inner type must be assignable to Unfolded Body
+  if (!isAssignableTo(state, normInner, unfoldedType)) {
     return err({
       type_mismatch: {
-        expected: unfolded,
-        actual: inner.ok,
+        expected: unfoldedType,
+        actual: normInner,
       },
     });
   }
 
-  // fold[τ](e) has type τ
+  // 6. Return the nominal annotation
   return ok(term.fold.type);
 }
 
