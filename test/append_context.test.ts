@@ -1,4 +1,5 @@
 // tests/append_context.test.ts
+
 import { expect, test } from "bun:test";
 import {
   addDict,
@@ -20,22 +21,20 @@ import {
   muType,
   showError,
   starKind,
-  traitLamTerm,
   tuplePattern,
   tupleType,
-  typesEqual,
   typecheck,
+  typesEqual,
+  variantPattern,
   varPattern,
   varTerm,
   varType,
   wildcardPattern,
-  variantPattern,
 } from "../src/typechecker.ts";
 import type {
   EnumDefBinding,
   Result,
   TypeBinding,
-  TypeCheckerState,
   TypingError,
 } from "../src/types.ts";
 import { freshState } from "./helpers.ts";
@@ -57,23 +56,25 @@ test("addType: basic primitive", () => {
 });
 
 test("addType: duplicate fails", () => {
-  const st1 = addType(freshState(), "Int", starKind);
-  unwrap(st1, "First Int");
-  const st2 = addType(st1.ok, "Int", starKind);
-  expect("err" in st2).toBe(true);
-  expect("duplicate_binding" in st2.err!).toBe(true);
+  const st1 = unwrap(addType(freshState(), "Int", starKind), "First Int");
+
+  const st2 = addType(st1, "Int", starKind);
+  expect("err" in st2 && "duplicate_binding" in st2.err).toBe(true);
 });
 
 test("addTypeAlias: accepts valid type alias", () => {
-  const st = addType(freshState(), "Int", starKind);
-  unwrap(st, "Int added");
-  const res = addTypeAlias(st.ok, "Id", ["A"], [starKind], varType("A"));
-  unwrap(res, "Id alias added");
-  const ta = res.ok.ctx.find(
+  const st = unwrap(addType(freshState(), "Int", starKind), "Int added.");
+
+  const res = unwrap(
+    addTypeAlias(st, "Id", ["A"], [starKind], varType("A")),
+    "Id alias added.",
+  );
+  const ta = res.ctx.find(
     (t) => "type_alias" in t && t.type_alias.name === "Id",
   );
-  expect(ta).toBeTruthy();
-  expect(ta!.type_alias.params).toStrictEqual(["A"]);
+  expect(
+    ta && "type_alias" in ta && ta.type_alias.params[0] === "A",
+  ).toBeTruthy();
 });
 
 test("addTypeAlias: rejects unbound param", () => {
@@ -105,19 +106,24 @@ test("addTypeAlias: recursive alias (mu)", () => {
 
 test("addEnum: simple Option<T>", () => {
   const st = freshState();
-  const res = addEnum(
-    st,
-    "Option",
-    ["T"],
-    [starKind],
-    [
-      ["None", tupleType([])],
-      ["Some", varType("T")],
-    ],
+  const res = unwrap(
+    addEnum(
+      st,
+      "Option",
+      ["T"],
+      [starKind],
+      [
+        ["None", tupleType([])],
+        ["Some", varType("T")],
+      ],
+    ),
+    "Option added",
   );
-  unwrap(res, "Option added");
-  expect(res.ok.ctx[0].enum!.name).toBe("Option");
-  expect(res.ok.ctx[0].enum!.recursive).toBe(false); // No self-ref
+  expect(
+    "enum" in res.ctx[0] &&
+      res.ctx[0].enum.name === "Option" &&
+      res.ctx[0].enum.recursive === false,
+  ).toBe(true);
 });
 
 test("addEnum: non-recursive explicit false", () => {
@@ -144,22 +150,24 @@ test("addEnum: non-recursive explicit false", () => {
 test("addEnum: recursive List<T> self-ref", () => {
   let st = freshState();
   st = unwrap(addType(st, "Int", starKind), "Int");
-  const res = addEnum(
-    st,
-    "List",
-    ["T"],
-    [starKind],
-    [
-      ["Nil", tupleType([])],
+  const res = unwrap(
+    addEnum(
+      st,
+      "List",
+      ["T"],
+      [starKind],
       [
-        "Cons",
-        tupleType([varType("T"), appType(conType("List"), varType("T"))]),
+        ["Nil", tupleType([])],
+        [
+          "Cons",
+          tupleType([varType("T"), appType(conType("List"), varType("T"))]),
+        ],
       ],
-    ],
-    true,
+      true,
+    ),
+    "Recursive List",
   );
-  unwrap(res, "Recursive List");
-  expect(res.ok.ctx.find((b) => "enum" in b)?.enum?.recursive).toBe(true);
+  expect(res.ctx.find((b) => "enum" in b)?.enum?.recursive).toBe(true);
 });
 
 test("addEnum: rejects wrong variant kind", () => {
@@ -170,16 +178,17 @@ test("addEnum: rejects wrong variant kind", () => {
     [starKind],
     [["Case", { lam: { var: "X", kind: starKind, body: varType("X") } }]],
   );
-  expect("err" in res).toBe(true);
-  expect("kind_mismatch" in res.err!).toBe(true);
+  expect("err" in res && "kind_mismatch" in res.err).toBe(true);
 });
 
 test("addTerm: simple constant", () => {
   let st = freshState();
   st = unwrap(addType(st, "Int", starKind), "Int");
-  const res = addTerm(st, "fortyTwo", conTerm("42", conType("Int")));
-  unwrap(res, "Constant added");
-  expect(res.ok.ctx[1].term!.name).toBe("fortyTwo");
+  const res = unwrap(
+    addTerm(st, "fortyTwo", conTerm("42", conType("Int"))),
+    "Constant added",
+  );
+  expect("term" in res.ctx[1] && res.ctx[1].term.name).toBe("fortyTwo");
 });
 
 test("addTerm: lambda", () => {
@@ -217,8 +226,7 @@ test("addTerm: match on enum", () => {
 
 test("addTerm: rejects unbound var", () => {
   const res = addTerm(freshState(), "bad", varTerm("missing"));
-  expect("err" in res).toBe(true);
-  expect("unbound" in res.err!).toBe(true);
+  expect("err" in res && "unbound" in res.err).toBe(true);
 });
 
 test("addDict: basic dictionary", () => {
@@ -246,12 +254,11 @@ test("addDict: rejects unbound trait", () => {
     ["eq", conTerm("x", conType("Int"))],
   ]);
   const res = addDict(freshState(), "bad", dt);
-  expect("err" in res).toBe(true);
-  expect("unbound" in res.err!).toBe(true);
+  expect("err" in res && "unbound" in res.err).toBe(true);
 });
 
 test("addTraitDef: basic", () => {
-  let st = unwrap(addType(freshState(), "Bool", starKind), "Bool");
+  const st = unwrap(addType(freshState(), "Bool", starKind), "Bool");
   const res = addTraitDef(st, "Eq", "A", starKind, [
     ["eq", arrowType(varType("A"), arrowType(varType("A"), varType("Bool")))],
   ]);
@@ -291,7 +298,7 @@ test("addTraitDef: rejects wrong method kind", () => {
 });
 
 test("addTraitImpl: requires trait def exists", () => {
-  let st = unwrap(addType(freshState(), "Int", starKind), "Int");
+  const st = unwrap(addType(freshState(), "Int", starKind), "Int");
   const dt = dictTerm("Eq", conType("Int"), [
     ["eq", conTerm("x", conType("Int"))],
   ]);

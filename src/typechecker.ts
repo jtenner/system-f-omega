@@ -4288,7 +4288,7 @@ export function normalizeType(
         // Hoist mu creation outside loop (reuse same muVar)
         if (def.recursive) {
           const muVar = `X${state.meta.counter++}`; // Consistent var
-          let muBody = { variant: structuralVariant } as Type;
+          const muBody = { variant: structuralVariant } as Type;
           // No need: already substituted inside fields!
           return muType(muVar, normalizeType(state, muBody, seen));
         }
