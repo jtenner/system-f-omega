@@ -16,7 +16,7 @@ import {
 } from "../src/typechecker.js";
 import {
   type Binding,
-  state,
+  freshState,
   type Type,
   type TypeCheckerState,
   type TypingError,
@@ -24,7 +24,7 @@ import {
 
 // Helpers
 function ctx(...bindings: Binding[]) {
-  return state(bindings);
+  return freshState(bindings);
 }
 
 function expectTypeEqual(state: TypeCheckerState, left: Type, right: Type) {
