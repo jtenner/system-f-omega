@@ -1,0 +1,20 @@
+{
+  "$schema": "https://typedoc.org/schema.json",
+  "entryPoints": ["./src/*.ts"],
+  "out": "docs",
+  "entryPointStrategy": "expand",
+  "readme": "./README.md",
+  "name": "TypeChecker Documentation",
+  "theme": "default",
+  "darkModeToggle": true,
+  "includeVersion": true,
+  "categorizeByGroup": true,
+  "groupOrder": [
+    "Core Types",
+    "Terms",
+    "Bindings",
+    "Errors",
+    "Constraints",
+    "Helpers"
+  ]
+}
