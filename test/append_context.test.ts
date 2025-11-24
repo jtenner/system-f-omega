@@ -32,12 +32,12 @@ import {
 } from "../src/typechecker.ts";
 import {
   type EnumDefBinding,
+  freshState,
   type Result,
   showError,
   type TypeBinding,
   type TypingError,
 } from "../src/types.ts";
-import { freshState } from "./helpers.ts";
 
 function unwrap<T>(t: Result<TypingError, T>, message: string) {
   if ("err" in t) console.log(showError(t.err));
