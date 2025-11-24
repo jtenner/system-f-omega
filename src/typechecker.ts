@@ -58,136 +58,242 @@ import type {
   Worklist,
 } from "./types.js";
 import { err, getSpineArgs, ok, showType } from "./types.js";
+
 /**
- * Creates a type equality constraint for the worklist solver.
+ * Constructs a **type equality constraint** `left = right` for the unification
+ * solver.
  *
- * **Purpose**: Adds a unification constraint `left = right` to a worklist.
- * This is the core primitive for type equivalence during inference, checking,
- * and subsumption. The solver will normalize both sides, handle meta-vars,
- * and propagate substitutions via `solveConstraints(worklist, subst)`.
- *
- * Used in:
- * - `unifyTypes()` (structural matching)
- * - `subsumes()` (subtyping)
- * - Pattern matching unification
- *
- * @param left - Left-hand type (normalized by solver)
- * @param right - Right-hand type (normalized by solver)
- * @returns Type equality constraint
- *
- * @example Basic unification
- * ```ts
- * import { typeEq, solveConstraints, freshState } from "system-f-omega";
- * import { varType } from "system-f-omega";
- *
- * const state = freshState();
- * const worklist: Constraint[] = [typeEq(varType("a"), varType("Int"))];
- * const subst = new Map<string, Type>();
- *
- * const result = solveConstraints(state, worklist, subst);
- * // subst: { "a" => Int }
+ * ```
+ * typeEq(A, Int)
+ *   → { type_eq: { left: A, right: Int } }
  * ```
  *
- * @example Recursive unification (arrow types)
+ * **What it represents**
+ * `typeEq` is a helper that wraps two types into a {@link TypeEqConstraint},
+ * which is the core unit of work for the constraint‑based unification engine.
+ *
+ * These constraints are processed by:
+ * - {@link solveConstraints}
+ * - {@link processConstraint}
+ * - {@link unifyTypes}
+ *
+ * Anytime the typechecker needs to enforce that two types must be equal—
+ * whether in function application, pattern checking, subsumption, or trait
+ * validation—it emits a `typeEq` constraint.
+ *
+ * **Why it's useful**
+ * Type equality constraints support:
+ * - incremental unification
+ * - deferred constraint solving
+ * - pairing unification with kind checking
+ * - higher‑kinded polymorphism
+ * - trait resolution
+ *
+ * They simplify inference rules: instead of immediately unifying, rules simply
+ * generate constraints, and the solver does the rest.
+ *
+ * **Related**
+ * - {@link TypeEqConstraint} — the object produced by this function
+ * - {@link KindEqConstraint} — analogous for kinds
+ * - {@link HasTypeConstraint} — deferred type check
+ * - {@link unifyTypes} — main unification algorithm
+ *
+ * **Examples**
+ *
+ * Creating a simple constraint:
  * ```ts
- * import { typeEq, arrowType, solveConstraints, freshState } from "system-f-omega";
+ * import { typeEq, varType, conType } from "system-f-omega";
+ *
+ * const c = typeEq(varType("A"), conType("Int"));
+ * // { type_eq: { left: A, right: Int } }
+ * ```
+ *
+ * Adding constraints to a worklist:
+ * ```ts
+ * import { typeEq } from "system-f-omega";
+ *
+ * const worklist = [];
+ * worklist.push(typeEq(leftType, rightType));
+ * ```
+ *
+ * Solving constraints:
+ * ```ts
+ * import {
+ *   typeEq, solveConstraints,
+ *   varType, conType, freshState
+ * } from "system-f-omega";
  *
  * const state = freshState();
- * const worklist = [typeEq(
- *   arrowType({ var: "a" }, { var: "b" }),
- *   arrowType(conType("Int"), conType("Bool"))
- * )];
  * const subst = new Map();
- * solveConstraints(state, worklist, subst);
- * // Unifies a=Int, b=Bool
- * ```
  *
- * @see {@link solveConstraints}
- * @see {@link unifyTypes}
+ * const worklist = [typeEq(varType("X"), conType("Int"))];
+ * solveConstraints(state, worklist, subst);
+ *
+ * console.log(subst.get("X"));  // { con: "Int" }
+ * ```
  */
 export const typeEq = (left: Type, right: Type): TypeEqConstraint => ({
   type_eq: { left, right },
 });
 
 /**
- * Creates a kind equality constraint for kind unification.
+ * Constructs a **kind equality constraint** `left = right` for the kind
+ * unification solver.
  *
- * **Purpose**: Ensures two kinds are equivalent (e.g., during higher-kinded
- * type application). Kinds unify structurally: `* ≡ *`, `κ₁→κ₂ ≡ κ₁'→κ₂'`.
- *
- * Less common than type equality (triggers on HKT apps like `List<Int>` where
- * `List :: * → *`).
- *
- * @param left - Left-hand kind
- * @param right - Right-hand kind
- * @returns Kind equality constraint
- *
- * @example HKT application kind check
- * ```ts
- * import { kindEq, arrowKind, starKind, solveConstraints, freshState } from "system-f-omega";
- *
- * const state = freshState();
- * const worklist: Constraint[] = [kindEq(
- *   arrowKind(starKind, starKind),  // * → *
- *   arrowKind(starKind, starKind)   // Matches
- * )];
- * // Processes via unifyKinds() → ok(null)
+ * ```
+ * kindEq(*, * → *)
+ *   → { kind_eq: { left: *, right: (* → *) } }
  * ```
  *
- * @example Kind mismatch (fails)
- * ```ts
- * import { kindEq, starKind, arrowKind, solveConstraints, freshState } from "system-f-omega";
+ * **What it represents**
+ * `kindEq` wraps two kinds into a {@link KindEqConstraint}, which expresses the
+ * requirement:
  *
- * const state = freshState();
- * const worklist = [kindEq(starKind, arrowKind(starKind, starKind))];
- * const result = solveConstraints(state, worklist);
- * // err: { kind_mismatch: { expected: *, actual: (* → *) } }
+ * > “These two kinds must be equal.”
+ *
+ * These constraints are consumed by the solver (via {@link solveConstraints})
+ * and unified structurally using {@link unifyKinds}.
+ *
+ * Kind equality constraints arise when:
+ * - Checking type application (`F<T>`)
+ * - Verifying type lambda binders (`ΛF::κ. e`)
+ * - Instantiating polymorphic types (`∀A::κ. τ`)
+ * - Validating enum/alias definitions
+ * - Ensuring record/variant fields are of kind `*`
+ *
+ * **Why it's useful**
+ * `kindEq` supports:
+ * - Higher‑kinded polymorphism (System F‑ω)
+ * - Reasoning about type constructors (`* → *`, `(* → *) → *`, ...)
+ * - Delayed kind checking (paired with {@link HasKindConstraint})
+ * - Ensuring type application respects arity and expected shapes
+ *
+ * It allows kind checking to work incrementally rather than requiring full
+ * information up‑front.
+ *
+ * **Related**
+ * - {@link KindEqConstraint} — the object this function produces
+ * - {@link unifyKinds} — actual kind unification logic
+ * - {@link checkAppKind} — generates kindEq constraints for type application
+ * - {@link HasKindConstraint} — deferred kind checking constraint
+ *
+ * **Examples**
+ *
+ * Creating a simple kind equality:
+ * ```ts
+ * import { kindEq, starKind } from "system-f-omega";
+ *
+ * const c = kindEq(starKind, starKind);
+ * // { kind_eq: { left: *, right: * } }
  * ```
  *
- * @see {@link solveConstraints}
- * @see {@link checkAppKind}
+ * Adding a kind constraint to a worklist:
+ * ```ts
+ * const worklist = [];
+ * worklist.push(kindEq(starKind, starKind));
+ * ```
+ *
+ * Solving kind constraints:
+ * ```ts
+ * import {
+ *   solveConstraints, kindEq,
+ *   starKind, arrowKind, freshState, showError
+ * } from "system-f-omega";
+ *
+ * const state = freshState();
+ *
+ * const eq = kindEq(starKind, starKind); // valid
+ * console.log("ok" in solveConstraints(state, [eq]));  // true
+ *
+ * const bad = kindEq(starKind, arrowKind(starKind, starKind)); // mismatch
+ * const r = solveConstraints(state, [bad]);
+ * console.log(showError(r.err)); // "Kind mismatch: Expected: * Actual: (* → *)"
+ * ```
  */
 export const kindEq = (left: Kind, right: Kind): KindEqConstraint => ({
   kind_eq: { left, right },
 });
 
 /**
- * Creates a "has kind" constraint to defer kind checking.
+ * Creates a **deferred kind-checking constraint** of the form:
  *
- * **Purpose**: Schedules `Γ ⊢ ty : kind` for later resolution. Used when a type's
- * well-formedness is needed but context/metas aren't ready (e.g., during
- * unification of polymorphic types, or checking alias bodies).
+ * ```
+ * Γ ⊢ ty : kind
+ * ```
  *
- * The solver calls `checkKind(state, ty)` and adds a follow-up `kindEq` if needed.
+ * wrapped as a {@link HasKindConstraint}.
  *
- * @param ty - Type to check
- * @param kind - Expected kind
- * @param state - Checker state (context + metas)
- * @returns Has-kind constraint
+ * **What it represents**
+ * `hasKind` packages a request to check that:
  *
- * @example Defer kind check during unification
+ * > “Type `ty` has kind `kind`, using the provided `state`.”
+ *
+ * Instead of performing the kind check immediately, this constraint is added to
+ * the solver’s worklist and processed later by {@link processConstraint} inside
+ * {@link solveConstraints}.
+ *
+ * This allows kind checking to be delayed until:
+ * - meta‑variables have been solved
+ * - type applications have normalized
+ * - alias/enum expansions have settled
+ *
+ * **Why it's useful**
+ * Higher‑kinded type systems (like System F‑ω) often require *deferred*
+ * constraints:
+ *
+ * - Checking the kind of a type may depend on earlier unification steps
+ * - Some kinds only become known after solving type equations
+ * - Kind checking must wait until certain type forms have normalized
+ *
+ * `hasKind` allows the typechecker to queue these checks safely.
+ *
+ * **Where it is used**
+ * - Generated during kind checking for type applications
+ * - Used in polymorphic and higher‑kinded inference paths
+ * - May be emitted by subsumption and alias expansion logic
+ * - Ultimately handled by {@link processConstraint}
+ *
+ * **Related**
+ * - {@link HasKindConstraint} — the constraint object produced
+ * - {@link kindEq} — added after a deferred kind check succeeds
+ * - {@link checkKind} — actual kind inference/checking logic
+ * - {@link solveConstraints} — solves deferred checks
+ *
+ * **Examples**
+ *
+ * Creating a simple deferred kind check:
  * ```ts
- * import { hasKind, solveConstraints, freshState, lamType, starKind } from "system-f-omega";
+ * import { hasKind, conType, starKind, freshState } from "system-f-omega";
  *
  * const state = freshState();
- * const worklist: Constraint[] = [hasKind(
- *   lamType("X", starKind, varType("X")),  // λX::*.X : * → *
- *   starKind
- * )];
- * solveConstraints(state, worklist);
- * // Triggers checkKind(lam...) → adds kindEq(*→*, *) → fails safely
+ * const constraint = hasKind(conType("Int"), starKind, state);
+ * // { has_kind: { ty: Int, kind: *, state } }
  * ```
  *
- * @example Valid HKT kinding
+ * Adding it to a solver worklist:
  * ```ts
- * import { hasKind, appType, conType, starKind, solveConstraints } from "system-f-omega";
- * // Assumes List :: * → * in ctx
- * const worklist = [hasKind(appType(conType("List"), conType("Int")), starKind)];
- * // checkKind(List<Int>) → * ✓
+ * import { hasKind, solveConstraints, starKind, conType, freshState } from "system-f-omega";
+ *
+ * const state = freshState();
+ * const worklist = [hasKind(conType("Int"), starKind, state)];
+ *
+ * console.log("ok" in solveConstraints(state, worklist));  // true
  * ```
  *
- * @see {@link checkKind}
- * @see {@link solveConstraints}
+ * A failing deferred kind check:
+ * ```ts
+ * import {
+ *   hasKind, lamType, starKind, arrowKind,
+ *   freshState, solveConstraints, showError
+ * } from "system-f-omega";
+ *
+ * const state = freshState();
+ * const ty = lamType("A", starKind, { var: "A" });  // * → *
+ *
+ * const res = solveConstraints(state, [hasKind(ty, starKind, state)]);
+ * console.log(showError(res.err));
+ * // Kind mismatch: Expected: * Actual: (* → *)
+ * ```
  */
 export const hasKind = (
   ty: Type,
@@ -198,42 +304,100 @@ export const hasKind = (
 });
 
 /**
- * Creates a "has type" constraint to defer type checking/inference of a subterm.
+ * Creates a **deferred type‑checking constraint**:
  *
- * **Purpose**: Schedules `Γ ⊢ term : ty` (via `inferType` or `checkType`).
- * Used in bidirectional checking when a subterm's type needs resolution but
- * context isn't finalized (e.g., during let-bindings, trait method checking,
- * or dictionary validation).
+ * ```
+ * Γ ⊢ term : ty
+ * ```
  *
- * Triggers `inferType(state, term)` → adds `typeEq(result, ty)`.
+ * wrapped as a {@link HasTypeConstraint}.
  *
- * @param term - Term to type
- * @param ty - Expected type
- * @param state - Checker state
- * @returns Has-type constraint
+ * **What it represents**
+ * `hasType` tells the constraint solver:
  *
- * @example Defer subterm checking in let-binding
+ * > “Later, infer the type of `term` in `state`, and unify it with `ty`.”
+ *
+ * Instead of immediately calling {@link inferType}, the typechecker delays the
+ * operation, placing a constraint into the worklist.  
+ * This is essential when the type of a subterm depends on unification still in
+ * progress.
+ *
+ * **Why it's useful**
+ * Deferred type checking enables:
+ *
+ * - **Constraint‑based inference** (collect constraints first, solve later)  
+ * - Handling complex expressions such as:
+ *   - dictionaries and trait method checking  
+ *   - let‑bindings  
+ *   - match branches  
+ *   - polymorphic instantiation  
+ * - Avoiding premature errors when meta‑variables (`?N`) are unresolved  
+ * - Ordering‑independent unification
+ *
+ * This mechanism is especially important for features like:
+ * - bounded polymorphism (trait constraints)  
+ * - higher‑rank type inference  
+ * - dictionary validation (`inferDictType`)
+ *
+ * **How it is processed**
+ * In {@link processConstraint}, the solver:
+ * 1. Calls `inferType(state, term)` to synthesize a type  
+ * 2. Adds a {@link TypeEqConstraint} equating the inferred type with `ty`  
+ * 3. Continues solving the worklist recursively  
+ *
+ * **Where it is used**
+ * - Dictionary checking in {@link inferDictType}  
+ * - Let‑binding checking  
+ * - Pattern checking and variant handling  
+ - Trait method resolution  
+ - Subsumption and general type checking
+ *
+ * **Related**
+ * - {@link HasTypeConstraint} — the structure produced  
+ * - {@link TypeEqConstraint} — added after deferred inference  
+ * - {@link inferType} — performs actual synthesis  
+ * - {@link solveConstraints} — processes deferred operations  
+ *
+ * **Examples**
+ *
+ * Creating a deferred type check:
  * ```ts
- * import { hasType, solveConstraints, freshState, lamTerm } from "system-f-omega";
- * import { conType } from "system-f-omega";
+ * import { hasType, lamTerm, varTerm, conType, freshState } from "system-f-omega";
  *
  * const state = freshState();
- * const worklist: Constraint[] = [hasType(
- *   lamTerm("x", conType("Int"), { var: "x" }),  // λx:Int.x
- *   { arrow: { from: conType("Int"), to: conType("Int") } }
- * )];
- * solveConstraints(state, worklist);
- * // infers (Int → Int) → typeEq ✓
+ * const term = lamTerm("x", conType("Int"), varTerm("x"));
+ *
+ * const constraint = hasType(term, conType("Bool"), state);
+ * // { has_type: { term: λx:Int.x, ty: Bool, state } }
  * ```
  *
- * @example Trait method validation
+ * Solving a deferred check (this will fail):
  * ```ts
- * // Inside inferDictType: defer each method impl check
- * worklist.push(hasType(methodImpl, expectedMethodType));
+ * import { solveConstraints, hasType, conType, freshState, showError } from "system-f-omega";
+ *
+ * const state = freshState();
+ * const result = solveConstraints(
+ *   state,
+ *   [hasType({ var: "x" }, conType("Int"), state)],
+ *   new Map()
+ * );
+ *
+ * console.log(showError(result.err));  // likely "Unbound identifier: x"
  * ```
  *
- * @see {@link inferType}
- * @see {@link solveConstraints}
+ * A valid deferred check:
+ * ```ts
+ * import {
+ *   hasType, solveConstraints, lamTerm,
+ *   varTerm, conType, freshState
+ * } from "system-f-omega";
+ *
+ * const state = freshState();
+ * const id = lamTerm("x", conType("Int"), varTerm("x"));
+ *
+ * const res = solveConstraints(state, [hasType(id, conType("Int → Int"), state)], new Map());
+ * console.log("ok" in res);  // true
+ * ```
  */
 export const hasType = (
   term: Term,
@@ -243,71 +407,135 @@ export const hasType = (
   has_type: { term, ty, state },
 });
 
-/** Infer mode used for the inferTypeWithMode function. */
+/**
+ * The mode flag used by {@link inferTypeWithMode} to control **bidirectional**
+ * typechecking:
+ *
+ * - `{ infer: null }` → *infer mode*  (`Γ ⊢ e ⇒ τ`)
+ * - `{ check: Type }` → *check mode*  (`Γ ⊢ e ⇐ τ`)
+ *
+ * **What it represents**
+ * `InferMode` distinguishes between:
+ *
+ * 1. **Inference mode**
+ *    The typechecker attempts to *synthesize* the type of an expression with no
+ *    prior expectation. This is the default mode.
+ *
+ * 2. **Checking mode**
+ *    The typechecker verifies that an expression has a *specific* type supplied
+ *    by the caller.
+ *    Useful for lambdas, annotated expressions, pattern bodies, and trait
+ *    applications.
+ *
+ * This dual‑mode system enables a more expressive and predictable typechecker
+ * (a standard technique in bidirectional type systems).
+ *
+ * **Why it's useful**
+ * Bidirectional typing gives:
+ * - clearer inference for lambdas (whose types cannot be inferred blindly)
+ * - better error messages
+ * - more flexible polymorphism and trait‑bounded checking
+ * - compatibility with partially annotated code
+ *
+ * `InferMode` is a lightweight and convenient way to pass this mode between
+ * functions.
+ *
+ * **Where it's used**
+ * - {@link inferTypeWithMode} — dispatches to `inferType` or `checkType`
+ * - Trait apps, lambdas, type app/lambda, and other expression forms
+ *
+ * **Related**
+ * - {@link inferType} — synthesizes a type
+ * - {@link checkType} — validates against an expected type
+ * - {@link Type} — expected type for check mode
+ *
+ * **Examples**
+ *
+ * Using inference mode:
+ * ```ts
+ * import { inferTypeWithMode, inferMode, lamTerm, varTerm, conType } from "system-f-omega";
+ *
+ * const id = lamTerm("x", conType("Int"), varTerm("x"));
+ * const result = inferTypeWithMode(state, id, inferMode);
+ * // infers: (Int → Int)
+ * ```
+ *
+ * Using check mode:
+ * ```ts
+ * import { inferTypeWithMode, checkMode, arrowType, conType } from "system-f-omega";
+ *
+ * const expected = arrowType(conType("Int"), conType("Bool"));
+ * const result = inferTypeWithMode(state, someTerm, checkMode(expected));
+ * ```
+ *
+ * Pattern:
+ * ```ts
+ * const mode: InferMode = { check: conType("Int") };
+ * ```
+ */
 export type InferMode =
-  | { infer: null } // Infer type arguments
-  | { check: Type }; // Check against expected type
+  | { infer: null } // Synthesize a type
+  | { check: Type }; // Check against an expected type
 
+/**
+ * A convenient constant representing **inference mode**.
+ */
 export const inferMode = { infer: null };
+
+/**
+ * A helper for constructing **checking mode** with an expected type.
+ *
+ * @param check - The type the expression must be checked against.
+ * @returns An {@link InferMode} value indicating check mode.
+ */
 export const checkMode = (check: Type) => ({ check });
 
 /**
- * Bidirectional type inference/checking dispatcher.
+ * Bidirectional type inference **dispatcher**.
  *
- * **Purpose**: Unified entrypoint for **bidirectional type checking**.
- * - **Infer mode** (`{ infer: null }`): Synthesizes type via `inferType` (`Γ ⊢ e ⇒ τ`).
- * - **Check mode** (`{ check: Type }`): Validates against expected type via `checkType` (`Γ ⊢ e ⇐ τ`), returning inferred/resolved type.
+ * This function selects between:
  *
- * Returns `Type` in **both modes** (unifies APIs). Handles polymorphism, traits, and constraints seamlessly.
- * Central to the typechecker — used in applications, lets, trait methods, pattern branches, etc.
+ * - **Inference mode** (`{ infer: null }`)
+ *   Compute a type for the term with no prior expectation
+ *   → `inferType(state, term)`
  *
- * **Why bidirectional?**
- * - **Robust**: Infers when possible, checks when expected (e.g., lambdas, records).
- * - **Precise errors**: Checking gives better diagnostics than pure inference.
- * - **Efficient**: Avoids unnecessary generalization.
+ * - **Checking mode** (`{ check: expectedType }`)
+ *   Verify that the term has the given expected type
+ *   → `checkType(state, term, expectedType)`
  *
- * @param state - Type checker state (context + meta-vars)
- * @param term - Term to type
- * @param mode - Inference mode: `{ infer: null }` or `{ check: Type }`
- * @returns Inferred/checked type, or error (mismatch, unbound, etc.)
+ * It always returns a **final Type** (not a `{ type, subst }` pair), so both
+ * modes have a consistent public interface.
  *
- * @example Inference mode (synthesize type)
+ * Why this exists:
+ * - Bidirectional typing improves error messages (especially for lambdas)
+ * - Checking mode allows the caller to guide inference
+ * - Inference mode keeps ordinary expressions annotation‑free
+ *
+ * Related:
+ * - {@link InferMode} — mode union type
+ * - {@link inferMode} / {@link checkMode} — constructors
+ * - {@link inferType} — synthesis
+ * - {@link checkType} — checking
+ * - {@link TypeCheckerState}, {@link Term}, {@link Type}
+ *
+ * @param state - The current typechecker state (environment + meta‑vars)
+ * @param term - The expression whose type we want to infer or check
+ * @param mode - Either `{ infer: null }` or `{ check: Type }`
+ *
+ * @returns A type for `term`, or a {@link TypingError}
+ *
+ * @example Inferring a type
  * ```ts
- * import { inferTypeWithMode, freshState, lamTerm, conType, varTerm } from "system-f-omega";
- *
- * const state = freshState();
- * const identity = lamTerm("x", conType("Int"), varTerm("x"));
- * const result = inferTypeWithMode(state, identity, { infer: null });
- * console.log(showType(result.ok));  // (Int → Int)
+ * const result = inferTypeWithMode(state, lamTerm("x", Int, varTerm("x")), inferMode);
+ * // => ok(Int → Int)
  * ```
  *
- * @example Checking mode (validate against expected)
+ * @example Checking a type
  * ```ts
- * import { inferTypeWithMode, arrowType, freshState } from "system-f-omega";
- *
- * const state = freshState();
- * const expected = arrowType(conType("Int"), conType("Bool"));
- * const result = inferTypeWithMode(state, identity, { check: expected });
- * // ok({ type: (Int → Bool), subst: Map }) → returns (Int → Bool)
- * // or err(type_mismatch) if incompatible
+ * const expected = arrowType(Int, Bool);
+ * const result = inferTypeWithMode(state, someTerm, checkMode(expected));
+ * // => ok(expected) or an error if the term doesn’t match
  * ```
- *
- * @example Error case (mismatch in check mode)
- * ```ts
- * import { inferTypeWithMode, freshState, conTerm } from "system-f-omega";
- * import { arrowType, conType } from "system-f-omega";
- *
- * const state = freshState();
- * const num = conTerm("42", conType("Int"));
- * const result = inferTypeWithMode(state, num, {
- *   check: arrowType(conType("Int"), conType("Bool"))
- * });
- * // err: { type_mismatch: { expected: (Int → Bool), actual: Int } }
- * ```
- *
- * @see {@link inferType} Synthesis-only (infer mode)
- * @see {@link checkType} Analysis-only (check mode)
- * @see {@link InferMode} Mode discriminator
  */
 export function inferTypeWithMode(
   state: TypeCheckerState,
@@ -324,145 +552,149 @@ export function inferTypeWithMode(
 }
 
 /**
- * The base kind `*` representing concrete types.
+ * The **base kind** `*` (“star kind”) used for ordinary, fully‑applied types.
  *
- * **Purpose**: The terminal kind in the kind lattice. All value-habiting types
- * have kind `*`: `Int :: *`, `Bool :: *`, `List<Int> :: *`. Higher-kinded types
- * (type constructors) use arrow kinds: `List :: * → *`.
+ * What it represents:
+ * - `*` classifies **value‑level types** — types that describe actual runtime
+ *   values.
+ * - Examples:
+ *   - `Int :: *`
+ *   - `Bool :: *`
+ *   - `List<Int> :: *`
  *
- * **Usage**:
- * - Type bindings: `addType(state, "Int", starKind)`
- * - Polymorphic binders: `forallType("a", starKind, ...)`, `tylamTerm("a", starKind, ...)`
- * - Kind unification/app checking: `List<Int>` requires `List :: * → *`
+ * Why it's important:
+ * - `*` is the **terminal kind** in the kind system.
+ * - Any type you can store in a variable, pass to a function, or return as a
+ *   result must have kind `*`.
+ * - Higher‑kinded types (like `List :: * → *`) are built *from* `*` using
+ *   {@link arrowKind}.
  *
- * @example Type constructor declaration
+ * Used in:
+ * - Type declarations: `addType(state, "Int", starKind)`
+ * - Type parameter binders: `forallType("A", starKind, ...)`
+ * - Kind checking: ensuring a type is concrete before using it as a value
+ *
+ * Related:
+ * - {@link Kind} — the full kind grammar
+ * - {@link arrowKind} — constructs higher‑kinded arrows
+ * - {@link checkKind} — verifies kinds during typechecking
+ *
+ * @example Declaring a primitive type:
  * ```ts
- * import { addType, starKind, arrowKind } from "system-f-omega";
- *
- * // Int :: *
- * addType(freshState(), "Int", starKind);
- *
- * // List :: * → *
- * addType(freshState(), "List", arrowKind(starKind, starKind));
+ * addType(state, "Bool", starKind);  // Bool :: *
  * ```
  *
- * @example Polymorphic lambda
+ * @example As a polymorphic binder:
  * ```ts
- * import { tylamTerm, starKind } from "system-f-omega";
- *
- * const id = tylamTerm("a", starKind, lamTerm("x", { var: "a" }, { var: "x" }));
- * // Λa::*. (a → a)
+ * const id = forallType("A", starKind, arrowType(varType("A"), varType("A")));
+ * // ∀A::*. A → A
  * ```
- *
- * @see {@link arrowKind}
- * @see {@link addType}
- * @see {@link checkKind}
  */
 export const starKind: Kind = { star: null };
 
 /**
- * The bottom type `⊥` (never type) — inhabits no values.
+ * The **bottom type** `⊥` (read: “bottom”), represented as `neverType`.
  *
- * **Purpose**: Represents the empty type (uninhabited). Key properties:
- * - **Subtyping**: `⊥ <: τ` for *any* `τ` (anything matches bottom).
- * - **Unification**: `⊥ ~ τ` succeeds if `τ :: *` (but `τ ~ ⊥` only if `τ = ⊥`).
- * - **Uses**: Unreachable branches, empty variants (`<>`), cycle detection fallback,
- *   error recovery in inference.
+ * What it represents:
+ * - A type with **no possible values**.
+ * - It describes computations that never return, unreachable code paths, or
+ *   logically impossible values.
  *
- * **Never confuses with `void`**: `⊥` is a *type*, not a value (no `neverValue`).
+ * Analogues in other languages:
+ * - Haskell: `Void`
+ * - TypeScript: `never`
+ * - Scala: `Nothing`
  *
- * @example Subtyping (⊥ matches anything)
+ * Why it’s useful:
+ * - **Subtyping**:
+ *   `⊥ <: τ` for *any* type `τ`.
+ *   This means a program can pretend that bottom has *any* type—useful for code
+ *   paths that cannot occur.
+ *
+ * - **Unification** (special rule):
+ *   - `⊥ ~ τ` succeeds whenever `τ :: *`
+ *   - but `τ ~ ⊥` only succeeds if `τ` is also `⊥`
+ *   This asymmetry maintains type safety during inference.
+ *
+ * - **Pattern matching**:
+ *   A pattern scrutinee of type `⊥` is considered exhaustive—no cases can occur.
+ *
+ * - **Normalization fallback**:
+ *   - Empty variants (e.g., `< >`) normalize to `⊥`
+ *   - Detecting impossible recursive types collapses to `⊥`
+ *
+ * Related:
+ * - {@link isBottom} — checks if a type normalizes to `⊥`
+ * - {@link unifyTypes} — handles bottom‑type unification rules
+ * - {@link Type} — includes `NeverType` as one of its forms
+ *
+ * @example Direct bottom:
  * ```ts
- * import { neverType, isBottom, isAssignableTo, freshState } from "system-f-omega";
- * import { conType } from "system-f-omega";
- *
- * const state = freshState();
- * isBottom(state, neverType);           // true
- * isAssignableTo(state, neverType, conType("Int"));  // true (⊥ <: Int)
+ * console.log(showType(neverType));  // "⊥"
  * ```
  *
- * @example Unification behavior
+ * @example Subtyping:
  * ```ts
- * import { unifyTypes, neverType, freshState } from "system-f-omega";
- * import { conType } from "system-f-omega";
- *
- * const state = freshState();
- * unifyTypes(state, neverType, conType("Int"), [], new Map());  // ok(null)
- * unifyTypes(state, conType("Int"), neverType, [], new Map());  // err(mismatch)
+ * isAssignableTo(state, neverType, conType("Int"));  // true
  * ```
  *
- * @example Empty variant (unreachable case)
+ * @example Normalization of empty variant:
  * ```ts
- * import { variantType } from "system-f-omega";
- *
- * const emptyVariant = variantType([]);  // < > :: ⊥
- * // normalizeType(state, emptyVariant) → { never: null }
+ * const empty = variantType([]);       // < >
+ * const norm = normalizeType(state, empty);
+ * console.log(isBottom(state, norm));  // true
  * ```
- *
- * @see {@link isBottom}
- * @see {@link isAssignableTo}
- * @see {@link subsumes}
  */
 export const neverType = { never: null };
 
 /**
- * Merges local and global substitutions, with **local shadowing global**.
+ * Merges two **type substitutions** into a single substitution map.
  *
- * **Purpose**: Combines substitutions from nested inference/checking scopes.
- * - **Globals first**: Persistent solutions (`meta.solutions`).
- * - **Local overrides**: Temporary bindings from current `solveConstraints` take precedence.
+ * What it represents:
+ * - During type inference, constraints are solved in **layers**:
+ *   - **Global substitutions** come from long‑lived meta‑variable solutions
+ *     (`state.meta.solutions`)
+ *   - **Local substitutions** come from solving a specific unification or
+ *     checking task (e.g. inside `checkType` or `inferAppType`)
  *
- * Used after constraint solving to propagate solutions upward:
- * - `checkType` → `mergeSubsts(solveRes.ok, bodyCheckRes.ok.subst)`
- * - Trait methods, pattern branches, let-bindings.
- * Ensures meta-vars solved locally update globals without losing prior solutions.
+ * `mergeSubsts` combines these two environments so downstream code sees the
+ * most up‑to‑date solutions.
  *
- * **Key invariant**: Local subst **never conflicts** with globals (unification ensures compatibility).
+ * Merge rule:
+ * - **Local overrides global**: if both maps bind the same variable name,
+ *   the local binding wins. This is safe because unification guarantees
+ *   consistency between them.
  *
- * @param local - Temporary substitution (higher precedence)
- * @param globals - Persistent/global solutions (base layer)
- * @returns Merged `Map<string, Type>` (local shadows globals)
+ * Why it's useful:
+ * - Ensures new solutions discovered in a sub‑computation propagate upward
+ * - Prevents stale solutions from shadowing newer ones
+ * - Used during lambda checking, application checking, and match branches
  *
- * @example Basic merge (local shadows)
+ * Related:
+ * - {@link Substitution} — the map structure being merged
+ * - {@link solveConstraints} — produces local substitutions
+ * - {@link applySubstitution} — consumes merged substitution maps
+ *
+ * @param local - A substitution produced by the current inference/checking step
+ * @param globals - The persistent substitution map (e.g. `state.meta.solutions`)
+ *
+ * @returns A new substitution map where local solutions override global ones
+ *
+ * @example Local override:
  * ```ts
- * import { mergeSubsts } from "system-f-omega";
- * import { varType, conType } from "system-f-omega";
- *
  * const globals = new Map([["a", conType("Int")]]);
- * const local = new Map([["a", conType("Bool")], ["b", conType("String")]]);
+ * const local   = new Map([["a", conType("Bool")], ["b", conType("String")]]);
  *
  * const merged = mergeSubsts(local, globals);
- * console.log(merged.get("a"));  // Bool (local wins!)
- * console.log(merged.get("b"));  // String
+ * console.log(showType(merged.get("a"))); // "Bool" (local wins)
+ * console.log(showType(merged.get("b"))); // "String"
  * ```
  *
- * @example Real unification flow (checkType)
+ * @example No conflicts:
  * ```ts
- * import { mergeSubsts, solveConstraints, freshState, typeEq } from "system-f-omega";
- * import { varType } from "system-f-omega";
- *
- * const state = freshState();
- * const worklist = [typeEq({ var: "a" }, { var: "b" })];
- * const localSubst = new Map();  // From solveConstraints(worklist)
- * solveConstraints(state, worklist, localSubst);  // { "a" => { var: "b" } }
- *
- * const globals = state.meta.solutions;  // { "b" => Int }
- * const merged = mergeSubsts(localSubst, globals);  // { "a" => Int, "b" => Int }
+ * const merged = mergeSubsts(local, new Map());
+ * console.log(merged === local); // false, but same contents
  * ```
- *
- * @example Empty cases
- * ```ts
- * const emptyLocal = new Map();
- * const merged1 = mergeSubsts(emptyLocal, globals);  // === globals
- *
- * const emptyGlobal = new Map();
- * const merged2 = mergeSubsts(local, emptyGlobal);   // === local
- * ```
- *
- * @see {@link solveConstraints} Produces local subst
- * @see {@link checkType} Uses merge for nested results
- * @see {@link applySubstitution} Consumes merged subst
- * @see {@link Substitution} `Map<string, Type>`
  */
 export function mergeSubsts(
   local: Substitution,
@@ -480,55 +712,55 @@ export function mergeSubsts(
 export const isMetaVar = (type: Type): type is MetaType => "evar" in type;
 
 /**
- * Creates a fresh existential meta-variable `?N` for type inference.
+ * Creates a **fresh meta‑variable** (existential type variable) for type inference.
  *
- * **Purpose**: Generates unification variables during inference/checking.
- * - **Unbound metas**: Represent unknowns solved later by `solveConstraints`.
- * - **Kind-tracked**: `env.kinds.set(name, kind)` enables `checkKind(?N)`.
- * - **Counter-based**: Sequential `?0`, `?1`, ... (avoids clashes).
+ * What it represents:
+ * - A meta‑variable `?N` stands for an **unknown type** that will be solved later.
+ * - Meta‑vars behave like placeholders created during:
+ *   - instantiating polymorphic types (`∀A. τ`)
+ *   - inferring lambda argument types
+ *   - solving trait constraints
+ *   - unifying partially known types
  *
- * Core to **algorithm W/HM-style inference**: Instantiate foralls, defer decisions.
- * Used everywhere: polymorphism (`instantiateType`), app checking, pattern matching.
+ * How it works:
+ * - Allocates a new name like `?0`, `?1`, `?2`, … using a counter stored in
+ *   the {@link MetaEnv}.
+ * - Records the meta‑variable’s **kind** in `env.kinds`, so later kind checking
+ *   knows what kind of type it must unify with.
+ * - The new meta‑var is added *unsolved*. Its eventual solution will be placed
+ *   in `env.solutions`.
  *
- * @param env - Meta environment (`state.meta`) with counter + solutions
- * @param kind - Kind of meta-var (defaults `*` for concrete types)
- * @returns Fresh `{ evar: "?N" }`
+ * Why it’s needed:
+ * - Higher‑order type inference (System F‑ω) relies heavily on fresh unknowns.
+ * - Meta‑vars allow the typechecker to proceed before all type information
+ *   is known. Unification and constraint solving later fill in the correct types.
+ * - This is the core mechanism behind Hindley–Milner‑style inference and
+ *   polymorphic instantiation.
  *
- * @example Basic inference variable
+ * Related:
+ * - {@link MetaType} — representation of a meta‑var
+ * - {@link MetaEnv} — environment holding counters, kinds, and solutions
+ * - {@link solveMetaVar} — assigns a concrete type to a meta‑var
+ * - {@link instantiateType} — uses fresh meta‑vars to instantiate foralls
+ *
+ * @param env - The meta‑environment that stores the counter, kind map, and solutions
+ * @param kind - The kind of this meta‑variable (defaults to `*`)
+ *
+ * @returns A new unsolved meta‑variable `{ evar: "?N" }`
+ *
+ * @example Creating a fresh meta‑variable:
  * ```ts
- * import { freshMetaVar, freshState } from "system-f-omega";
- * import { starKind } from "system-f-omega";
- *
  * const state = freshState();
- * const meta = freshMetaVar(state.meta, starKind);
- * console.log(meta);  // { evar: "?0" }
- * console.log(state.meta.kinds.get("?0"));  // { star: null }
+ * const mv = freshMetaVar(state.meta);
+ * console.log(mv);  // { evar: "?0" }
+ * console.log(state.meta.kinds.get("?0")); // "*"
  * ```
  *
- * @example HKT meta-variable
+ * @example Higher‑kinded meta‑var:
  * ```ts
- * import { freshMetaVar, freshState, arrowKind } from "system-f-omega";
- * import { starKind } from "system-f-omega";
- *
- * const state = freshState();
- * const hktMeta = freshMetaVar(state.meta, arrowKind(starKind, starKind));  // ?1 :: * → *
- * // Used for: inferType(app(List, Int)) → List<Int> where List = ?1
+ * const mv = freshMetaVar(state.meta, arrowKind(starKind, starKind));
+ * // mv :: * → *
  * ```
- *
- * @example Polymorphism instantiation
- * ```ts
- * import { freshMetaVar, freshState, forallType } from "system-f-omega";
- * import { starKind, varType } from "system-f-omega";
- *
- * const state = freshState();
- * const poly = forallType("a", starKind, arrowType(varType("a"), varType("a")));
- * const freshA = freshMetaVar(state.meta);  // ?0
- * // instantiateType(poly) → ?0 → ?0 (id specialized)
- * ```
- *
- * @see {@link solveMetaVar} Solves `?N := τ`
- * @see {@link MetaEnv} Tracks `counter`, `kinds`, `solutions`
- * @see {@link instantiateType} Uses for forall instantiation
  */
 export function freshMetaVar(env: MetaEnv, kind: Kind = starKind): MetaType {
   const name = `?${env.counter++}`;
@@ -537,65 +769,56 @@ export function freshMetaVar(env: MetaEnv, kind: Kind = starKind): MetaType {
 }
 
 /**
- * Checks if a type normalizes to the bottom type `⊥` (never).
+ * Checks whether a type **normalizes to the bottom type** `⊥` (never type).
  *
- * **Purpose**: Detects uninhabited types for:
- * - **Subtyping**: `⊥ <: τ` always holds (`isAssignableTo`).
- * - **Unification**: `⊥ ~ τ` succeeds if `τ :: *`.
- * - **Exhaustiveness**: Empty variants/matches → `⊥`.
- * - **Cycles**: Infinite normalization → `⊥` fallback.
+ * What it does:
+ * - Normalizes the input type (expanding aliases, enums, μ‑types).
+ * - Returns `true` if the result is the bottom/never type.
  *
- * Normalizes first (`normalizeType(state, type)`), then checks `"never" in ty`.
+ * Why it matters:
+ * - `⊥` represents an *uninhabited* or *impossible* type.
+ * - Used in subtyping (`⊥ <: τ`), pattern exhaustiveness, and unification rules.
  *
- * @param state - Checker state (for normalization)
- * @param type - Input type (may be complex/aliased)
- * @returns `true` if `⊥`, `false` otherwise
+ * @param state - Typechecker state for normalization
+ * @param type - The type to test
+ * @returns `true` if the type normalizes to `⊥`
  *
- * @example Direct bottom
+ * @example
  * ```ts
- * import { isBottom, neverType, freshState } from "system-f-omega";
- *
- * const state = freshState();
- * isBottom(state, neverType);  // true
+ * isBottom(state, neverType);          // true
+ * isBottom(state, variantType([]));    // true (empty variant normalizes to ⊥)
  * ```
- *
- * @example Subtyping use (⊥ matches anything)
- * ```ts
- * import { isBottom, isAssignableTo, freshState, conType } from "system-f-omega";
- * import { neverType } from "system-f-omega";
- *
- * const state = freshState();
- * const unreachable = neverType;
- * isBottom(state, unreachable);                  // true
- * isAssignableTo(state, unreachable, conType("Int"));  // true (⊥ <: Int)
- * ```
- *
- * @example Normalization to bottom (empty variant)
- * ```ts
- * import { isBottom, freshState, variantType } from "system-f-omega";
- *
- * const state = freshState();
- * const emptyVar = variantType([]);  // < >
- * isBottom(state, emptyVar);         // true (normalizes to ⊥)
- * ```
- *
- * @example Cycle detection fallback
- * ```ts
- * import { isBottom, freshState, muType, varType } from "system-f-omega";
- *
- * const state = freshState();
- * const cyclic = muType("X", { var: "X" });  // Degenerate μX.X
- * isBottom(state, cyclic);                   // true (normalize → ⊥)
- * ```
- *
- * @see {@link neverType} The `⊥` constructor
- * @see {@link normalizeType} Preprocessing step
- * @see {@link isAssignableTo} Uses for `⊥ <: τ`
- * @see {@link subsumes} Bottom early-exit
  */
 export const isBottom = (state: TypeCheckerState, type: Type) =>
   "never" in normalizeType(state, type);
 
+/**
+ * Assigns a **solution type** to a meta‑variable (`?N`) during inference.
+ *
+ * What it does:
+ * 1. If the meta‑var is **already solved**, checks the new solution for
+ *    consistency (via {@link typesEqual}).
+ * 2. If unsolved, runs an **occurs check** to prevent cyclic types.
+ * 3. Records the solution in `state.meta.solutions`.
+ *
+ * Why it's important:
+ * - Meta‑variables (`?N`) start as unknowns and are gradually solved by
+ *   unification.
+ * - This function is the *only safe way* to assign a solution.
+ * - Prevents infinite types and ensures consistent inference.
+ *
+ * @param state - Typechecker state containing meta‑variable info
+ * @param evar - The meta‑variable name (`"?0"`, `"?1"`, …)
+ * @param solution - The type to assign to this meta‑variable
+ * @returns `ok(null)` on success, or a {@link TypingError} on mismatch/cycle
+ *
+ * @example
+ * ```ts
+ * const mv = freshMetaVar(state.meta);   // ?0
+ * solveMetaVar(state, mv.evar, conType("Int"));
+ * // ?0 := Int
+ * ```
+ */
 export function solveMetaVar(
   state: TypeCheckerState,
   evar: string,
@@ -619,36 +842,40 @@ export function solveMetaVar(
 }
 
 /**
- * Occurs check: detects if meta-var `evar` appears in `ty` (prevents cycles).
+ * Performs the **occurs check** for a meta‑variable.
  *
- * **Purpose**: Ensures no cyclic bindings like `?X := ?X → Int` during unification.
- * Recurses structurally, follows solutions (`?Y → sol`), skips bound vars/foralls.
- * Called by `solveMetaVar`/`unifyMetaVar` before binding.
+ * What it checks:
+ * - Returns `true` if meta‑variable `evar` appears *anywhere* inside type `ty`.
+ * - Follows solved meta‑vars recursively (e.g., `?1 := ?0`, so checking ?0 inside ?1 succeeds).
  *
- * @param env - Meta environment (for following solutions)
- * @param evar - Meta-var name to find (`"?X"`)
- * @param ty - Type to search
- * @returns `true` if `evar` occurs (cycle!), `false` otherwise
+ * Why it matters:
+ * - Prevents assigning a meta‑variable a type that **contains itself**, which would
+ *   create an infinite type such as:
+ *   - `?0 := (?0 → Int)`
+ * - Used by {@link solveMetaVar} to reject cyclic unification.
  *
- * @example Cycle detection (blocks binding)
+ * How it recurses:
+ * - Walks all type constructors: arrows, apps, records, variants, tuples, μ‑types.
+ * - Ignores regular type variables (they are not meta‑vars).
+ *
+ * @param env - Meta‑environment containing current meta‑var solutions
+ * @param evar - Meta‑variable name to search for (`"?0"`)
+ * @param ty - Type to scan for occurrences of `evar`
+ * @returns `true` if `evar` occurs in `ty`, otherwise `false`
+ *
+ * @example
  * ```ts
- * import { occursCheckEvar, freshState } from "system-f-omega";
- * import { arrowType, varType } from "system-f-omega";
- *
- * const state = freshState();
- * const env = state.meta;
- * const cycleTy = arrowType({ evar: "?0" }, varType("Int"));  // ?0 → Int
- * occursCheckEvar(env, "?0", cycleTy);  // true → reject ?0 := ?0 → Int
+ * // ?0 appears inside (?0 → Int)
+ * const ty = arrowType({ evar: "?0" }, conType("Int"));
+ * occursCheckEvar(env, "?0", ty);  // true
  * ```
  *
- * @example Follows solutions
+ * @example
  * ```ts
- * env.solutions.set("?1", { evar: "?0" });  // ?1 := ?0
- * occursCheckEvar(env, "?0", { evar: "?1" });  // true (follows ?1 → ?0)
+ * // Following solved meta-vars:
+ * env.solutions.set("?1", { evar: "?0" });
+ * occursCheckEvar(env, "?0", { evar: "?1" });  // true
  * ```
- *
- * @see {@link solveMetaVar} Caller (rejects on `true`)
- * @see {@link unifyMetaVar} Caller during unification
  */
 export function occursCheckEvar(env: MetaEnv, evar: string, ty: Type): boolean {
   if ("evar" in ty) {
@@ -696,66 +923,55 @@ export function occursCheckEvar(env: MetaEnv, evar: string, ty: Type): boolean {
 }
 
 /**
- * Instantiates polymorphic terms by freshening type variables (term-level `instantiateType`).
+ * Instantiates **term‑level type lambdas** by replacing their bound type
+ * variable with a fresh meta‑variable.
  *
- * **Purpose**: Monomorphizes type-lambda-bound terms for concrete use:
- * - **Type lambdas** (`Λα. e`): Freshen `α → ?N`, substitute into body, return `e[?N] [?N]`.
- * - **Structural recursion**: Instantiates subterms/types recursively (post-order).
+ * This is the *term‑level* analogue of {@link instantiateType}:
+ * - `instantiateType` handles `forall` at the *type* level.
+ * - `instantiateTerm` handles `ΛA::κ. body` at the *term* level.
  *
- * Used for:
- * - Trait dictionary instantiation (`checkTraitImplementation`).
- * - Polymorphic let-bindings, applications.
- * - Avoids capture during substitution.
+ * Why this exists:
+ * ---------------------------------------
+ * A type‑lambda term:
+ *   ΛA::*.  λx:A. x
  *
- * **Algorithm** (tylam special case):
- * 1. Recurse: `instBody = instantiateTerm(body)`
- * 2. Fresh: `?N = freshMetaVar()`
- * 3. Subst: `body[α ↦ ?N]` (via `applySubstitutionToTerm`)
- * 4. Apply: `tyappTerm(body[?N], ?N)`
+ * represents a polymorphic value.
+ * To *use* it concretely, we must replace `A` with a fresh unknown type (a
+ * meta‑variable), producing a monomorphic “instance”:
  *
- * Other constructors: Recurse structurally + `instantiateType` on embedded types.
+ *   (λx:?0. x)
  *
- * @param state - Checker state (metas for freshening)
- * @param term - Input term (possibly polymorphic)
- * @returns Instantiated term with fresh metas
+ * This is exactly what `instantiateTerm` does: it walks the term, finds
+ * `tylam` binders, and replaces their bound type variable with a new meta‑var,
+ * producing an implicit `tyapp`.
  *
- * @example Basic type-lambda instantiation
- * ```ts
- * import { instantiateTerm, freshState, tylamTerm, lamTerm, varTerm, varType, starKind } from "system-f-omega";
+ * High‑level algorithm:
+ * ---------------------------------------
+ * For a term `ΛA::κ. body`:
+ * 1. Recursively instantiate the body first (post‑order traversal).
+ * 2. Create a fresh meta‑var `?N` with kind `κ`.
+ * 3. Substitute `A ↦ ?N` inside the instantiated body.
+ * 4. Return the term `(body[?N]) [?N]` — a type application.
  *
- * const state = freshState();
- * const polyId = tylamTerm("a", starKind, lamTerm("x", varType("a"), varTerm("x")));
- * // Λa::*. λx:a. x
+ * This ensures:
+ * - each instantiation uses *fresh* unknown types
+ * - nested polymorphic terms are handled bottom‑up
+ * - type arguments in annotations and lambdas are also updated
  *
- * const inst = instantiateTerm(state, polyId);
- * // λx:?0. x [?0]  (monomorphized)
- * ```
+ * Used in:
+ * - Dictionary instantiation during trait resolution
+ * - Applying polymorphic values without explicit type arguments
+ * - Auto‑instantiation via {@link autoInstantiate}
  *
- * @example Nested: Dictionary methods
- * ```ts
- * import { instantiateTerm, freshState, dictTerm } from "system-f-omega";
- * // Assumes poly methods with tylams
+ * Related:
+ * - {@link freshMetaVar}
+ * - {@link applySubstitutionToTerm}
+ * - {@link instantiateType}
+ * - {@link tyappTerm}
  *
- * const polyDict = dictTerm("Eq", { var: "Self" }, [
- *   ["eq", tylamTerm("a", starKind,  poly impl )]
- * ]);
- * const instDict = instantiateTerm(state, polyDict);
- * // Methods now monomorphized with fresh ?N
- * ```
- *
- * @example Trait lambda (constraints + body)
- * ```ts
- * import { instantiateTerm, freshState, traitLamTerm } from "system-f-omega";
- *
- * const traitLam = traitLamTerm("d", "Eq", "Self", starKind, [], body);
- * const inst = instantiateTerm(state, traitLam);
- * // Constraints/types freshened, body instantiated
- * ```
- *
- * @see {@link instantiateType} Type-level counterpart (foralls)
- * @see {@link applySubstitutionToTerm} Substitutes fresh metas
- * @see {@link freshMetaVar} Generates `?N`
- * @see {@link checkTraitImplementation} Primary caller
+ * @param state - The typechecker state used to generate fresh meta‑variables
+ * @param term - A possibly polymorphic term containing type lambdas (`ΛA`)
+ * @returns A new term where all outermost `tylam`s are instantiated
  */
 export function instantiateTerm(state: TypeCheckerState, term: Term): Term {
   // Recurse first: Instantiate inner tytams (post-order)
@@ -859,62 +1075,70 @@ export function instantiateTerm(state: TypeCheckerState, term: Term): Term {
 }
 
 /**
- * Instantiates universal quantifiers in types by freshening bound variables.
+ * Instantiates **polymorphic types** by replacing bound type variables with
+ * fresh meta‑variables.
  *
- * **Purpose**: Skolemizes polymorphic types for concrete use (e.g., subsumption, unification):
- * - **`∀α. τ`**: Replace `α ↦ ?N`, recurse on body.
- * - **`∀{C}. τ`**: Same (constraints handled externally via dicts).
- * - **Recurses** until quantifier-free.
+ * What it does:
+ * ---------------------------------------
+ * When you have a polymorphic type such as:
  *
- * Used in:
- * - `subsumes()`: Instantiate general type before subtyping.
- * - Trait resolution: Freshen impl types.
- * - Unification: Avoid capture.
+ *   ∀A::*. A → A
  *
- * **Algorithm**:
- * 1. `∀α. τ` → `fv = freshMetaVar()` → `τ[α ↦ fv]` → recurse
- * 2. `∀{C}. τ` → same (skip `C`)
- * 3. Base: return `τ`
+ * you cannot use it directly — it must be *instantiated* to a monomorphic
+ * version:
  *
- * @param state - Checker state (metas for freshening)
- * @param type - Input type (possibly polymorphic)
- * @returns Quantifier-free type with fresh metas
+ *   ?0 → ?0
  *
- * @example Basic forall instantiation
+ * where `?0` is a fresh meta‑variable representing an unknown concrete type.
+ * `instantiateType` performs this instantiation automatically.
+ *
+ * How it works (high‑level):
+ * ---------------------------------------
+ * - If the type is a `forall`:
+ *     1. Generate a fresh meta‑variable `?N`
+ *     2. Substitute the bound variable with `?N` in the body
+ *     3. Recurse, in case the body contains nested `forall`s
+ *
+ * - If the type is a `bounded_forall` (trait‑bounded polymorphism):
+ *     Same steps as `forall`, except constraints are **not** resolved here.
+ *     The constraints will be handled later (e.g., by trait application).
+ *
+ * - If the type contains no quantifier:
+ *     Return it unchanged.
+ *
+ * Why it's important:
+ * ---------------------------------------
+ * - Needed for polymorphic function calls
+ *   (`f : ∀A. A → A` → instantiate → `?0 → ?0`)
+ * - Enables unification to assign concrete types later
+ * - Prevents type variable capture by replacing them with meta‑vars
+ * - Works for both standard System‑F polymorphism (`forall`) and the extended
+ *   trait‑bounded polymorphism (`bounded_forall`)
+ *
+ * Related concepts:
+ * - {@link instantiateTerm} — term‑level instantiation for `ΛA::κ. term`
+ * - {@link freshMetaVar} — creates the meta‑variables used here
+ * - {@link substituteType} — replaces the bound variable with `?N`
+ * - {@link boundedForallType}, {@link forallType}
+ *
+ * @param state - Typechecker state providing fresh meta‑variables
+ * @param type - A type that may contain universal quantifiers
+ *
+ * @returns A type with all outer quantifiers replaced by fresh meta‑variables
+ *
+ * @example Instantiating a polymorphic identity type:
  * ```ts
- * import { instantiateType, freshState, forallType, arrowType, varType, starKind } from "system-f-omega";
- *
- * const state = freshState();
- * const polyId = forallType("a", starKind, arrowType(varType("a"), varType("a")));
- * const inst = instantiateType(state, polyId);
- * console.log(showType(inst));  // (?0 → ?0)
+ * const poly = forallType("A", starKind, arrowType(varType("A"), varType("A")));
+ * const inst = instantiateType(state, poly);
+ * // inst is (?0 → ?0)
  * ```
  *
- * @example Nested foralls
+ * @example Bounded polymorphism:
  * ```ts
- * import { instantiateType, freshState, forallType, tupleType, varType, starKind } from "system-f-omega";
- *
- * const state = freshState();
- * const nested = forallType("a", starKind,
- *   forallType("b", starKind, tupleType([varType("a"), varType("b")])));
- * const inst = instantiateType(state, nested);
- * console.log(showType(inst));  // (?0, ?1)
- * ```
- *
- * @example Bounded forall (constraints external)
- * ```ts
- * import { instantiateType, freshState, boundedForallType, arrowType, varType, starKind } from "system-f-omega";
- *
- * const state = freshState();
- * const bounded = boundedForallType("a", starKind, [], arrowType(varType("a"), varType("a")));
+ * const bounded = boundedForallType("A", starKind, [{trait:"Eq", type:varType("A")}], varType("A"));
  * const inst = instantiateType(state, bounded);
- * console.log(showType(inst));  // (?0 → ?0)  (ignores constraints)
+ * // inst is ?0  (constraints handled elsewhere)
  * ```
- *
- * @see {@link substituteType} Performs `[α ↦ ?N]`
- * @see {@link freshMetaVar} Generates `?N`
- * @see {@link subsumes} Primary caller (instantiate general)
- * @see {@link instantiateTerm} Term-level counterpart
  */
 export function instantiateType(state: TypeCheckerState, type: Type): Type {
   if ("forall" in type) {
@@ -944,69 +1168,103 @@ export function instantiateType(state: TypeCheckerState, type: Type): Type {
 }
 
 /**
- * Subtyping relation: `specific <: general` (mutates `worklist`/`subst`).
+ * Checks whether **`specific` is a subtype of `general`**
+ * (i.e., whether `specific` *subsumes into* `general`).
  *
- * **Purpose**: Checks if `specific` is a subtype of `general`:
- * 1. Instantiate `general` (Skolemize foralls).
- * 2. **Bottom rules**:
- *    - `⊥ <: τ` always (if `τ :: *`).
- *    - `τ <: ⊥` only if `τ = ⊥`.
- * 3. Otherwise: `unifyTypes(instGeneral, specific)` (structural).
+ * In traditional type theory this is written:
  *
- * Supports width subsumption (records), equi-recursion (μ), nominal enums.
- * Used in checking, pattern matching, trait resolution.
+ *    specific <: general
  *
- * @param state - Checker state
- * @param general - Supertype (e.g., `List<a>`)
- * @param specific - Subtype (e.g., `List<Int>`, `⊥`)
- * @param worklist - Constraint accumulator
- * @param subst - Mutable substitution
- * @returns `ok(null)` if subtypes, else error
+ * but in our implementation the parameters appear as:
  *
- * @example Bottom subtyping (⊥ <: anything)
+ *    subsumes(state, general, specific, ...)
+ *
+ * because we check whether `specific` can be *used where* `general` is expected.
+ *
+ * ------------------------------------------------------------
+ * Why this matters
+ * ------------------------------------------------------------
+ * Subsumption is used in:
+ * - **Checking mode** (`checkType`) to see if inferred types match expectations
+ * - **Pattern matching** (merging branch types)
+ * - **Applying polymorphic terms**
+ * - **Record width subtyping**
+ *
+ * This system uses a *structural* notion of subtyping combined with:
+ * - instantiation of polymorphic types
+ * - specialized rules for bottom (`⊥`)
+ * - fallback to unification when possible
+ *
+ * ------------------------------------------------------------
+ * High‑level rules implemented here
+ * ------------------------------------------------------------
+ *
+ * 1. **Instantiate polymorphism in the general type**
+ *    ```
+ *    general = ∀A. τ   →   instantiateType → τ[A := ?0]
+ *    ```
+ *    This means:
+ *    a polymorphic type is a supertype of *all its instances*.
+ *
+ * 2. **Bottom rules (`⊥`)**
+ *    - `⊥ <: T` for any concrete type `T`
+ *      (bottom is a subtype of everything — unreachable code is valid everywhere)
+ *
+ *    - `T <: ⊥` only if `T` is also `⊥`
+ *      (you cannot treat real data as bottom)
+ *
+ * 3. **Otherwise, fall back to structural unification**
+ *    `specific <: general`
+ *    is approximated by trying to unify:
+ *    ```
+ *    unifyTypes(instGeneral, specific)
+ *    ```
+ *
+ *    This works because unification:
+ *    - checks structural compatibility
+ *    - fills meta‑variables created during instantiation
+ *    - handles record width subtyping, variants, mu‑types, etc.
+ *
+ * ------------------------------------------------------------
+ * Summary of behavior:
+ * ------------------------------------------------------------
+ * - Polymorphic supertype? Instantiate it.
+ * - `⊥` is always a valid subtype (except when the expected type is also ⊥).
+ * - Otherwise: structural compatibility via unification.
+ *
+ * ------------------------------------------------------------
+ * Related:
+ * - {@link instantiateType} (step 1)
+ * - {@link isBottom} (step 2)
+ * - {@link unifyTypes} (step 3)
+ * - {@link isAssignableTo} (simple fast-path version)
+ * - {@link checkType} (primary caller)
+ *
+ * @param state - Current typechecker state
+ * @param general - The expected supertype
+ * @param specific - The inferred subtype
+ * @param worklist - Constraint worklist passed to unification
+ * @param subst - Substitution map mutated by unification
+ *
+ * @returns `ok(null)` if `specific` is a subtype of `general`, or an error
+ *
+ * @example Bottom subtype:
  * ```ts
- * import { subsumes, freshState, neverType, conType, listType } from "system-f-omega";
- * // Assume List<Int> in ctx
- *
- * const state = freshState();
- * const result = subsumes(state, conType("List<Int>"), neverType, [], new Map());
- * // ok(null) ✓
+ * subsumes(state, Int, ⊥)  // ok
  * ```
  *
- * @example Record width subsumption
+ * @example Polymorphic supertype:
  * ```ts
- * import { subsumes, freshState, recordType } from "system-f-omega";
- * import { conType } from "system-f-omega";
- *
- * const state = freshState();
- * const wide = recordType([["x", conType("Int")], ["y", conType("Bool")]]);
- * const narrow = recordType([["x", conType("Int")]]);
- * subsumes(state, wide, narrow, [], new Map());  // ok(null) ✓ (narrow <: wide)
+ * ∀A. A → A   <:   Int → Int
+ * // instantiate: ?0 → ?0
+ * // unify:        ?0=Int → ok
  * ```
  *
- * @example Polymorphic instantiation + unify
+ * @example Failure:
  * ```ts
- * import { subsumes, freshState, forallType, arrowType, varType, starKind } from "system-f-omega";
- *
- * const state = freshState();
- * const poly = forallType("a", starKind, arrowType(varType("a"), varType("a")));
- * const mono = arrowType(conType("Int"), conType("Int"));
- * subsumes(state, poly, mono, [], new Map());  // instantiate → ?0→?0 ~ Int→Int ✓
+ * subsumes(state, Bool, Int)
+ * // err: type_mismatch
  * ```
- *
- * @example Failure (Int not <: Bool)
- * ```ts
- * import { subsumes, freshState, conType } from "system-f-omega";
- *
- * const state = freshState();
- * subsumes(state, conType("Bool"), conType("Int"), [], new Map());
- * // err: { type_mismatch: { expected: Bool, actual: Int } }
- * ```
- *
- * @see {@link instantiateType} Skolemizes `general`
- * @see {@link isBottom} Early bottom checks
- * @see {@link unifyTypes} Structural fallback
- * @see {@link isAssignableTo} Simplified wrapper
  */
 export function subsumes(
   state: TypeCheckerState,
@@ -1041,49 +1299,44 @@ export function subsumes(
 }
 
 /**
- * Quick subtyping check: `from <: to` (assignable).
+ * Checks whether a type `from` can be **assigned to** a type `to`
+ * (a lightweight, fast version of subtyping).
  *
- * **Purpose**: Decidable `τ₁ <: τ₂` for simple cases **without constraints**:
- * - `⊥ <: τ` always (bottom subtypes anything).
- * - `τ <: ⊥` only if `τ = ⊥`.
- * - Otherwise: `typesEqual(τ₁, τ₂)` (normalize + structural).
+ * What it does:
+ * - Handles the two special rules for **bottom (`⊥`)**:
+ *   - `⊥` is assignable to *any* type (`⊥ <: T`)
+ *   - No type is assignable *to* `⊥` unless it is also `⊥`
+ * - Otherwise, falls back to **structural type equality** after normalization.
  *
- * **Fast path** for checking, patterns, unification guards (no worklist).
- * Use `subsumes` for full polymorphic/width subtyping.
+ * Why this exists:
+ * - Many checks only need a *simple* notion of compatibility:
+ *   - pattern checking
+ *   - tuple/record element comparisons
+ *   - constructor payload validation
+ * - Full subtyping (`subsumes`) is more expensive and handles polymorphism,
+ *   so this function provides a quick path when that power isn’t required.
  *
- * @param state - Checker state (for normalization/equality)
- * @param from - Source type (subtype)
- * @param to - Target type (supertype)
- * @returns `true` if assignable
+ * Related:
+ * - {@link isBottom} — detects `⊥`
+ * - {@link typesEqual} — structural equality used as the final check
+ * - {@link subsumes} — the full subtyping engine (more general)
  *
- * @example Bottom subtypes anything
+ * @param state - Typechecker state used for normalization and bottom detection
+ * @param from - The source type (value's type)
+ * @param to - The target type (expected type)
+ * @returns `true` if `from` is assignable to `to`, else `false`
+ *
+ * @example Bottom:
  * ```ts
- * import { isAssignableTo, freshState, neverType, conType } from "system-f-omega";
- *
- * const state = freshState();
- * isAssignableTo(state, neverType, conType("Int"));  // true (⊥ <: Int)
- * ```
- *
- * @example Non-bottom cannot subtype ⊥
- * ```ts
- * import { isAssignableTo, freshState, neverType, conType } from "system-f-omega";
- *
- * const state = freshState();
+ * isAssignableTo(state, neverType, conType("Int"));  // true
  * isAssignableTo(state, conType("Int"), neverType);  // false
  * ```
  *
- * @example Equality (normal case)
+ * @example Regular assignment:
  * ```ts
- * import { isAssignableTo, freshState, arrowType, conType } from "system-f-omega";
- *
- * const state = freshState();
- * const fnTy = arrowType(conType("Int"), conType("Bool"));
- * isAssignableTo(state, fnTy, fnTy);  // true
+ * isAssignableTo(state, conType("Bool"), conType("Bool")); // true
+ * isAssignableTo(state, conType("Int"),  conType("Bool")); // false
  * ```
- *
- * @see {@link subsumes} Full subtyping (polymorphic/width)
- * @see {@link typesEqual} Structural equality fallback
- * @see {@link isBottom} Bottom detection
  */
 export function isAssignableTo(
   state: TypeCheckerState,
@@ -1096,47 +1349,70 @@ export function isAssignableTo(
 }
 
 /**
- * Extracts variable bindings from a pattern (for context extension).
+ * Extracts **variable bindings** from a pattern, producing a flat list of
+ * `[name, placeholderType]` entries used to extend the typing context.
  *
- * **Purpose**: Collects pattern variables as `[name, type]` pairs to extend
- * the typing context during `checkPattern`/`matchTerm`. Leaf vars get placeholder
- * `{ var: "$unknown" }` (resolved to actual slice during checking).
+ * What it does:
+ * ---------------------------------------
+ * When type‑checking a `match` expression, each pattern introduces **new
+ * variables** that must be added to the context before checking the branch body.
  *
- * Recursive: flattens nested records/variants/tuples. Ignores wildcards/cons.
+ * For example:
+ *   - `x` binds `x`
+ *   - `(x, y)` binds `x` and `y`
+ *   - `{ point = (a, b) }` binds `a` and `b`
  *
- * Used in: `checkPattern` → `extendedCtx = [...state.ctx, ...patternBindings(pat)]`.
+ * This function walks the pattern **structurally** and collects all variable
+ * names that appear inside it.
  *
- * @param pattern - Input pattern
- * @returns Flat list of `[varName, placeholderType]` bindings
+ * The placeholder type:
+ * ---------------------------------------
+ * Each bound variable is assigned an **unknown type** `{ var: "$unknown" }`.
+ * The real type is filled in later by `checkPattern`, which knows the scrutinee
+ * type and can assign the correct concrete type.
  *
- * @example Simple variable
+ * What it does **not** do:
+ * - Does **not** check types
+ * - Does **not** validate labels or constructors
+ * - Does **not** resolve variant payloads
+ *
+ * It is purely a *name collector*.
+ *
+ * Pattern forms:
+ * ---------------------------------------
+ * - **Variable pattern** → one binding
+ * - **Wildcard / constructor pattern** → no bindings
+ * - **Record pattern** → recurse into each field
+ * - **Variant pattern** → recurse into payload pattern
+ * - **Tuple pattern** → recurse into each element
+ *
+ * Related:
+ * - {@link checkPattern} — assigns the *actual* types to these bindings
+ * - {@link Pattern} — the pattern AST
+ * - {@link MatchTerm} — uses these bindings per branch
+ *
+ * @param pattern - The pattern to extract variable bindings from
+ * @returns A flat array of `[name, placeholderType]`
+ *
+ * @example Variable:
  * ```ts
- * import { patternBindings, varPattern } from "system-f-omega";
- *
- * patternBindings(varPattern("x"));  // [["x", { var: "$unknown" }]]
+ * patternBindings(varPattern("x"));
+ * // => [["x", { var: "$unknown" }]]
  * ```
  *
- * @example Nested collection
+ * @example Tuple:
  * ```ts
- * import { patternBindings, recordPattern, variantPattern, tuplePattern } from "system-f-omega";
- * import { varPattern, wildcardPattern } from "system-f-omega";
- *
- * // {x: (hd, _)} → ["x", ...] + ["hd"]
- * patternBindings(recordPattern([["head", tuplePattern([varPattern("hd"), wildcardPattern()])]]));
- * // [["head", { var: "$unknown" }], ["hd", { var: "$unknown" }]]
- *
- * patternBindings(variantPattern("Cons", varPattern("xs")));  // [["xs", { var: "$unknown" }]]
+ * patternBindings(tuplePattern([varPattern("a"), varPattern("b")]));
+ * // => [["a", $unk], ["b", $unk]]
  * ```
  *
- * @example No bindings
+ * @example Nested:
  * ```ts
- * import { patternBindings, wildcardPattern } from "system-f-omega";
- *
- * patternBindings(wildcardPattern());  // []
+ * patternBindings(recordPattern([
+ *   ["pt", tuplePattern([varPattern("x"), wildcardPattern()])]
+ * ]));
+ * // => [["x", $unknown]]
  * ```
- *
- * @see {@link checkPattern} Resolves placeholders to real types
- * @see {@link matchTerm} Uses for branch contexts
  */
 export function patternBindings(pattern: Pattern): [string, Type][] {
   if ("var" in pattern)
@@ -1318,59 +1594,132 @@ function applySubstitutionToTerm(
 }
 
 /**
- * Resolves a trait dictionary for `type` implementing `trait`.
+ * Resolves a **trait implementation** (dictionary) for a given trait–type pair.
  *
- * **Purpose**: **Dictionary-passing trait resolution** (Haskell-style):
- * 1. **Exact match**: Lookup `trait_impl` with `typesEqual(impl.type, target)`.
- * 2. **Polymorphic**:
- *    - Normalize/impl/target.
- *    - Instantiate impl (`∀ → ?N`).
- *    - Apply target lambdas to fresh metas (HKT matching).
- *    - Unify → solve → instantiate dict + apply subst.
- * 3. Fail: `{ missing_trait_impl: { trait, type } }`.
+ * In other words, this answers the question:
  *
- * Returns instantiated dictionary term (methods specialized).
+ *    “Does type `T` implement trait `Trait`?
+ *     If yes, return the dictionary (method table) for it.”
  *
- * @param state - Checker state (ctx for impls, metas)
- * @param trait - Trait name (`"Eq"`, `"Functor"`)
- * @param type - Concrete type (`List<Int>`, `Option<Bool>`)
- * @returns Dictionary `Term` or error
+ * This is the core of the **dictionary‑passing translation** used to implement
+ * typeclasses / traits in System F‑ω.
  *
- * @example Exact match
+ * ------------------------------------------------------------
+ * High‑level behavior
+ * ------------------------------------------------------------
+ *
+ * Given a trait name and a concrete type:
+ *
+ *   checkTraitImplementation(state, "Eq", List<Int>)
+ *
+ * the function:
+ * 1. Normalizes the target type (`normalizeType`)
+ * 2. Searches for an **exact implementation**
+ * 3. If none exists, tries **polymorphic implementations** by:
+ *    - instantiating type parameters (fresh meta‑vars)
+ *    - unifying impl type with the target type
+ *    - solving constraints
+ * 4. Instantiates the dictionary term accordingly
+ * 5. Returns an error if no implementation fits
+ *
+ * ------------------------------------------------------------
+ * Why this function is needed
+ * ------------------------------------------------------------
+ * - Trait applications (`f[Int] with {dict}`) rely on finding the correct dictionary.
+ * - Bounded polymorphism (`∀Self where Eq<Self>. ...`) requires resolving trait
+ *   constraints to actual evidence.
+ * - Pattern matching, method calls, and auto‑instantiation also depend on this.
+ *
+ * This function is the **engine** that enables:
+ * - “typeclass instance resolution”
+ * - trait bounds
+ * - polymorphic trait implementations
+ *
+ * ------------------------------------------------------------
+ * Two categories of implementations it checks
+ * ------------------------------------------------------------
+ * 1. **Exact (monomorphic) instances**
+ *    ```
+ *    impl Eq<Int> = { eq = ... }
+ *    ```
+ *    If the target type normalizes to `Int`, the match is immediate.
+ *
+ * 2. **Polymorphic implementations**
+ *    ```
+ *    impl Eq<List<t>> = ...
+ *    impl Functor<F> = ...
+ *    ```
+ *    These require:
+ *    - normalizing both impl and target types
+ *    - instantiating any `forall`
+ *    - applying type‑lambdas if needed
+ *    - unifying the impl type with the target type
+ *    - instantiating the dictionary with the inferred substitutions
+ *
+ * ------------------------------------------------------------
+ * Steps in the polymorphic path (simplified)
+ * ------------------------------------------------------------
+ * 1. Normalize impl type and target type
+ * 2. Instantiate impl type (∀ vars → meta‑vars)
+ * 3. If target type is a lambda constructor (HKT), apply it to fresh arguments
+ *    until it is comparable to the impl type
+ * 4. Attempt unification
+ * 5. Solve resulting constraints
+ * 6. Instantiate the dictionary term itself
+ * 7. Apply solved substitutions to the dictionary
+ *
+ * If any step fails → the impl is not a match.
+ *
+ * ------------------------------------------------------------
+ * Error behavior
+ * ------------------------------------------------------------
+ * If no implementation matches, returns:
+ *
+ *   { missing_trait_impl: { trait, type } }
+ *
+ * This is used by:
+ * - bounded forall type checking
+ * - trait applications
+ * - auto‑instantiation of trait lambdas
+ *
+ * ------------------------------------------------------------
+ * Related functions
+ * ------------------------------------------------------------
+ * - {@link normalizeType} — expands aliases, enums, lambdas before matching
+ * - {@link instantiateType} — replaces quantified vars with meta‑vars
+ * - {@link instantiateTerm} — freshens polymorphic dictionary terms
+ * - {@link unifyTypes} — checks structural compatibility
+ * - {@link solveConstraints} — resolves meta‑var bindings
+ * - {@link checkTraitConstraints} — resolves multiple constraints
+ *
+ * ------------------------------------------------------------
+ * @param state - Full typechecker state (context + meta‑vars)
+ * @param trait - The trait name to resolve (e.g. `"Eq"`)
+ * @param type - The concrete type for which we want an implementation
+ *
+ * @returns The instantiated dictionary term, or a `missing_trait_impl` error
+ *
+ * ------------------------------------------------------------
+ * @example Exact implementation
  * ```ts
- * import { checkTraitImplementation, freshState, conType, dictTerm } from "system-f-omega";
- *
- * let state = freshState();
- * state = state.ctx.push({
- *   trait_impl: { trait: "Eq", type: conType("Int"), dict: dictTerm("Eq", conType("Int"), []) }
- * });
- * const dict = checkTraitImplementation(state, "Eq", conType("Int"));
- * // ok(dictTerm("Eq", Int, [...]))
+ * state.ctx.push(traitImplBinding("Eq", conType("Int"), eqIntDict));
+ * checkTraitImplementation(state, "Eq", conType("Int"));
+ * // => ok(eqIntDict)
  * ```
  *
- * @example Polymorphic impl (List for List<Int>)
+ * @example Polymorphic implementation
  * ```ts
- * import { checkTraitImplementation, freshState, forallType, appType } from "system-f-omega";
- * // Assume List :: * → *, impl: ∀F. Eq<F> given List impl
- *
- * const state = freshState();  // + trait_impl { trait: "Eq", type: conType("List"), dict: polyDict }
- * const dict = checkTraitImplementation(state, "Eq", appType(conType("List"), conType("Int")));
- * // ok(instantiated dict for List<Int>)
+ * // impl Eq<List<t>> { ... }
+ * checkTraitImplementation(state, "Eq",
+ *   appType(conType("List"), conType("Int")));
+ * // => ok(dictionary specialized to Int)
  * ```
  *
- * @example Failure (no impl)
+ * @example Failure
  * ```ts
- * import { checkTraitImplementation, freshState, conType } from "system-f-omega";
- *
- * const state = freshState();
  * checkTraitImplementation(state, "Eq", conType("String"));
- * // err: { missing_trait_impl: { trait: "Eq", type: String } }
+ * // => err({ missing_trait_impl: { trait: "Eq", type: String }})
  * ```
- *
- * @see {@link checkTraitConstraints} Multi-constraint resolution
- * @see {@link instantiateType} Skolemizes impl types
- * @see {@link instantiateTerm} Freshens dict
- * @see {@link traitImplBinding} Stores impls
  */
 export function checkTraitImplementation(
   state: TypeCheckerState,
@@ -1460,70 +1809,77 @@ export function checkTraitImplementation(
 }
 
 /**
- * Resolves dictionaries for multiple trait constraints.
+ * Resolves a **list of trait constraints** into their corresponding
+ * **dictionary values**.
  *
- * **Purpose**: Batch-resolves `[{trait: "Eq", type: τ}, ...]` → `[dict1, dict2, ...]`.
- * Short-circuits on first failure. Used for bounded polymorphism/trait apps.
+ * What it does:
+ * ---------------------------------------
+ * Each constraint has the form:
  *
- * Sequential: Calls `checkTraitImplementation` per constraint.
+ *   { trait: "Eq", type: τ }
  *
- * @param state - Checker state
- * @param constraints - List of `{trait, type}` bounds
- * @returns Array of dictionary terms or first error
+ * meaning “we need evidence that `τ` implements trait `Eq`”.
  *
- * @example Success (multiple dicts)
+ * This function:
+ * 1. Iterates through each constraint
+ * 2. Calls {@link checkTraitImplementation} to find the dictionary for it
+ * 3. Collects all dictionaries in order
+ * 4. Stops on the *first* error (missing implementation, mismatched type, etc.)
+ *
+ * Why this matters:
+ * ---------------------------------------
+ * Trait‑bounded polymorphism (`∀Self where Eq<Self>. ...`) and explicit
+ * trait applications (`term[T] with {dicts}`) rely on assembling all necessary
+ * dictionaries before typechecking can continue.
+ *
+ * This function is the “batch mode” version of trait resolution:
+ * - used by {@link instantiateWithTraits}
+ * - used by {@link inferTraitAppType}
+ * - used when instantiating a trait‑lambda automatically
+ *
+ * In effect: it validates that *all* required constraints for an expression
+ * have valid trait implementations.
+ *
+ * Failure mode:
+ * ---------------------------------------
+ * Returns the first error from {@link checkTraitImplementation}, typically:
+ * - `missing_trait_impl`
+ * - other type errors arising while unifying a polymorphic implementation
+ *
+ * Success mode:
+ * ---------------------------------------
+ * Returns:
+ *
+ *   ok([dict₁, dict₂, ...])
+ *
+ * where each element is a fully instantiated dictionary term.
+ *
+ * Related:
+ * - {@link TraitConstraint} — input format
+ * - {@link checkTraitImplementation} — resolves a single constraint
+ * - {@link TraitLamTerm} / {@link TraitAppTerm} — where constraints originate
+ *
+ * @param state - Typechecker state holding available trait implementations
+ * @param constraints - List of trait requirements to satisfy
+ * @returns All resolved dictionary terms, or an error
+ *
+ * @example Success:
  * ```ts
- * import { freshState, addType, addTraitDef, traitImplBinding, dictTerm, conType, checkTraitConstraints, arrowType, lamTerm, varTerm } from "system-f-omega";
+ * const constraints = [
+ *   { trait: "Eq", type: conType("Int") },
+ *   { trait: "Show", type: conType("Int") }
+ * ];
  *
- * let state = freshState();
- * state = addType(state, "Int", { star: null }).ok;
- * state = addType(state, "Bool", { star: null }).ok;
- * state = addTraitDef(state, "Eq", "A", { star: null }, [
- *   ["eq", arrowType(conType("A"), arrowType(conType("A"), conType("Bool")))]
- * ]).ok;
- * const eqDict = dictTerm("Eq", conType("Int"), [
- *   ["eq", lamTerm("x", conType("Int"), lamTerm("y", conType("Int"), conTerm("true", conType("Bool"))))]
- * ]);
- * state = traitImplBinding("Eq", conType("Int"), eqDict);
- *
- * const constraints = [{ trait: "Eq", type: conType("Int") }];
  * const result = checkTraitConstraints(state, constraints);
- * console.log("ok:", result.ok.length === 1);  // true
+ * // => ok([eqIntDict, showIntDict])
  * ```
  *
- * @example Failure (propagates first error)
+ * @example Failure (first missing impl is reported):
  * ```ts
- * import { freshState, addType, addTraitDef, conType, checkTraitConstraints } from "system-f-omega";
- *
- * let state = freshState();
- * state = addType(state, "String", { star: null }).ok;
- * state = addTraitDef(state, "Eq", "A", { star: null }, [["eq", conType("Bool")]]).ok;
- * // No Eq<String> impl!
- *
- * const constraints = [{ trait: "Eq", type: conType("String") }];
+ * const constraints = [{ trait: "Ord", type: conType("String") }];
  * const result = checkTraitConstraints(state, constraints);
- * console.log("err:", "missing_trait_impl" in result.err);  // true
+ * // => err({ missing_trait_impl: ... })
  * ```
- *
- * @example Bounded forall resolution
- * ```ts
- * import { freshState, addType, addTraitDef, traitImplBinding, dictTerm, conType, boundedForallType, checkTraitConstraints, starKind, arrowType } from "system-f-omega";
- * import { lamTerm, varTerm } from "system-f-omega";
- *
- * let state = freshState();
- * state = addType(state, "Int", starKind).ok;
- * state = addTraitDef(state, "Eq", "A", starKind, [["eq", arrowType(conType("A"), conType("Bool"))]]).ok;
- * const dict = dictTerm("Eq", conType("Int"), [["eq", lamTerm("x", conType("Int"), conTerm("true", conType("Bool")))]]);
- * state = traitImplBinding("Eq", conType("Int"), dict);
- *
- * const bounded = boundedForallType("a", starKind, [{ trait: "Eq", type: conType("Int") }], arrowType(varType("a"), conType("Int")));
- * const constraints = bounded.bounded_forall.constraints;
- * const dicts = checkTraitConstraints(state, constraints);
- * console.log("dicts:", dicts.ok.length);  // 1
- * ```
- *
- * @see {@link checkTraitImplementation} Resolves single constraint
- * @see {@link traitAppTerm} Uses resolved dicts
  */
 export function checkTraitConstraints(
   state: TypeCheckerState,
@@ -1545,7 +1901,76 @@ export function checkTraitConstraints(
   return ok(dicts);
 }
 
-function extractPatternLabels(pattern: Pattern): Set<string> {
+/**
+ * Collects all **constructor and label names** that appear inside a pattern.
+ *
+ * What it extracts:
+ * ---------------------------------------
+ * This function returns a `Set<string>` containing every **variant label** or
+ * **record field label** that occurs anywhere inside a pattern.
+ *
+ * Examples of what counts as a “label”:
+ * - `Some(x)`  → `"Some"`
+ * - `Left(v)` → `"Left"`
+ * - `{ x: p, y: q }` → `"x"`, `"y"` (record field labels)
+ * - `(Some(x), y)` → `"Some"`
+ *
+ * Names **not** added to the set:
+ * - variable names (`x`, `hd`, etc.)
+ * - wildcards (`_`)
+ * - constructor‑literal patterns (`true`, `"None"`) using `conPattern`
+ *
+ * Why this exists:
+ * ---------------------------------------
+ * Pattern matching needs to know **which cases are covered**, especially for
+ * exhaustiveness checking.
+ *
+ * For example:
+ * ```ts
+ * match xs {
+ *   Some(x) => ...
+ *   None    => ...
+ * }
+ * ```
+ * To determine whether the match is exhaustive, we must extract:
+ *
+ *   `{ "Some", "None" }`
+ *
+ * This helper isolates that logic.
+ *
+ * Where it's used:
+ * ---------------------------------------
+ * - {@link checkExhaustive} — determines which constructors are covered
+ * - pattern utilities for dependency tracking and renaming
+ *
+ * Behavior summary:
+ * ---------------------------------------
+ * - Variable / wildcard / constructor‑literal → no labels
+ * - Variant pattern → include its label, then recurse into payload
+ * - Record pattern → recurse into each field’s pattern
+ * - Tuple pattern → recurse into each element
+ *
+ * @param pattern - The pattern to extract labels from
+ * @returns A set of all variant or record labels appearing in the pattern
+ *
+ * @example Variant:
+ * ```ts
+ * extractPatternLabels(variantPattern("Some", varPattern("x")));
+ * // => Set(["Some"])
+ * ```
+ *
+ * @example Nested:
+ * ```ts
+ * extractPatternLabels(
+ *   tuplePattern([
+ *     variantPattern("Left", varPattern("v")),
+ *     recordPattern([["y", variantPattern("Right", varPattern("w"))]])
+ *   ])
+ * );
+ * // => Set(["Left", "y", "Right"])
+ * ```
+ */
+export function extractPatternLabels(pattern: Pattern): Set<string> {
   const labels = new Set<string>();
   if ("var" in pattern || "wildcard" in pattern || "con" in pattern)
     return labels; // Covers all, no specific label
@@ -1567,80 +1992,126 @@ function extractPatternLabels(pattern: Pattern): Set<string> {
 }
 
 /**
- * Checks if patterns exhaustively cover all cases of `type` (variant/enum).
+ * Checks whether a list of patterns **exhaustively covers** all cases of a
+ * given type — i.e., whether a `match` expression is *complete*.
  *
- * **Purpose**: Pattern match safety: ensures no uncovered cases.
- * - **Nominal**: Lookup enum binding → check arity → label coverage.
- * - **Structural**: Direct variant labels.
- * - **Wildcard/Var**: Always exhaustive.
- * - **Primitives/Functions**: Always ok (no cases).
+ * In other words:
+ *   “Is it possible for the scrutinee to have a shape that none of the patterns match?”
  *
- * Errors: `not_a_variant`, `kind_mismatch` (arity), `missing_case`.
+ * ---------------------------------------------------------------------------
+ * Why exhaustiveness matters
+ * ---------------------------------------------------------------------------
+ * Pattern matching should be **total**: every possible value of the scrutinee
+ * type must be handled by one of the patterns.
  *
- * @param state - Checker state (ctx for enums)
- * @param patterns - Match cases
- * @param type - Scrutinee type (normalized)
- * @returns `ok(null)` if exhaustive, else error
+ * Examples:
  *
- * @example Success: Nominal enum full coverage
+ *   match opt {
+ *     Some(x) => ...
+ *     None    => ...
+ *   }
+ *
+ * → exhaustive for `Option<T>`
+ *
+ *   match opt {
+ *     Some(x) => ...
+ *   }
+ *
+ * → **NOT** exhaustive: missing `None`
+ *
+ * This function detects such missing cases.
+ *
+ * ---------------------------------------------------------------------------
+ * How coverage checking works
+ * ---------------------------------------------------------------------------
+ * The algorithm follows a simple structure:
+ *
+ * 1. **Normalize the type** (`normalizeType`)
+ *    Needed because:
+ *    - Enums may expand into structural variants
+ *    - Type lambdas may β‑reduce
+ *    - Mu‑types may unfold
+ *
+ * 2. **Nominal enum case**
+ *    If the type is of the form `Enum<T1, T2, ...>`, we:
+ *    - find the enum definition in the context
+ *    - extract *all variant labels* declared by the enum
+ *      (e.g., `{"None", "Some"}`)
+ *    - collect all labels covered by the patterns
+ *      using {@link extractPatternLabels}
+ *    - if any labels are missing → `missing_case` error
+ *    - wildcard `_` or variable pattern matches everything → automatically exhaustive
+ *
+ * 3. **Structural variant case**
+ *    If the normalized type is a structural variant:
+ *    - collect all labels appearing in the type
+ *    - collect those covered by the patterns
+ *    - missing label → error
+ *
+ * 4. **Other types** (e.g., records, tuples, primitives, functions)
+ *    These have *no variant cases*, so matching on them cannot be non-exhaustive.
+ *    → always succeed
+ *
+ * ---------------------------------------------------------------------------
+ * Wildcard and variable patterns
+ * ---------------------------------------------------------------------------
+ * Any pattern of the form:
+ *   `_`
+ *   `x`
+ *
+ * matches **every possible value** of the scrutinee type.
+ *
+ * Therefore, if such a pattern appears anywhere, coverage checking stops early
+ * and returns `ok(null)`.
+ *
+ * ---------------------------------------------------------------------------
+ * Errors produced
+ * ---------------------------------------------------------------------------
+ * - `not_a_variant`
+ *   The scrutinee type is used as if it were a variant/enum but isn’t.
+ *
+ * - `kind_mismatch`
+ *   Occurs when enum parameters don’t match expected arity.
+ *
+ * - `missing_case`
+ *   At least one constructor is not covered by any pattern.
+ *
+ * ---------------------------------------------------------------------------
+ * Related functions
+ * ---------------------------------------------------------------------------
+ * - {@link extractPatternLabels} — collects constructor/field labels inside patterns
+ * - {@link checkPattern} — validates individual pattern shapes
+ * - {@link inferMatchType} — uses this to validate full match expressions
+ * - {@link normalizeType} — expands enums and aliases before analysis
+ *
+ * @param state - The current typechecker state (context + meta-vars)
+ * @param patterns - The list of patterns in the match expression
+ * @param type - The scrutinee type to check against
+ * @returns `ok(null)` if exhaustive, or a `missing_case` / `not_a_variant` error
+ *
+ * @example Exhaustive enum match:
  * ```ts
- * import { freshState, addType, addEnum, checkExhaustive, conType, variantPattern, varPattern, appType, starKind } from "system-f-omega";
- * import { tupleType } from "system-f-omega";
- *
- * let state = freshState();
- * state = addType(state, "Int", starKind).ok;
- * state = addEnum(state, "Color", [], [], [
- *   ["Red", tupleType([])],
- *   ["Blue", tupleType([])]
- * ]).ok;
- *
- * const patterns = [
- *   variantPattern("Red", varPattern("x")),
- *   variantPattern("Blue", varPattern("y"))
- * ];
- * const result = checkExhaustive(state, patterns, conType("Color"));
- * console.log("exhaustive:", "ok" in result);  // true
+ * checkExhaustive(state,
+ *   [variantPattern("Red", _), variantPattern("Blue", _)],
+ *   conType("Color")
+ * );
+ * // ok
  * ```
  *
- * @example Success: Wildcard early exit
+ * @example Missing case:
  * ```ts
- * import { freshState, checkExhaustive, varPattern } from "system-f-omega";
- * import { conType } from "system-f-omega";
- *
- * const state = freshState();
- * const patterns = [varPattern("x")];  // Catches all
- * const result = checkExhaustive(state, patterns, conType("Any"));
- * console.log("wildcard ok:", "ok" in result);  // true
+ * checkExhaustive(state,
+ *   [variantPattern("Some", varPattern("x"))],
+ *   appType(conType("Option"), conType("Int"))
+ * );
+ * // err({ missing_case: { label: "None" } })
  * ```
  *
- * @example Failure: Missing case
+ * @example Wildcard case:
  * ```ts
- * import { freshState, addEnum, checkExhaustive, conType, variantPattern, varPattern, starKind } from "system-f-omega";
- *
- * let state = freshState();
- * state = addEnum(state, "Color", [], [], [
- *   ["Red", { var: "Unit" }],
- *   ["Blue", { var: "Unit" }]
- * ]).ok;
- *
- * const patterns = [variantPattern("Red", varPattern("x"))];  // Missing Blue
- * const result = checkExhaustive(state, patterns, conType("Color"));
- * console.log("missing:", "missing_case" in result.err);  // true
+ * checkExhaustive(state, [wildcardPattern()], conType("Color"));
+ * // ok — wildcard covers all cases
  * ```
- *
- * @example Failure: Non-variant type
- * ```ts
- * import { freshState, checkExhaustive, conType } from "system-f-omega";
- *
- * const state = freshState();
- * const patterns = [];  // Empty OK for primitives
- * const result = checkExhaustive(state, patterns, conType("Int"));
- * console.log("non-variant ok:", "ok" in result);  // true
- * ```
- *
- * @see {@link inferMatchType} Calls during match inference
- * @see {@link checkPattern} Single-pattern validation
- * @see {@link extractPatternLabels} Label collection
  */
 export function checkExhaustive(
   state: TypeCheckerState,
@@ -1702,78 +2173,128 @@ export function checkExhaustive(
 }
 
 /**
- * Type-checks pattern against `type`, returning bindings for context extension.
+ * Checks whether a **pattern** is valid for a given **scrutinee type**, and
+ * returns all variable bindings introduced by that pattern.
  *
- * **Purpose**: Validates `pat :: type` → extracts vars as `Context` for branch typing:
- * - **Var**: Binds whole `type`.
- * - **Wildcard/Con**: No bindings.
- * - **Variant**: Unfold μ, infer metas, structural/nominal lookup → recurse on payload.
- * - **Record/Tuple**: Recurse on fields/elements.
+ * In other words:
  *
- * Errors: `unbound`, `not_a_variant`, `invalid_variant_label`, `kind_mismatch`.
+ *    “If the scrutinee has type `T`, is this pattern allowed,
+ *     and what variables does it bind (with their types)?”
  *
- * @param state - Checker state (ctx/metas)
- * @param pattern - Pattern to check
- * @param type - Expected type (normalized)
- * @returns Bindings `[{ term: { name: "x", type: τ } }, ...]` or error
+ * This is the core of pattern‑matching typechecking.
  *
- * @example Success: Variable binding
+ * ---------------------------------------------------------------------------
+ * What the function returns
+ * ---------------------------------------------------------------------------
+ * - **ok(Context)**: a list of `{ name, type }` bindings for variables inside the pattern
+ * - **err(TypingError)**: if the pattern is not valid for the given type
+ *
+ * Example:
  * ```ts
- * import { freshState, addType, checkPattern, varPattern, conType, starKind } from "system-f-omega";
+ * checkPattern(state, tuplePattern([varPattern("x"), varPattern("y")]),
+ *              tupleType([Int, Bool]));
  *
- * let state = freshState();
- * state = addType(state, "Int", starKind).ok;
- *
- * const result = checkPattern(state, varPattern("x"), conType("Int"));
- * console.log("bindings:", result.ok.length === 1);  // true
- * console.log("name:", result.ok[0].term.name);      // "x"
+ * // => ok([
+ * //   { term: { name: "x", type: Int } },
+ * //   { term: { name: "y", type: Bool } }
+ * // ])
  * ```
  *
- * @example Success: Nested variant (nominal enum)
+ * ---------------------------------------------------------------------------
+ * Patterns handled
+ * ---------------------------------------------------------------------------
+ * 1. **Variable pattern (`x`)**
+ *    - Binds the *entire* scrutinee type to variable `x`
+ *
+ * 2. **Wildcard pattern (`_`)**
+ *    - Always matches, binds nothing
+ *
+ * 3. **Variant pattern (`Some(p)` / `Left(p)`)**
+ *    - Works with:
+ *      - **μ‑types** (recursive): unfold once and continue
+ *      - **Meta‑variables**: infer the correct enum type by label
+ *      - **Structural variants** (`<L:A | R:B>`)
+ *      - **Nominal enums** (`Option<Int>`)
+ *
+ *    Errors include:
+ *    - `invalid_variant_label` (e.g., pattern uses `Foo` but enum has no `Foo`)
+ *    - `not_a_variant` (scrutinee is not a variant/enum)
+ *    - `kind_mismatch` (wrong number of enum type parameters)
+ *
+ * 4. **Record patterns (`{ x: p, y: q }`)**
+ *    → Delegated to `checkRecordPattern`
+ *
+ * 5. **Tuple patterns (`(p1, p2, ...)`)**
+ *    → Delegated to `checkTuplePattern`
+ *
+ * 6. **Constructor literal patterns (`true`, `None`, `Zero`)**
+ *    → Delegated to `checkConPattern`
+ *
+ * ---------------------------------------------------------------------------
+ * Special feature: Meta‑variable scrutinees
+ * ---------------------------------------------------------------------------
+ * If `type` is a **meta‑variable** (unknown type), but the pattern is a variant,
+ * example:
+ *
  * ```ts
- * import { freshState, addType, addEnum, checkPattern, variantPattern, varPattern, appType, conType, starKind, tupleType } from "system-f-omega";
- *
- * let state = freshState();
- * state = addType(state, "Int", starKind).ok;
- * state = addEnum(state, "Option", ["T"], [starKind], [
- *   ["None", tupleType([])],
- *   ["Some", conType("T")]
- * ]).ok;
- *
- * const result = checkPattern(state, variantPattern("Some", varPattern("x")), appType(conType("Option"), conType("Int")));
- * console.log("bindings:", result.ok.length === 1);  // true
- * console.log("name:", result.ok[0].term.name);      // "x"
+ * match v {
+ *   Some(x) => ...
+ * }
  * ```
  *
- * @example Success: Record flattening
+ * The checker infers that `v` *must* be some enum containing `"Some"`.
+ * It:
+ *  - finds which enum has a `"Some"` constructor
+ *  - builds an enum type with fresh meta‑vars
+ *  - unifies the scrutinee type with this inferred enum
+ *  - then recurses
+ *
+ * This enables powerful inference in match expressions.
+ *
+ * ---------------------------------------------------------------------------
+ * Recursive behavior
+ * ---------------------------------------------------------------------------
+ * Most pattern forms recursively call `checkPattern` on their subpatterns,
+ * building a flat list of variable bindings.
+ *
+ * ---------------------------------------------------------------------------
+ * Related:
+ * ---------------------------------------------------------------------------
+ * - {@link checkTuplePattern}
+ * - {@link checkRecordPattern}
+ * - {@link checkConPattern}
+ * - {@link normalizeType}
+ * - {@link unifyTypes} / {@link solveConstraints}
+ * - {@link patternBindings}
+ *
+ * ---------------------------------------------------------------------------
+ * @param state - The typechecker state (context + meta‑variable environment)
+ * @param pattern - The pattern to validate
+ * @param type - The expected type of the scrutinee for this pattern
+ * @returns A list of variable bindings introduced by the pattern, or an error
+ *
+ * ---------------------------------------------------------------------------
+ * @example Variant (nominal enum)
  * ```ts
- * import { freshState, addType, checkPattern, recordPattern, varPattern, conType, recordType, starKind } from "system-f-omega";
- *
- * let state = freshState();
- * state = addType(state, "Int", starKind).ok;
- * state = addType(state, "Bool", starKind).ok;
- *
- * const result = checkPattern(state, recordPattern([
- *   ["x", varPattern("a")],
- *   ["y", varPattern("b")]
- * ]), recordType([["x", conType("Int")], ["y", conType("Bool")]]));
- * console.log("bindings:", result.ok.length === 2);  // true ("a", "b")
+ * checkPattern(
+ *   state,
+ *   variantPattern("Some", varPattern("x")),
+ *   appType(conType("Option"), conType("Int"))
+ * );
+ * // => ok([{ term: { name: "x", type: Int } }])
  * ```
  *
- * @example Failure: Invalid variant label
+ * @example Variant (meta‑variable: type inferred from pattern)
  * ```ts
- * import { freshState, addEnum, checkPattern, variantPattern, varPattern, conType, starKind } from "system-f-omega";
- *
- * let state = freshState();
- * state = addEnum(state, "Color", [], [], [["Red", { var: "Unit" }]]).ok;
- *
- * const result = checkPattern(state, variantPattern("Blue", varPattern("x")), conType("Color"));
- * console.log("error:", "invalid_variant_label" in result.err);  // true
+ * checkPattern(state, variantPattern("Left", varPattern("x")), ?0);
+ * // => infers that ?0 must be an enum with constructor Left
  * ```
  *
- * @see {@link inferMatchType} Uses bindings per branch
- * @see {@link checkExhaustive} Coverage check
- * @see {@link patternBindings} Placeholder extraction
+ * @example Wildcard
+ * ```ts
+ * checkPattern(state, wildcardPattern(), Int);
+ * // => ok([])
+ * ```
  */
 export function checkPattern(
   state: TypeCheckerState,
@@ -2009,65 +2530,109 @@ function checkRecordPattern(
 }
 
 /**
- * Captures `[target ↦ replacement]` in `inType` (alpha-safe substitution).
+ * Performs **type‑level substitution**:
  *
- * **Purpose**: Core type transformation:
- * - Replace free `target` vars with `replacement`.
- * - **Skip bound vars**: `∀α.τ[α↦σ] = ∀α.τ`, `λ/μ` same.
- * - **Cycle guard**: `avoidInfinite` stops infinite recursion.
- * - **Structural**: Recurses on arrows/apps/records/etc.
- * - **Cons**: Now substitutes constructors too.
+ *    substituteType(target, replacement, inType)
  *
- * Used in: `instantiateType`, enum expansion, mu unfolding, normalization.
+ * meaning:
  *
- * @param target - Var/con name to replace
- * @param replacement - New type
- * @param inType - Input type
- * @param avoidInfinite - Cycle detection set (defaults empty)
- * @returns Substituted type
+ *    “Replace every *free* occurrence of type variable `target`
+ *     with `replacement` inside `inType`.”
  *
- * @example Basic variable capture
+ * ---------------------------------------------------------------------------
+ * What this function does
+ * ---------------------------------------------------------------------------
+ * It recursively walks a type and substitutes:
+ *
+ *   target ↦ replacement
+ *
+ * while respecting **binders** (`∀`, `λ`, `μ`) so that substitution does not
+ * accidentally replace *bound* occurrences of the variable.
+ *
+ * Example (free variable):
  * ```ts
- * import { substituteType, varType } from "system-f-omega";
- * import { arrowType, conType } from "system-f-omega";
- *
- * const ty = arrowType(varType("a"), varType("b"));
- * const subst = substituteType("a", conType("Int"), ty);
- * console.log(showType(subst));  // "(Int → b)"
+ * substituteType("A", Int, A → B)
+ * // => Int → B
  * ```
  *
- * @example Skip bound variable (alpha-safe)
+ * Example (bound variable — *skipped*):
  * ```ts
- * import { substituteType, forallType, varType, starKind } from "system-f-omega";
- * import { arrowType } from "system-f-omega";
- *
- * const poly = forallType("a", starKind, arrowType(varType("a"), varType("b")));
- * const subst = substituteType("a", varType("X"), poly);
- * console.log(showType(subst));  // "∀a::*. (a → b)" (skipped!)
+ * substituteType("A", Int, ∀A. A → B)
+ * // => ∀A. A → B   (inner A is bound; not replaced)
  * ```
  *
- * @example Mu cycle guard
- * ```ts
- * import { substituteType, muType, varType, tupleType } from "system-f-omega";
+ * ---------------------------------------------------------------------------
+ * Why binder safety matters
+ * ---------------------------------------------------------------------------
+ * Types have structure and scoping, just like terms.
+ * Replacing inside a bound variable’s scope would produce an invalid type:
  *
+ *   substitute A ↦ Int in ∀A. A → A   // WRONG
+ *
+ * would incorrectly yield:
+ *
+ *   ∀A. Int → Int   // changes meaning!
+ *
+ * This function avoids such errors by detecting binder variables and skipping
+ * substitution beneath them.
+ *
+ * ---------------------------------------------------------------------------
+ * Role in the typechecker
+ * ---------------------------------------------------------------------------
+ * - **Instantiation** of polymorphic types (`instantiateType`)
+ * - **Beta‑reduction** of type lambdas during normalization
+ * - **Enum and alias expansion** inside `normalizeType`
+ * - **Trait application** (substituting type parameters)
+ * - **Mu‑type unfolding** (`inferFoldType`, `inferUnfoldType`)
+ *
+ * ---------------------------------------------------------------------------
+ * Special feature: Cycle avoidance for μ‑types
+ * ---------------------------------------------------------------------------
+ * The optional `avoidInfinite` set tracks which recursive variables are already
+ * being substituted.
+ * This prevents infinite loops like:
+ *
+ *   μX. X   but substituting X inside its own body forever.
+ *
+ * Instead, when a variable is in `avoidInfinite`, substitution stops at that
+ * recursion boundary.
+ *
+ * ---------------------------------------------------------------------------
+ * Recursion rules (simplified)
+ * ---------------------------------------------------------------------------
+ * - `var` → replace if free match
+ * - `con` → never replaced
+ * - `forall`, `lam`, `mu` → stop if binder name matches `target`
+ * - composite types (`arrow`, `app`, `record`, `tuple`, `variant`) → recurse
+ *
+ * ---------------------------------------------------------------------------
+ * @param target - The type variable name being replaced (e.g., `"A"`)
+ * @param replacement - The type substituted in place of the target
+ * @param inType - The type expression where substitution occurs
+ * @param avoidInfinite - Internal set to prevent infinite recursion on μ‑types
+ *
+ * @returns A new type expression with the substitution applied safely
+ *
+ * ---------------------------------------------------------------------------
+ * @example Simple:
+ * ```ts
+ * substituteType("A", conType("Int"), arrowType(varType("A"), varType("B")));
+ * // => (Int → B)
+ * ```
+ *
+ * @example Bound variable (safe skip):
+ * ```ts
+ * const poly = forallType("A", starKind, arrowType(varType("A"), varType("X")));
+ * substituteType("A", conType("Int"), poly);
+ * // => ∀A. (A → X)
+ * ```
+ *
+ * @example Mu cycle safety:
+ * ```ts
  * const rec = muType("L", tupleType([varType("Int"), varType("L")]));
- * const avoid = new Set(["L"]);
- * const subst = substituteType("L", varType("X"), rec, avoid);
- * console.log(showType(subst));  // "μL.(Int, L)" (guarded!)
+ * substituteType("L", varType("X"), rec);
+ * // => μL. (Int, L)  (inner L is bound; safe)
  * ```
- *
- * @example Constructor substitution
- * ```ts
- * import { substituteType, conType, appType } from "system-f-omega";
- *
- * const either = appType(conType("Either"), conType("String"));
- * const subst = substituteType("Either", conType("Result"), either);
- * console.log(showType(subst));  // "Result<String>"
- * ```
- *
- * @see {@link instantiateType} Uses for Skolemization
- * @see {@link normalizeType} Mu/enum expansion
- * @see {@link applySubstitution} Term-level counterpart
  */
 export function substituteType(
   target: string,
@@ -2260,51 +2825,70 @@ function substituteArrowType(
 }
 
 /**
- * Checks if kind is concrete `*` (value-habiting types).
+ * Checks whether a kind is the **base kind** `*` (pronounced “star”).
  *
- * **Purpose**: Guards HKT apps, record/variant fields, trait methods.
- * All "data types" must be `:: *`.
+ * What it means:
+ * - `*` is the kind of **concrete, fully‑applied types** such as:
+ *   - `Int :: *`
+ *   - `Bool :: *`
+ *   - `List<Int> :: *`
  *
- * @param kind - Kind to test
- * @returns `true` if `*`
+ * This predicate distinguishes ordinary value‑level types from
+ * higher‑kinded type constructors (e.g., `* → *`).
  *
- * @example Concrete vs HKT
+ * Used in:
+ * - kind checking (`checkKind`)
+ * - enforcing field kinds in records/variants
+ * - bottom‑type rules (`⊥` must be kind `*`)
+ *
+ * @param kind - The kind to test
+ * @returns `true` if the kind is `*`, otherwise `false`
+ *
+ * @example
  * ```ts
- * import { isStarKind, starKind, arrowKind } from "system-f-omega";
- *
- * isStarKind(starKind);                    // true (Int :: *)
- * isStarKind(arrowKind(starKind, starKind));  // false (List :: * → *)
+ * isStarKind(starKind);                 // true
+ * isStarKind(arrowKind(starKind, starKind)); // false
  * ```
- *
- * @see {@link kindsEqual}
- * @see {@link checkKind}
  */
 export const isStarKind = (kind: Kind) => "star" in kind;
 
 /**
- * Structural equality for kinds (recursive).
+ * Checks whether two **kinds** are structurally equal.
  *
- * **Purpose**: Unifies kinds in apps (`List<Int>`), polymorphism binders.
- * Alpha-equivalent: `* ≡ *`, `κ₁→κ₂ ≡ κ₁'→κ₂'`.
+ * What it means:
+ * ---------------------------------------
+ * Kinds describe the “shape” of types:
+ * - `*` — the kind of fully‑applied, concrete types
+ * - `* → *` — the kind of unary type constructors (e.g., `List`)
+ * - `* → (* → *)` — higher‑kinded constructors
  *
- * @param left - First kind
- * @param right - Second kind
- * @returns `true` if equal
+ * `kindsEqual` compares two kinds recursively and returns `true` only if:
+ * - they are both `*`, or
+ * - they are both arrow kinds whose input and output kinds are equal.
  *
- * @example Basic + nested
+ * Why it’s important:
+ * ---------------------------------------
+ * - Ensures type constructors are used with the correct number of arguments
+ *   (`List<Int>` is OK, `Int<Int>` is not)
+ * - Used heavily during kind checking (`checkKind`)
+ * - Ensures polymorphic and type‑lambda binders have matching kinds
+ *
+ * Used by:
+ * - {@link unifyKinds}
+ * - {@link checkAppKind}
+ * - {@link checkForallKind}
+ *
+ * @param left - The first kind
+ * @param right - The second kind
+ * @returns `true` if both kinds are the same shape, otherwise `false`
+ *
+ * @example
  * ```ts
- * import { kindsEqual, starKind, arrowKind } from "system-f-omega";
- *
- * kindsEqual(starKind, starKind);  // true
- *
- * const hkt1 = arrowKind(starKind, starKind);      // * → *
- * const hkt2 = arrowKind(starKind, arrowKind(starKind, starKind));  // * → (* → *)
- * kindsEqual(hkt1, hkt1);  // true
- * kindsEqual(hkt1, hkt2);  // false
+ * kindsEqual(starKind, starKind);                          // true
+ * kindsEqual(arrowKind(starKind, starKind),
+ *            arrowKind(starKind, starKind));               // true
+ * kindsEqual(starKind, arrowKind(starKind, starKind));     // false
  * ```
- *
- * @see {@link isStarKind} Concrete check
- * @see {@link unifyKinds} Constraint version
  */
 export const kindsEqual = (left: Kind, right: Kind): boolean =>
   ("star" in left && "star" in right) ||
@@ -2314,79 +2898,79 @@ export const kindsEqual = (left: Kind, right: Kind): boolean =>
     kindsEqual(left.arrow.to, right.arrow.to));
 
 /**
- * Infers/validates kind of `type` under context (`Γ ⊢ τ : κ`).
+ * Infers or verifies the **kind** of a type.
  *
- * **Purpose**: Ensures types are well-formed:
- * - **EVar**: Lookup `meta.kinds`.
- * - **Var/Con**: Context lookup (aliases expand).
- * - **Compounds**: Recurse + structural rules (app: func arg → result).
- * - **Lenient**: Assume `*` for unbound vars (subtyping/bottom checks).
+ * In other words:
  *
- * Dispatcher → helpers (`checkAppKind`, etc.). Errors: `unbound`, `kind_mismatch`.
+ *    “What kind does this type have — `*`, `* → *`, etc. —
+ *     and is it used correctly?”
  *
- * @param state - Checker state (ctx/metas)
- * @param type - Type to kind
- * @param lenient - Assume `*` for unbound (defaults `false`)
- * @returns Inferred `Kind` or error
+ * Kinds classify *types* the same way types classify *values*:
+ * - `*` (star kind) — fully‑applied, concrete types (e.g., `Int`, `List<Int>`)
+ * - `* → *` — unary type constructors (e.g., `List`)
+ * - `(* → *) → *` — higher‑kinded type constructors
  *
- * @example Concrete type (star)
+ * `checkKind` is the **kind checker / kind inference engine** for the system.
+ *
+ * ---------------------------------------------------------------------------
+ * What this function does
+ * ---------------------------------------------------------------------------
+ * 1. Dispatches on every type constructor (`arrow`, `record`, `variant`, etc.)
+ * 2. Ensures type applications are well‑kinded:
+ *      - if `F :: κ1 → κ2` and `A :: κ1` then `F<A> :: κ2`
+ * 3. Ensures all fields of records, variants, and tuples have kind `*`
+ * 4. Ensures λ‑bound type variables and ∀‑quantified variables are used properly
+ * 5. Expands aliases and enums before checking (`normalizeType`)
+ * 6. Uses context entries (`TypeBinding`) to look up constructor kinds
+ *
+ * ---------------------------------------------------------------------------
+ * The `lenient` mode
+ * ---------------------------------------------------------------------------
+ * Normally, unbound type variables or constructors are an error:
+ *
+ *    Unknown type: X
+ *
+ * But when `lenient = true`, unbound names are treated as having kind `*`.
+ *
+ * This is used in:
+ * - subtyping (`subsumes`)
+ * - bottom‑type checks (`⊥`)
+ * - internal fast paths where strict kind checking would be too early
+ *
+ * ---------------------------------------------------------------------------
+ * Errors produced
+ * ---------------------------------------------------------------------------
+ * - `unbound`: missing type constructor or type variable
+ * - `not_a_type_function`: applying a non‑arrow kind
+ * - `kind_mismatch`: expected one kind but found another
+ *
+ * ---------------------------------------------------------------------------
+ * Examples
+ * ---------------------------------------------------------------------------
  * ```ts
- * import { freshState, addType, checkKind, starKind } from "system-f-omega";
+ * checkKind(state, conType("Int"));             // => ok(*)
  *
- * let state = freshState();
- * state = addType(state, "Int", starKind).ok;
+ * checkKind(state, appType(conType("List"), conType("Int")));
+ * // => ok(*), assuming List :: * → *
  *
- * const result = checkKind(state, { con: "Int" });
- * console.log("kind:", showKind(result.ok));  // "*"
+ * checkKind(state, appType(conType("Int"), conType("Bool")));
+ * // => err(not_a_type_function), because Int :: *
  * ```
  *
- * @example HKT application
- * ```ts
- * import { freshState, addType, checkKind, arrowKind, appType, starKind, conType } from "system-f-omega";
+ * ---------------------------------------------------------------------------
+ * Related
+ * ---------------------------------------------------------------------------
+ * - {@link Kind} — star kinds and arrow kinds
+ * - {@link arrowKind} — constructs arrow kinds
+ * - {@link isStarKind} — checks for `*`
+ * - {@link kindsEqual} — kind comparison
+ * - {@link normalizeType} — alias/enum expansion before checking
  *
- * let state = freshState();
- * state = addType(state, "List", arrowKind(starKind, starKind)).ok;
- * state = addType(state, "Int", starKind).ok;
+ * @param state - The type checker state (context + meta‑variable environment)
+ * @param type - The type whose kind must be checked or inferred
+ * @param lenient - If true, treat unbound names as having kind `*`
  *
- * const result = checkKind(state, appType(conType("List"), conType("Int")));
- * console.log("List<Int>:", showKind(result.ok));  // "*"
- * ```
- *
- * @example Type alias expansion
- * ```ts
- * import { freshState, addType, addTypeAlias, checkKind, starKind, arrowType, varType } from "system-f-omega";
- *
- * let state = freshState();
- * state = addType(state, "Int", starKind).ok;
- * state = addTypeAlias(state, "Id", ["A"], [starKind], varType("A")).ok;
- *
- * const result = checkKind(state, { con: "Id" });
- * console.log("Id kind:", showKind(result.ok));  // "*"
- * ```
- *
- * @example Failure: Kind mismatch
- * ```ts
- * import { freshState, addType, checkKind, arrowKind, starKind, conType } from "system-f-omega";
- *
- * let state = freshState();
- * state = addType(state, "List", arrowKind(starKind, starKind)).ok;
- *
- * const result = checkKind(state, conType("List"));  // List alone: * → *
- * console.log("error:", "kind_mismatch" in result.err);  // true
- * ```
- *
- * @example Lenient unbound
- * ```ts
- * import { freshState, checkKind, varType, starKind } from "system-f-omega";
- *
- * const state = freshState();
- * const result = checkKind(state, varType("Unknown"), true);  // lenient=true
- * console.log("lenient:", showKind(result.ok));  // "*"
- * ```
- *
- * @see {@link isStarKind} Concrete check
- * @see {@link kindsEqual} Equality
- * @see {@link addType} Binds constructors
+ * @returns `ok(kind)` if the type is well‑kinded, or a `TypingError` otherwise
  */
 export function checkKind(
   state: TypeCheckerState,
@@ -2715,75 +3299,110 @@ function typesEqualSpine(
 }
 
 /**
- * Alpha-equivalent structural equality after normalization (`τ₁ ≡ τ₂`).
+ * Determines whether two **types are equal**, after full normalization.
  *
- * **Purpose**: Decidable type equality for unification guards, subsumption:
- * - **Normalize first**: Expands aliases, β-reduces, unfolds μ.
- * - **Exact**: EVar/Var/Con by name.
- * - **Spine**: Nominal apps (`Either<a,b>` pairwise args).
- * - **Alpha**: Rename binders (`∀a.τ ≡ ∀b.τ[b/a]`).
- * - **Structural**: Records/variants/tuples (labels sorted).
+ * This is *structural, alpha‑equivalent* type equality — not pointer equality.
  *
- * Used in: Lookup, unification early-exit, trait matching.
+ * In other words, this function answers:
  *
- * @param state - Checker state (normalization)
+ *    “Do these two types represent the exact same type,
+ *     possibly after expanding aliases, normalizing enums,
+ *     beta‑reducing type lambdas, and renaming bound variables?”
+ *
+ * ---------------------------------------------------------------------------
+ * How equality is checked
+ * ---------------------------------------------------------------------------
+ *
+ * 1. **Normalization**
+ *    Both `left` and `right` are passed through {@link normalizeType}, which:
+ *    - expands type aliases
+ *    - expands enum applications to structural variants
+ *    - beta‑reduces type lambdas
+ *    - unfolds μ‑types (recursion) safely
+ *
+ *    This ensures two types are compared in their “canonical” form.
+ *
+ * 2. **Structural comparison**
+ *    The function recurses into every type constructor:
+ *    - arrows: `(A → B) == (A' → B')`
+ *    - apps: `(F A) == (F' A')`
+ *    - records: same fields after sorting
+ *    - variants: same labels + equal payload types
+ *    - tuples: same length + equal elements
+ *
+ * 3. **Alpha‑equivalence**
+ *    For binders (`∀`, `λ`, `μ`), bound variable names do *not* matter:
+ *
+ *    ```
+ *    ∀a. a -> a   ==   ∀b. b -> b
+ *    μX. T[X]     ==   μY. T[Y]
+ *    ```
+ *
+ *    This works by renaming the right‑hand side’s binder variable to match
+ *    the left before comparing bodies (using {@link alphaRename}).
+ *
+ * 4. **Nominal type applications**
+ *    Types like `Either<Int, Bool>` are compared using their **spine**:
+ *    - check same constructor (`Either`)
+ *    - check each argument pairwise
+ *    This is handled by {@link getSpineArgs} and the nominal check branch.
+ *
+ * ---------------------------------------------------------------------------
+ * When typesEqual is used
+ * ---------------------------------------------------------------------------
+ * - Early exits in unification (if types are already equal)
+ * - Checking for exact dictionary matches in traits
+ * - Detecting duplicate type definitions
+ * - Type printing, debugging tools, and REPL features
+ * - Subtyping fast‑path (`isAssignableTo`)
+ *
+ * ---------------------------------------------------------------------------
+ * Important: What typesEqual is *not*
+ * ---------------------------------------------------------------------------
+ * - It is **not** subtyping
+ *   (`Int` is NOT equal to `⊥`, but `⊥` *is* a subtype of `Int`)
+ *
+ * - It is **not** unification
+ *   `typesEqual(?0, Int)` does not bind `?0` — it simply returns false.
+ *
+ * It only checks whether two fully normalized types are *identical*.
+ *
+ * ---------------------------------------------------------------------------
+ * Examples
+ * ---------------------------------------------------------------------------
+ * ```ts
+ * typesEqual(state, Int, Int);                        // true
+ * typesEqual(state, Int, Bool);                       // false
+ *
+ * // Arrow types
+ * typesEqual(state, A → B, A → B);                    // true
+ *
+ * // Alpha-equivalent polymorphism
+ * typesEqual(
+ *   state,
+ *   forallType("a", *, a → a),
+ *   forallType("b", *, b → b)
+ * );                                                  // true
+ *
+ * // Nominal type applications
+ * typesEqual(
+ *   state,
+ *   Either<Int, Bool>,
+ *   Either<Int, Bool>
+ * );                                                  // true
+ *
+ * typesEqual(
+ *   state,
+ *   Either<Int, Bool>,
+ *   Either<Bool, Int>
+ * );                                                  // false
+ * ```
+ *
+ * ---------------------------------------------------------------------------
+ * @param state - Typechecker state (needed for normalization and alias/enum lookup)
  * @param left - First type
  * @param right - Second type
- * @returns `true` if equivalent
- *
- * @example Basic + nominal spine
- * ```ts
- * import { freshState, addType, typesEqual, appType, conType, starKind } from "system-f-omega";
- *
- * let state = freshState();
- * state = addType(state, "Either", starKind).ok;
- * state = addType(state, "Int", starKind).ok;
- * state = addType(state, "Bool", starKind).ok;
- *
- * const left = appType(appType(conType("Either"), conType("Int")), conType("Bool"));
- * const right = appType(appType(conType("Either"), conType("Int")), conType("Bool"));
- * console.log("Either<Int,Bool> == Either<Int,Bool>:", typesEqual(state, left, right));  // true
- * ```
- *
- * @example Alpha-equivalence (binders)
- * ```ts
- * import { freshState, typesEqual, forallType, arrowType, varType, starKind } from "system-f-omega";
- *
- * const state = freshState();
- * const left = forallType("a", starKind, arrowType(varType("a"), varType("a")));
- * const right = forallType("b", starKind, arrowType(varType("b"), varType("b")));
- * console.log("∀a.a→a == ∀b.b→b:", typesEqual(state, left, right));  // true
- * ```
- *
- * @example Data structures (labels sorted)
- * ```ts
- * import { freshState, typesEqual, recordType, variantType, tupleType } from "system-f-omega";
- * import { conType } from "system-f-omega";
- *
- * const state = freshState();
- * const recLeft = recordType([["y", conType("Bool")], ["x", conType("Int")]]);
- * const recRight = recordType([["x", conType("Int")], ["y", conType("Bool")]]);
- * console.log("{x:Int,y:Bool} == {y:Bool,x:Int}:", typesEqual(state, recLeft, recRight));  // true
- *
- * const varLeft = variantType([["Right", conType("Bool")], ["Left", conType("Int")]]);
- * const varRight = variantType([["Left", conType("Int")], ["Right", conType("Bool")]]);
- * console.log("variant equal:", typesEqual(state, varLeft, varRight));  // true
- * ```
- *
- * @example Failure (mismatch)
- * ```ts
- * import { freshState, typesEqual, arrowType, conType } from "system-f-omega";
- *
- * const state = freshState();
- * const fn1 = arrowType(conType("Int"), conType("Bool"));
- * const fn2 = arrowType(conType("Bool"), conType("Int"));
- * console.log("Int→Bool == Bool→Int:", typesEqual(state, fn1, fn2));  // false
- * ```
- *
- * @see {@link normalizeType} Preprocessing
- * @see {@link alphaRename} Binder equivalence
- * @see {@link typesEqualSpine} Nominal spine
- * @see {@link subsumes} Uses for unification fallback
+ * @returns `true` if the types are equal after normalization, `false` otherwise
  */
 export function typesEqual(
   state: TypeCheckerState,
@@ -2944,59 +3563,85 @@ export function typesEqual(
 }
 
 /**
- * Alpha-renames free occurrences of `from` to `to` (binder-safe).
+ * Performs **alpha‑renaming** inside a type:
  *
- * **Purpose**: Enables alpha-equivalence in `typesEqual`:
- * - Rename free vars.
- * - **Skip shadowed binders**: `∀α.τ[α↦β] = ∀α.τ`.
- * - Structural recurse (arrow/app/record/etc.).
+ *    alphaRename(from, to, type)
  *
- * Used for: `typesEqual(∀a.τ, ∀b.σ)` → rename `b→a` → compare bodies.
-
- * @param from - Var to rename
- * @param to - New var name
- * @param type - Input type
- * @returns Renamed type (unchanged if `from===to`)
+ * meaning:
  *
- * @example Free variable rename
- * ```ts
- * import { alphaRename, varType, arrowType } from "system-f-omega";
+ *    “Rename all **free** occurrences of type variable `from`
+ *     to the variable name `to`, without touching bound occurrences.”
  *
- * const ty = arrowType(varType("a"), varType("b"));
- * const renamed = alphaRename("a", "X", ty);
- * console.log(showType(renamed));  // "(X → b)"
+ * ---------------------------------------------------------------------------
+ * Why alpha‑renaming matters
+ * ---------------------------------------------------------------------------
+ * This operation ensures that two types with different binder names are treated
+ * as equivalent when comparing them.
+ * For example:
+ *
+ * ```
+ * ∀a. a → a
+ * ∀b. b → b
  * ```
  *
- * @example Skip bound binder
- * ```ts
- * import { alphaRename, forallType, arrowType, varType, starKind } from "system-f-omega";
+ * These are the **same type**, even though the binder uses a different name.
+ * `alphaRename` makes bound-variable names consistent so that
+ * {@link typesEqual} can compare the bodies structurally.
  *
- * const poly = forallType("a", starKind, arrowType(varType("a"), varType("b")));
- * const renamed = alphaRename("a", "X", poly);
- * console.log(showType(renamed));  // "∀a::*. (a → b)" (skipped!)
+ * ---------------------------------------------------------------------------
+ * What counts as a “bound” variable?
+ * ---------------------------------------------------------------------------
+ * A variable is *bound* when introduced by:
+ * - `forall A::κ. ...`
+ * - `λA::κ. ...` (type-level lambda)
+ * - `μA. ...` (recursive types)
+ * - `∀{constraints}. ...` (bounded forall)
+ *
+ * In these cases:
+ * - If the binder uses the same name as `from`, renaming **stops** — the
+ *   bound variable shadows the outer name.
+ *
+ * ---------------------------------------------------------------------------
+ * Behavior summary
+ * ---------------------------------------------------------------------------
+ * - If `from === to` → no change.
+ * - Free occurrences of `from` become `to`.
+ * - Bound occurrences are **not** renamed (binder‑safe).
+ * - Recursively renames inside:
+ *   - arrows
+ *   - applications
+ *   - records
+ *   - variants
+ *   - tuples
+ *   - forall / bounded_forall (except bound variable)
+ *   - lam and mu types (except bound variable)
+ *
+ * ---------------------------------------------------------------------------
+ * Used in:
+ * ---------------------------------------------------------------------------
+ * - {@link typesEqual} — checking alpha‑equivalent types
+ * - {@link unifyTypes} — comparing polymorphic types
+ * - Everywhere we treat type binders as renamable identifiers
+ *
+ * ---------------------------------------------------------------------------
+ * @param from - The variable name to rename (e.g., `"a"`)
+ * @param to - The new variable name (e.g., `"X"`)
+ * @param type - The type expression being renamed
+ * @returns A type with free occurrences of `from` rewritten to `to`
+ *
+ * ---------------------------------------------------------------------------
+ * @example Renaming free variables:
+ * ```ts
+ * alphaRename("a", "X", arrowType(varType("a"), varType("b")));
+ * // => (X → b)
  * ```
  *
- * @example Nested data structures
+ * @example Bound variable is shadowed (renaming skipped):
  * ```ts
- * import { alphaRename, recordType, varType } from "system-f-omega";
- * import { conType } from "system-f-omega";
- *
- * const rec = recordType([["x", varType("a")], ["y", conType("Int")]]);
- * const renamed = alphaRename("a", "T", rec);
- * console.log(showType(renamed));  // "{x: T, y: Int}"
+ * const t = forallType("a", starKind, arrowType(varType("a"), varType("b")));
+ * alphaRename("a", "X", t)
+ * // => ∀a::*. (a → b)   (inner 'a' is bound)
  * ```
- *
- * @example Identity (no-op)
- * ```ts
- * import { alphaRename, varType } from "system-f-omega";
- *
- * const ty = varType("a");
- * const same = alphaRename("a", "a", ty);
- * console.log(showType(same));  // "a"
- * ```
- *
- * @see {@link typesEqual} Primary caller (alpha-equivalence)
- * @see {@link substituteType} Similar (no binder skip)
  */
 export function alphaRename(from: string, to: string, type: Type): Type {
   if (from === to) return type; // no need to rename
@@ -3093,91 +3738,135 @@ export function alphaRename(from: string, to: string, type: Type): Type {
 }
 
 /**
- * Core unification engine: `left ~ right` (mutates `worklist`/`subst`).
+ * Attempts to **unify two types** (`left ~ right`) and records any resulting
+ * meta‑variable bindings in the provided substitution map.
  *
- * **Purpose**: Solves type equations via worklist:
- * 1. **Normalize** + early `typesEqual`.
- * 2. **Degenerate μ** → cyclic error.
- * 3. **Bottom**: `⊥ ~ ⊥`, `⊥ ~ τ::*` (asymmetric).
- * 4. **Rigid-rigid**: `typesEqual` or mismatch.
- * 5. **Flex-rigid**: Bind meta (occurs-checked).
- * 6. **Nominal spine**: Head + arg pairs → worklist.
- * 7. **Arrows**: Bottom-domain → codomain only.
- * 8. **Structural**: Dispatch to helpers (`unifyArrowTypes`, etc.).
+ * This is the heart of the type inference engine.
  *
- * Defers to worklist. Heart of inference/checking.
+ * ---------------------------------------------------------------------------
+ * What “unification” means
+ * ---------------------------------------------------------------------------
+ * Unification attempts to make two types **structurally identical** by:
+ * - Expanding aliases / enums / lambdas (`normalizeType`)
+ * - Equating corresponding subcomponents
+ * - Solving meta‑variables (`?0 := Int`)
+ * - Adding new type‑equality constraints to the worklist
  *
- * @param state - Checker state
- * @param left - Left type
- * @param right - Right type
- * @param worklist - Constraint queue
- * @param subst - Mutable bindings
- * @returns `ok(null)` or error
+ * If successful, the caller’s substitution map `subst` accumulates bindings that
+ * describe how unknown types should be instantiated.
  *
- * @example Success: Basic unification
+ * If unification fails → returns a `type_mismatch` or other error.
+ *
+ * ---------------------------------------------------------------------------
+ * Why unification is needed
+ * ---------------------------------------------------------------------------
+ * - Inferring types of applications (`f x`)
+ * - Matching polymorphic types to concrete instantiations
+ * - Checking record/variant structure compatibility
+ * - Solving trait constraints
+ * - Merging match branch types
+ *
+ * Unification is the “engine” behind all higher‑order inference.
+ *
+ * ---------------------------------------------------------------------------
+ * Overview of the unification algorithm
+ * ---------------------------------------------------------------------------
+ * 1. **Normalize** both types to eliminate syntactic noise
+ *    (aliases, enums, beta‑reduction, μ‑unfolding).
+ *
+ * 2. **Trivial equality**
+ *    If types are already equal (`typesEqual`) → succeed immediately.
+ *
+ * 3. **Cyclic μ‑type detection**
+ *    Reject degenerate recursive types like:
+ *      μX. X
+ *
+ * 4. **Bottom‑type rules (`⊥`)**
+ *    Special asymmetric behavior:
+ *      - `⊥ ~ T` succeeds if `T :: *`
+ *      - `T ~ ⊥` only when `T` is also bottom
+ *
+ * 5. **Rigid–rigid mismatch**
+ *    Concrete types (`Int`, `Bool`, arrow types, variants, etc.)
+ *    must match structurally or unification fails.
+ *
+ * 6. **Flex–rigid (meta‑variable binding)**
+ *    A meta‑variable (`?N`) can unify with any type of appropriate kind,
+ *    unless doing so would create a cycle (occurs‑check).
+ *
+ * 7. **Nominal application unification**
+ *    For types like:
+ *      Either<Int, Bool> ~ Either<a, b>
+ *    unify their spines argument‑by‑argument.
+ *
+ * 8. **Structural unification**
+ *    Recurse into:
+ *      - arrows
+ *      - apps
+ *      - foralls / bounded foralls
+ *      - records (label‑matching + width subtyping)
+ *      - variants (label‑matching)
+ *      - tuples
+ *      - μ‑types
+ *
+ * 9. **Add constraints to the worklist**
+ *    Instead of solving immediately, unification produces **type‑equality
+ *    constraints** which `solveConstraints` resolves afterward.
+ *
+ * ---------------------------------------------------------------------------
+ * Substitution behavior
+ * ---------------------------------------------------------------------------
+ * - `subst` stores *local* meta‑variable solutions for this unification step
+ * - global solutions live in `state.meta.solutions`
+ * - both are consulted during meta‑var resolution
+ * - occurs‑check prevents:
+ *     `?0 := (?0 → Int)`
+ *
+ * ---------------------------------------------------------------------------
+ * Error cases
+ * ---------------------------------------------------------------------------
+ * - `type_mismatch`: incompatible structures
+ * - `cyclic`: illegal recursive type detected
+ * - `kind_mismatch`: meta‑variable or nested type kind conflict
+ * - `not_a_variant` / `not_a_record` / etc. from structural mismatch
+ *
+ * ---------------------------------------------------------------------------
+ * Examples
+ * ---------------------------------------------------------------------------
+ * Basic unification:
  * ```ts
- * import { freshState, unifyTypes, solveConstraints, typeEq, varType, conType } from "system-f-omega";
- *
- * const state = freshState();
- * const worklist: Constraint[] = [];
- * const subst = new Map<string, Type>();
  * unifyTypes(state, varType("a"), conType("Int"), worklist, subst);
- * solveConstraints(state, worklist, subst);
- * console.log("a:", showType(subst.get("a")!));  // "Int"
+ * // => subst["a"] = Int
  * ```
  *
- * @example Flex-rigid binding (meta)
+ * Unifying arrows:
  * ```ts
- * import { freshState, freshMetaVar, unifyTypes, solveConstraints, arrowType, conType } from "system-f-omega";
- *
- * const state = freshState();
- * const meta = freshMetaVar(state.meta);
- * const subst = new Map<string, Type>();
- * unifyTypes(state, meta, arrowType(conType("Int"), conType("Bool")), [], subst);
- * console.log("bound:", showType(subst.get(meta.evar)!));  // "(Int → Bool)"
+ * unifyTypes(state, A → B, Int → Bool)
+ * // => worklist adds constraints: A = Int, B = Bool
  * ```
  *
- * @example Nominal spine (Either args)
+ * Enum applications:
  * ```ts
- * import { freshState, addType, unifyTypes, solveConstraints, appType, conType, varType, starKind } from "system-f-omega";
- *
- * let state = freshState();
- * state = addType(state, "Either", starKind).ok;
- * state = addType(state, "Int", starKind).ok;
- * state = addType(state, "Bool", starKind).ok;
- *
- * const left = appType(appType(conType("Either"), conType("Int")), conType("Bool"));
- * const right = appType(appType(conType("Either"), varType("a")), varType("b"));
- * const subst = new Map();
- * unifyTypes(state, left, right, [], subst);
- * solveConstraints(state, [], subst);
- * console.log("a:", showType(subst.get("a")!));  // "Int"
+ * unifyTypes(state,
+ *   Either<Int, Bool>,
+ *   Either<a, b>
+ * );
+ * // => a = Int, b = Bool
  * ```
  *
- * @example Bottom rules (asymmetric)
+ * Bottom rules:
  * ```ts
- * import { freshState, unifyTypes, neverType, conType } from "system-f-omega";
- *
- * const state = freshState();
- * const subst = new Map();
- *
- * unifyTypes(state, neverType, conType("Int"), [], subst);  // ok (⊥ ~ Int)
- * unifyTypes(state, conType("Int"), neverType, [], subst);  // err(mismatch)
+ * unifyTypes(state, ⊥, Int);    // ok
+ * unifyTypes(state, Int, ⊥);    // error
  * ```
  *
- * @example Failure: Rigid mismatch
- * ```ts
- * import { freshState, unifyTypes, conType } from "system-f-omega";
- *
- * const state = freshState();
- * const result = unifyTypes(state, conType("Int"), conType("Bool"), [], new Map());
- * console.log("mismatch:", "type_mismatch" in result.err);  // true
- * ```
- *
- * @see {@link solveConstraints} Processes worklist
- * @see {@link unifyFlex} Meta binding
- * @see {@link typesEqual} Early exit
- * @see {@link unifyArrowTypes} Arrow dispatch
+ * ---------------------------------------------------------------------------
+ * @param state - Complete typechecker state (context + meta-env)
+ * @param left - First type to unify
+ * @param right - Second type to unify
+ * @param worklist - Accumulates type-equality constraints to solve later
+ * @param subst - Local substitution map mutated with meta‑variable bindings
+ * @returns `ok(null)` on success or a `TypingError` on failure
  */
 export function unifyTypes(
   state: TypeCheckerState,
@@ -3634,68 +4323,104 @@ function unifyBoundedForallTypes(
 }
 
 /**
- * Unifies type variable `varName` with `type` (rigid-flex).
+ * Unifies a **rigid type variable** (`varName`) with another type.
  *
- * **Purpose**: `α ~ τ` for **type vars** (not metas):
- * 1. Existing subst → check equal.
- * 2. Tautology: `α ~ α`.
- * 3. `⊥` special: No bind (subtyping later).
- * 4. Occurs-check → cyclic.
- * 5. Bind: `subst.set(α, τ)`.
+ * This is the rigid‑flex version of unification:
  *
- * Called by `unifyTypes`. Handles non-meta vars.
+ *    α ~ τ
  *
- * @param state - Checker state
- * @param varName - Type var (`"a"`)
- * @param type - Type to unify
- * @param subst - Mutable bindings
- * @returns `ok(null)` or error
+ * where `α` is a *named type variable* (not a meta‑variable) and `τ` is any type.
  *
- * @example Success: Bind var
+ * ---------------------------------------------------------------------------
+ * What this function does
+ * ---------------------------------------------------------------------------
+ * Type variables introduced by:
+ * - `∀α. ...` (polymorphism)
+ * - type‑level lambdas (`λα. ...`)
+ * - recursive types (`μα. ...`)
+ *
+ * must obey **rigid** unification rules:
+ * they cannot be arbitrarily rewritten unless the rules allow it.
+ *
+ * The rules implemented here are:
+ *
+ * 1. **If α already has a substitution in `subst`:**
+ *    Check that the new type is consistent with the existing one
+ *    (using {@link typesEqual}).
+ *
+ * 2. **α ~ α**
+ *    A trivial tautology — succeed immediately.
+ *
+ * 3. **Bottom type rule**
+ *    If the type is bottom (`⊥`), do *not* bind α; simply succeed.
+ *    Bottom is a subtype of all types (`⊥ <: τ`) and can unify with anything,
+ *    but should not change the substitution environment.
+ *
+ * 4. **Occurs check (cycle detection)**
+ *    Disallow recursive bindings like:
+ *      α := (α → Int)
+ *    If such a cycle is detected, report a `cyclic` error.
+ *
+ * 5. **Otherwise, bind α := type**
+ *    This adds a new entry to the local substitution map.
+ *
+ * This is similar to the flex‑rigid case of `unifyTypes`, but specialized
+ * for *named* type variables (not meta‑vars).
+ *
+ * ---------------------------------------------------------------------------
+ * Why rigid type variables need special handling
+ * ---------------------------------------------------------------------------
+ * - Meta‑variables (`?0`) are flexible: they can unify with anything.
+ * - Rigid variables (`A`, `Self`, etc.) behave like *constants*
+ *   unless inference rules explicitly allow solving them.
+ *
+ * This prevents improperly instantiating a polymorphic function or violating
+ * the scoping of quantified type variables.
+ *
+ * ---------------------------------------------------------------------------
+ * Error cases
+ * ---------------------------------------------------------------------------
+ * - `type_mismatch`: conflicting substitution for α
+ * - `cyclic`: type α occurs inside the type being assigned
+ *
+ * ---------------------------------------------------------------------------
+ * Examples
+ * ---------------------------------------------------------------------------
+ * **Successful bind**
  * ```ts
- * import { freshState, unifyVariable, arrowType, conType, typesEqual } from "system-f-omega";
- *
- * const state = freshState();
- * const subst = new Map<string, Type>();
- * const result = unifyVariable(state, "a", arrowType(conType("Int"), conType("Bool")), subst);
- * console.log("bound:", subst.has("a"));  // true
- * console.log("equal:", typesEqual(state, subst.get("a")!, arrowType(conType("Int"), conType("Bool"))));  // true
+ * unifyVariable(state, "A", Int, subst);
+ * // subst["A"] = Int
  * ```
  *
- * @example Tautology (α ~ α)
+ * **Tautology**
  * ```ts
- * import { freshState, unifyVariable, varType } from "system-f-omega";
- *
- * const state = freshState();
- * const subst = new Map();
- * const result = unifyVariable(state, "a", varType("a"), subst);
- * console.log("tautology:", "ok" in result);  // true (no bind)
+ * unifyVariable(state, "A", varType("A"), subst);  // ok
  * ```
  *
- * @example Bottom special (no bind)
+ * **Bottom rule**
  * ```ts
- * import { freshState, unifyVariable, neverType } from "system-f-omega";
- *
- * const state = freshState();
- * const subst = new Map();
- * const result = unifyVariable(state, "a", neverType, subst);
- * console.log("bottom ok:", "ok" in result && !subst.has("a"));  // true
+ * unifyVariable(state, "A", neverType, subst);  // ok, no binding created
  * ```
  *
- * @example Failure: Cyclic
+ * **Cycle detection**
  * ```ts
- * import { freshState, unifyVariable, arrowType, varType } from "system-f-omega";
- *
- * const state = freshState();
- * const cyclicTy = arrowType(varType("a"), varType("Int"));
- * const subst = new Map();
- * const result = unifyVariable(state, "a", cyclicTy, subst);
- * console.log("cyclic:", "cyclic" in result.err);  // true
+ * unifyVariable(state, "A", A → Int, subst);
+ * // err: { cyclic: "A" }
  * ```
  *
- * @internal Called by {@link unifyTypes}
- * @see {@link occursCheck} Cycle detection
- * @see {@link unifyMetaVar} Meta counterpart
+ * ---------------------------------------------------------------------------
+ * Related
+ * ---------------------------------------------------------------------------
+ * - {@link unifyTypes} — top‑level unification algorithm
+ * - {@link occursCheck} — detects illegal cycles
+ * - {@link isBottom} — bottom‑type rule
+ * - {@link typesEqual} — structural equality for consistency checks
+ *
+ * @param state - Typechecker state (needed for bottom checks, normalization)
+ * @param varName - The rigid type variable to unify (e.g. "A")
+ * @param type - The type we want to unify it with
+ * @param subst - Current substitution map (mutated on success)
+ * @returns `ok(null)` on success or a `TypingError` on failure
  */
 export function unifyVariable(
   state: TypeCheckerState,
@@ -3738,37 +4463,46 @@ export function unifyVariable(
 }
 
 /**
- * Unifies two kinds: wrapper over `kindsEqual`.
+ * Unifies two **kinds**, producing a `kind_mismatch` error if they differ.
  *
- * **Purpose**: Constraint solver primitive for kind equality.
- * Returns `kind_mismatch` on failure.
+ * What it checks:
+ * ---------------------------------------
+ * - Kind equality is purely **structural**:
+ *   - `*` unifies with `*`
+ *   - `* → *` unifies with `* → *`
+ *     (recursively unifying input and output kinds)
+ * - Uses {@link kindsEqual} for the structural comparison.
  *
- * @param left - First kind
- * @param right - Second kind
- * @returns `ok(null)` if equal
+ * Why it matters:
+ * ---------------------------------------
+ * Kind unification is the kind‑level analogue of type unification.
+ * It ensures type constructors are used correctly:
  *
- * @example Success: Equal kinds
+ * - `List :: * → *`
+ * - `List<Int> :: *`
+ * - `Int<Int>` → error (`Int :: *`, not `* → *`)
+ *
+ * This function is used by:
+ * - the constraint solver (`processConstraint`)
+ * - type application kind checking (`checkAppKind`)
+ * - polymorphic binder validation (`checkForallKind`, `checkLamKind`)
+ *
+ * Errors produced:
+ * - `kind_mismatch`: kinds differ structurally
+ *
+ * @param left - The first kind
+ * @param right - The second kind
+ * @returns `ok(null)` if equal, otherwise `kind_mismatch`
+ *
+ * @example
  * ```ts
- * import { unifyKinds, starKind, arrowKind } from "system-f-omega";
+ * unifyKinds(starKind, starKind);                  // ok
+ * unifyKinds(arrowKind(starKind, starKind),
+ *            arrowKind(starKind, starKind));       // ok
  *
- * const result1 = unifyKinds(starKind, starKind);
- * console.log("star equal:", "ok" in result1);  // true
- *
- * const hkt = arrowKind(starKind, starKind);
- * const result2 = unifyKinds(hkt, hkt);
- * console.log("HKT equal:", "ok" in result2);  // true
+ * unifyKinds(starKind, arrowKind(starKind, starKind));
+ * // err({ kind_mismatch: ... })
  * ```
- *
- * @example Failure: Mismatch
- * ```ts
- * import { unifyKinds, starKind, arrowKind } from "system-f-omega";
- *
- * const result = unifyKinds(starKind, arrowKind(starKind, starKind));
- * console.log("mismatch:", "kind_mismatch" in result.err);  // true
- * ```
- *
- * @see {@link kindsEqual} Structural check
- * @see {@link solveConstraints} Worklist consumer
  */
 export function unifyKinds(left: Kind, right: Kind): Result<TypingError, null> {
   if (kindsEqual(left, right)) return ok(null);
@@ -3776,41 +4510,69 @@ export function unifyKinds(left: Kind, right: Kind): Result<TypingError, null> {
 }
 
 /**
- * Occurs check for type variables: `varName` free in `type`?
+ * Performs the **occurs check** for a *rigid* type variable.
  *
- * **Purpose**: Cycle detection in `unifyVariable`: blocks `a := a → Int`.
- * Skips bound vars (`∀a.τ`, `λ/μ`). Flags degenerate `μM.M`.
+ * In other words, this tests whether a type variable `varName` appears
+ * **anywhere inside** a type expression `type`.
  *
- * @param varName - Type var (`"a"`)
- * @param type - Type to search
- * @returns `true` if free occurrence
+ * This is used to prevent forming **infinite types**, such as:
  *
- * @example Occurs in structure
+ *    a = (a → Int)
+ *
+ * which cannot exist in this type system.
+ *
+ * ---------------------------------------------------------------------------
+ * What it does
+ * ---------------------------------------------------------------------------
+ * - Recursively walks the structure of `type`
+ * - Returns `true` if it finds a **free occurrence** of `varName`
+ * - Ignores *bound* occurrences of the variable:
+ *     - inside `∀a. ...`
+ *     - inside `λα. ...` (type lambdas)
+ *     - inside `μa. ...` (recursive types)
+ *
+ * If a bound variable shadows `varName`, the search stops at that binder.
+ *
+ * ---------------------------------------------------------------------------
+ * Why this is needed
+ * ---------------------------------------------------------------------------
+ * During unification, when trying to bind a rigid variable:
+ *
+ *    a := τ
+ *
+ * we must ensure `a` does not appear anywhere inside `τ`.
+ * Failing to do this would create illegal self‑referential types.
+ *
+ * Example of a cycle:
  * ```ts
- * import { occursCheck, arrowType, varType } from "system-f-omega";
+ * occursCheck("A", arrowType(varType("A"), Int));
+ * // => true (A occurs inside the type)
  *
- * const ty = arrowType(varType("a"), varType("Int"));
- * console.log("a occurs:", occursCheck("a", ty));  // true
+ * unifyVariable(...) would reject this binding.
  * ```
  *
- * @example Skipped binder
+ * Example of a safe case:
  * ```ts
- * import { occursCheck, forallType, arrowType, varType, starKind } from "system-f-omega";
- *
- * const poly = forallType("a", starKind, arrowType(varType("a"), varType("b")));
- * console.log("outer a:", occursCheck("a", poly));  // false (bound)
+ * occursCheck("A", forallType("A", *, varType("A")));
+ * // => false (inner A is bound/shadowed)
  * ```
  *
- * @example Degenerate mu (cyclic)
- * ```ts
- * import { occursCheck, muType, varType } from "system-f-omega";
+ * ---------------------------------------------------------------------------
+ * Algorithm summary
+ * ---------------------------------------------------------------------------
+ * - If `type` is `varType(varName)` → return `true`
+ * - If type is a binder with the same name (`∀A`, `λA`, `μA`) → stop (shadowed)
+ * - Otherwise, recurse into all child types
  *
- * const degenerate = muType("M", varType("M"));
- * console.log("degenerate:", occursCheck("X", degenerate));  // true (flags μM.M)
- * ```
+ * ---------------------------------------------------------------------------
+ * Used by
+ * ---------------------------------------------------------------------------
+ * - {@link unifyVariable}
+ * - {@link unifyTypes}
  *
- * @see {@link unifyVariable} Caller
- * @see {@link occursCheckEvar} Meta-var version
+ * @param varName - The variable we are checking for (e.g. `"A"`)
+ * @param type - The type expression to scan
+ * @returns `true` if `varName` occurs free inside `type`
  */
 export function occursCheck(varName: string, type: Type): boolean {
   if ("var" in type) return type.var === varName;
@@ -3860,73 +4622,113 @@ export function occursCheck(varName: string, type: Type): boolean {
 }
 
 /**
- * Applies substitution to type (metas → solutions, vars → bindings).
+ * Applies a **type substitution** to a type.
  *
- * **Purpose**: Resolves `subst`/`meta.solutions` in `type`:
- * - **Metas**: `?N → sol` (follow chains).
- * - **Vars**: `α → subst(α)` (cycle-detect via `visited`).
- * - **Binders**: Shadow subst (`∀α.τ[α↦σ] = ∀α.τ[free↦σ]`).
- * - **Structural**: Recurse on compounds.
+ * This resolves:
+ *   - **meta‑variables** (`?0`, `?1`, …) using both local `subst`
+ *     and global `state.meta.solutions`
+ *   - **rigid type variables** (`A`, `Self`, etc.) using `subst` only
  *
- * Used post-unification: `applySubstitution(solveRes.ok, resultTy)`.
+ * In other words:
  *
- * @param state - Checker state (metas fallback)
- * @param subst - Local bindings `Map<string, Type>`
- * @param type - Input type
- * @param visited - Cycle set (defaults empty)
- * @returns Resolved type
+ *    applySubstitution(state, subst, τ)
  *
- * @example Meta resolution
+ * replaces any variables mentioned in `subst` with their solutions,
+ * recursively rewriting the structure of `τ`.
+ *
+ * ---------------------------------------------------------------------------
+ * Why this function exists
+ * ---------------------------------------------------------------------------
+ * After unification or constraint solving, we accumulate substitutions such as:
+ *
+ *   ?0 := Int
+ *   A  := Bool
+ *
+ * These substitutions must be applied to types produced later in inference:
+ * - results of `inferType`
+ * - branch types in `inferMatchType`
+ * - type arguments in polymorphic applications
+ * - dictionary instantiation for traits
+ *
+ * `applySubstitution` ensures types remain **up‑to‑date** with the solver.
+ *
+ * ---------------------------------------------------------------------------
+ * Behavior summary
+ * ---------------------------------------------------------------------------
+ *
+ * **Meta‑variables (`?N`):**
+ * - If solved in `subst`, replace with its value
+ * - Otherwise, if solved in `state.meta.solutions`, replace with that value
+ * - Otherwise, leave as an unsolved meta‑variable
+ *
+ * **Rigid type variables (`A`):**
+ * - If bound in `subst`, replace recursively
+ * - Otherwise, leave unchanged
+ *
+ * **Binders** (`∀A`, `λα`, `μα`):
+ * - Substitution must **not** rewrite a bound variable
+ *   (to avoid capture or invalid types)
+ * - We remove the bound variable name from `subst` for the recursive call
+ *
+ * **Composite types**:
+ * - Recurse into every sub‑type: arrows, apps, records, tuples, variants, etc.
+ *
+ * ---------------------------------------------------------------------------
+ * Cycle prevention
+ * ---------------------------------------------------------------------------
+ * The optional `visited` set tracks rigid type variables already substituted.
+ * This prevents infinite loops when substitutions form chains like:
+ *
+ *   A := B, B := A
+ *
+ * or when substitution expands into another variable referencing the first.
+ *
+ * ---------------------------------------------------------------------------
+ * Examples
+ * ---------------------------------------------------------------------------
+ *
+ * **Meta‑variable resolution**
  * ```ts
- * import { freshState, freshMetaVar, applySubstitution, conType, arrowType } from "system-f-omega";
- *
- * const state = freshState();
- * const meta = freshMetaVar(state.meta);
- * const subst = new Map([ [meta.evar, arrowType(conType("Int"), conType("Bool"))] ]);
- * const resolved = applySubstitution(state, subst, meta);
- * console.log("meta:", showType(resolved));  // "(Int → Bool)"
+ * subst = new Map([["?0", Int]]);
+ * applySubstitution(state, subst, ?0)
+ * // => Int
  * ```
  *
- * @example Var chain (cycle safe)
+ * **Rigid variable chain**
  * ```ts
- * import { freshState, applySubstitution, varType } from "system-f-omega";
- * import { conType } from "system-f-omega";
- *
- * const state = freshState();
- * const subst = new Map([
- *   ["a", { var: "b" }],
- *   ["b", conType("Int")]
+ * subst = new Map([
+ *   ["A", varType("B")],
+ *   ["B", conType("Int")]
  * ]);
- * const resolved = applySubstitution(state, subst, varType("a"));
- * console.log("chain:", showType(resolved));  // "Int"
+ *
+ * applySubstitution(state, subst, varType("A"))
+ * // => Int
  * ```
  *
- * @example Binder shadowing
+ * **Binder safety**
  * ```ts
- * import { freshState, applySubstitution, forallType, varType, starKind } from "system-f-omega";
+ * const poly = forallType("A", *, arrowType(varType("A"), varType("B")));
+ * subst = new Map([["A", Int]]);
  *
- * const state = freshState();
- * const subst = new Map([["a", varType("X")]]);
- * const poly = forallType("a", starKind, arrowType(varType("a"), varType("b")));
- * const resolved = applySubstitution(state, subst, poly);
- * console.log("shadow:", showType(resolved));  // "∀a::*. (a → b)"
+ * applySubstitution(state, subst, poly)
+ * // => ∀A. (A → B)   // Binder shadows substitution
  * ```
  *
- * @example Data structures
- * ```ts
- * import { freshState, applySubstitution, recordType, varType } from "system-f-omega";
- * import { conType } from "system-f-omega";
+ * ---------------------------------------------------------------------------
+ * Used by
+ * ---------------------------------------------------------------------------
+ * - {@link solveConstraints} — post‑solver type cleanup
+ * - {@link inferAppType}, {@link checkType} — resolving instantiated types
+ * - {@link instantiateTerm} — applying substitutions inside terms
+ * - {@link typesEqual}, {@link unifyTypes} — normalization paths
  *
- * const state = freshState();
- * const subst = new Map([["a", conType("Int")]]);
- * const rec = recordType([["x", varType("a")], ["y", conType("Bool")]]);
- * const resolved = applySubstitution(state, subst, rec);
- * console.log("record:", showType(resolved));  // "{x: Int, y: Bool}"
- * ```
+ * ---------------------------------------------------------------------------
+ * @param state - Typechecker state (used for meta‑var global solutions)
+ * @param subst - Local substitution map (flexible and rigid variable bindings)
+ * @param type - The type to rewrite under the substitution
+ * @param visited - Internal set used to prevent infinite substitution loops
  *
- * @see {@link solveConstraints} Produces subst
- * @see {@link mergeSubsts} Combines subst
- * @see {@link applySubstitutionToTerm} Term counterpart
+ * @returns A new type with substitutions applied everywhere they apply
  */
 export function applySubstitution(
   state: TypeCheckerState,
@@ -4033,91 +4835,153 @@ export function applySubstitution(
 }
 
 /**
- * Bidirectional checking: `Γ ⊢ term ⇐ expectedType` (returns resolved type + subst).
+ * Checks whether a term has a **specific expected type**
+ * (bidirectional “checking mode”).
  *
- * **Purpose**: Analysis mode (`⇐`):
- * - **Specialized**: Lam/tylam/trait_lam/record/tuple/inject/fold (direct rules).
- * - **Fallback**: `inferType` → `subsumes(expected, inferred)` (polymorphic/general).
- * Returns `{ type: resolvedExpected, subst }`.
+ * In other words:
  *
- * Validates + resolves metas/constraints.
+ *     Γ ⊢ term ⇐ expectedType
  *
- * @param state - Checker state
- * @param term - Term to check
- * @param expectedType - Expected type
- * @returns Resolved type + subst, or error
+ * This is the *analysis* half of the bidirectional typing system:
+ * - **Infer mode** synthesizes a type (`inferType`)
+ * - **Check mode** verifies a term *against* a known type (`checkType`)
  *
- * @example Lambda: Domain unify + body check
+ * ---------------------------------------------------------------------------
+ * Why `checkType` exists
+ * ---------------------------------------------------------------------------
+ * Many terms require **external type guidance** because their type cannot be
+ * uniquely inferred in isolation:
+ *
+ * - Lambdas: `λx. x`
+ *   (we need to know the parameter’s expected type)
+ *
+ * - Pattern match branches
+ *   (each branch must be checked against a type merged from other branches)
+ *
+ * - Trait applications and polymorphic boundaries
+ *   (where instantiation direction matters)
+ *
+ * Checking mode enables these cases by type‑checking with an **expected type**.
+ *
+ * ---------------------------------------------------------------------------
+ * What the return value means
+ * ---------------------------------------------------------------------------
+ * The function returns:
+ *
+ *     ok({ type, subst })
+ *
+ * where:
+ *
+ * - **type**
+ *   The fully resolved version of `expectedType` after applying substitutions.
+ *
+ * - **subst**
+ *   A *local substitution* containing meta‑variable bindings discovered while
+ *   checking.
+ *
+ * Why return a substitution?
+ * ---------------------------------------
+ * Because checking can cause meta‑variables to be solved.
+ *
+ * Example:
  * ```ts
- * import { freshState, addType, checkType, lamTerm, varTerm, arrowType, conType, starKind } from "system-f-omega";
+ * expectedType = ?0 → Int
+ * term = λx. x
  *
- * let state = freshState();
- * state = addType(state, "Int", starKind).ok;
- * state = addType(state, "Bool", starKind).ok;
- *
- * const id = lamTerm("x", conType("Int"), varTerm("x"));
- * const expected = arrowType(conType("Int"), conType("Int"));
- * const result = checkType(state, id, expected);
- * console.log("lam ok:", "ok" in result);  // true
+ * checkType(...) must bind ?0 := Int
  * ```
  *
- * @example Record: Field-by-field
+ * Returning `{ subst }` allows the caller to merge new solutions into the
+ * global meta‑environment and propagate them upward.
+ *
+ * Substitution is the “output” of unification, and checking may need to unify:
+ * - lambda parameter types
+ * - return types
+ * - tuple/record field types
+ * - pattern‑derived types
+ * - polymorphic instantiation results
+ *
+ * ---------------------------------------------------------------------------
+ * High‑level algorithm
+ * ---------------------------------------------------------------------------
+ *
+ * 1. **Verify kind correctness** of `expectedType` (e.g. not applying a record).
+ *
+ * 2. **Term‑specific rules**:
+ *    - Lambda (`λx:τ.body`): unify parameter types, check body
+ *    - Type lambda (`ΛA::κ. body`): expected must be a `forall`
+ *    - Trait lambda: expected must be a bounded ∀
+ *    - Records, tuples, variants: check fields/branches element‑wise
+ *    - Fold: ensure annotation is a μ‑type and body matches its unfolding
+ *
+ * 3. **Fallback to inference**:
+ *    If no specialized rule applies:
+ *    ```
+ *    inferred = inferType(term)
+ *    check that inferred <: expectedType
+ *    ```
+ *    using {@link subsumes}.
+ *
+ * 4. **Solve constraints** and apply meta‑variable substitutions.
+ *
+ * 5. **Return updated expectedType** (substituted + normalized) and the
+ *    substitution collected along the way.
+ *
+ * ---------------------------------------------------------------------------
+ * Important behaviors
+ * ---------------------------------------------------------------------------
+ * - Lambda checking uses **expectedType.arrow.from** to enforce argument type.
+ * - Polymorphic expected types are handled by **alpha‑renaming** and recursion.
+ * - Trait lambdas must match constraint lists and kinds exactly.
+ * - The function **never generalizes**; it only instantiates.
+ * - Returns **local** substitutions; the caller is responsible for merging them.
+ *
+ * ---------------------------------------------------------------------------
+ * Common error cases
+ * ---------------------------------------------------------------------------
+ * - `type_mismatch` — body return type does not match expected return type
+ * - `kind_mismatch` — expectedType has wrong kind
+ * - `not_a_function` — checking `λx. ...` against non‑arrow type
+ * - `invalid_variant_label`, `missing_field`, etc. for mismatched patterns
+ *
+ * ---------------------------------------------------------------------------
+ * Examples
+ * ---------------------------------------------------------------------------
+ *
+ * ✔️ Checking a lambda:
  * ```ts
- * import { freshState, addType, checkType, recordTerm, conTerm, recordType, conType, starKind } from "system-f-omega";
- *
- * let state = freshState();
- * state = addType(state, "Int", starKind).ok;
- * state = addType(state, "Bool", starKind).ok;
- *
- * const recTerm = recordTerm([
- *   ["x", conTerm("1", conType("Int"))],
- *   ["y", conTerm("true", conType("Bool"))]
- * ]);
- * const expected = recordType([["x", conType("Int")], ["y", conType("Bool")]]);
- * const result = checkType(state, recTerm, expected);
- * console.log("record ok:", "ok" in result);  // true
+ * const expected = arrowType(Int, Int);
+ * checkType(state, lamTerm("x", Int, varTerm("x")), expected);
+ * // => ok({ type: Int → Int, subst: Map() })
  * ```
  *
- * @example Subsumption fallback (poly)
+ * ✔️ Checking via inference fallback:
  * ```ts
- * import { freshState, addType, checkType, tylamTerm, lamTerm, varTerm, forallType, arrowType, varType, starKind, conType } from "system-f-omega";
- *
- * let state = freshState();
- * state = addType(state, "Int", starKind).ok;
- *
- * const polyId = tylamTerm("a", starKind, lamTerm("x", varType("a"), varTerm("x")));
- * const expected = arrowType(conType("Int"), conType("Int"));
- * const result = checkType(state, polyId, expected);
- * console.log("subsumption ok:", "ok" in result);  // true
+ * const expected = Int;
+ * checkType(state, conTerm("42", Int), expected);
+ * // inferred Int <: Int → ok
  * ```
  *
- * @example Tylam: Kind + alpha-rename
+ * ✔️ Checking with meta‑vars:
  * ```ts
- * import { freshState, checkType, tylamTerm, lamTerm, varTerm, forallType, arrowType, varType, starKind } from "system-f-omega";
- *
- * const state = freshState();
- * const tyLam = tylamTerm("a", starKind, lamTerm("x", varType("a"), varTerm("x")));
- * const expected = forallType("α", starKind, arrowType(varType("α"), varType("α")));
- * const result = checkType(state, tyLam, expected);
- * console.log("tylam ok:", "ok" in result);  // true
+ * const expected = arrowType(freshMetaVar(state.meta), Bool);
+ * checkType(state, lamTerm("x", Bool, varTerm("x")), expected);
+ * // => binds ?0 := Bool
  * ```
  *
- * @example Failure: Type mismatch
- * ```ts
- * import { freshState, addType, checkType, conTerm, arrowType, conType, starKind } from "system-f-omega";
+ * ---------------------------------------------------------------------------
+ * Related
+ * ---------------------------------------------------------------------------
+ * - {@link inferType} — synthesis mode
+ * - {@link inferTypeWithMode} — dispatcher between infer/check
+ * - {@link subsumes} — subtyping check used as fallback
+ * - {@link unifyTypes} — solves structural constraints during checking
+ * - {@link solveConstraints} — finalizes meta‑var solutions
  *
- * let state = freshState();
- * state = addType(state, "Int", starKind).ok;
- *
- * const num = conTerm("42", conType("Int"));
- * const expected = arrowType(conType("Int"), conType("Int"));
- * const result = checkType(state, num, expected);
- * console.log("mismatch:", "type_mismatch" in result.err);  // true
- * ```
- *
- * @see {@link inferType} Synthesis counterpart
- * @see {@link subsumes} Fallback subtyping
- * @see {@link inferTypeWithMode} Dispatcher
+ * @param state - Current typechecker state (context + meta‑env)
+ * @param term - The term being type‑checked
+ * @param expectedType - The type the term must have
+ * @returns Either a `{ type, subst }` pair or a `TypingError`
  */
 export function checkType(
   state: TypeCheckerState,
@@ -4468,90 +5332,129 @@ export function checkType(
 }
 
 /**
- * Synthesizes type: `Γ ⊢ term ⇒ τ` (inference mode).
+ * Synthesizes (infers) the **type** of a term.
  *
- * **Purpose**: Dispatcher for term-specific inference rules:
- * - **Primitives**: Var/con lookup, lam/app, let.
- * - **Poly**: Tylam/tyapp/trait-lam/app.
- * - **Data**: Record/project/inject/match/tuple/fold.
- * - **Traits**: Dict/trait-app/method.
+ * This is the “infer mode” of the bidirectional type system:
  *
- * Recursive. Errors bubble from helpers.
+ *     Γ ⊢ term ⇒ τ
  *
- * @param state - Checker state
- * @param term - Term to infer
- * @returns Inferred `Type` or error
+ * meaning:
  *
- * @example Variable lookup
+ *     “Given only the term, figure out what type it must have.”
+ *
+ * In many languages, this is the default typing behavior. In System F‑ω with
+ * traits, inference must cooperate closely with checking and unification.
+ *
+ * ---------------------------------------------------------------------------
+ * When inference is appropriate
+ * ---------------------------------------------------------------------------
+ * You can infer the type of:
+ * - variables (`x`)
+ * - constants and constructors (`42 : Int`)
+ * - applications (`f x`)
+ * - records and tuples
+ * - type applications (`t[Int]`)
+ * - type lambdas (`ΛA::*. e`)
+ * - trait dictionaries (`dict Eq<Int> { ... }`)
+ * - variant injections
+ * - match expressions
+ *
+ * You **cannot** infer the type of some forms without an annotation:
+ * - lambdas (`λx. e`) — need parameter types
+ * - polymorphic lambdas (`ΛA. e`) — okay only because type lambdas contain kind annotations
+ *
+ * When inference is not enough, the typechecker uses **checking mode**
+ * (`checkType`), which takes an expected type.
+ *
+ * ---------------------------------------------------------------------------
+ * How inference works (high‑level)
+ * ---------------------------------------------------------------------------
+ * `inferType` dispatches on the shape of the term:
+ *
+ * 1. **VarTerm**
+ *    Look up the variable’s type in the context.
+ *
+ * 2. **ConTerm**
+ *    Return its annotated type.
+ *
+ * 3. **LamTerm**
+ *    Infer using the lambda typing rule:
+ *    parameter types must already be provided (`λx:τ. body`)
+ *
+ * 4. **AppTerm** (`f x`)
+ *    - infer the function type
+ *    - infer the argument type
+ *    - unify to extract the result type
+ *
+ * 5. **TyLamTerm** / **TyAppTerm**
+ *    Handle System F polymorphism: `ΛA` and `t[A]`.
+ *
+ * 6. **TraitLamTerm** / **TraitAppTerm**
+ *    Handle bounded polymorphism and dictionary resolution.
+ *
+ * 7. **DictTerm**
+ *    Validate the dictionary against the trait definition.
+ *
+ * 8. **RecordTerm**, **TupleTerm**, **InjectTerm**, **MatchTerm**, **FoldTerm**, **UnfoldTerm**
+ *    Structural inference rules.
+ *
+ * The function may call:
+ * - {@link unifyTypes} when inference introduces constraints
+ * - {@link solveConstraints} during application inference
+ * - {@link normalizeType} to simplify results
+ *
+ * ---------------------------------------------------------------------------
+ * Result behavior
+ * ---------------------------------------------------------------------------
+ * Returns a `Result<TypingError, Type>` where:
+ * - `ok(type)` is the fully normalized inferred type
+ * - `err(error)` is a detailed typing error if inference fails
+ *
+ * Unlike `checkType`, inference does **not** return a substitution pair — the
+ * top‑level type is the final inferred type after all required solving
+ * operations inside the inference rules.
+ *
+ * ---------------------------------------------------------------------------
+ * Examples
+ * ---------------------------------------------------------------------------
+ *
+ * **Lambda with annotation**
  * ```ts
- * import { freshState, addType, addTerm, inferType, varTerm, conType, starKind } from "system-f-omega";
- *
- * let state = freshState();
- * state = addType(state, "Int", starKind).ok;
- * state = addTerm(state, "x", { con: { name: "42", type: conType("Int") } }).ok;
- *
- * const result = inferType(state, varTerm("x"));
- * console.log("var:", showType(result.ok));  // "Int"
+ * inferType(state, lamTerm("x", Int, varTerm("x")));
+ * // => ok(Int → Int)
  * ```
  *
- * @example Lambda + app
+ * **Simple application**
  * ```ts
- * import { freshState, addType, inferType, lamTerm, appTerm, varTerm, conType, arrowType, starKind } from "system-f-omega";
- *
- * let state = freshState();
- * state = addType(state, "Int", starKind).ok;
- * state = addType(state, "Bool", starKind).ok;
- *
- * const id = lamTerm("x", conType("Int"), varTerm("x"));
- * const result1 = inferType(state, id);
- * console.log("lam:", showType(result1.ok));  // "(Int → Int)"
- *
- * const app = appTerm(id, { con: { name: "0", type: conType("Int") } });
- * const result2 = inferType(state, app);
- * console.log("app:", showType(result2.ok));  // "Int"
+ * inferType(state, appTerm(varTerm("id"), conTerm("42", Int)));
+ * // => ok(Int)
  * ```
  *
- * @example Record projection
+ * **Polymorphic type lambda**
  * ```ts
- * import { freshState, addType, inferType, recordTerm, projectTerm, conTerm, conType, starKind } from "system-f-omega";
- *
- * let state = freshState();
- * state = addType(state, "Int", starKind).ok;
- * state = addType(state, "Bool", starKind).ok;
- *
- * const rec = recordTerm([
- *   ["x", conTerm("1", conType("Int"))],
- *   ["y", conTerm("true", conType("Bool"))]
- * ]);
- * const proj = projectTerm(rec, "x");
- * const result = inferType(state, proj);
- * console.log("project:", showType(result.ok));  // "Int"
+ * inferType(state, tylamTerm("A", starKind,
+ *   lamTerm("x", varType("A"), varTerm("x"))
+ * ));
+ * // => ok(∀A::*. A → A)
  * ```
  *
- * @example Match on enum
+ * **Trait dictionary method**
  * ```ts
- * import { freshState, addType, addEnum, inferType, matchTerm, variantPattern, varPattern, conTerm, appType, conType, tuplePattern, wildcardPattern, starKind } from "system-f-omega";
- * import { tupleType } from "system-f-omega";
- *
- * let state = freshState();
- * state = addType(state, "Int", starKind).ok;
- * state = addEnum(state, "Option", ["T"], [starKind], [
- *   ["None", tupleType([])],
- *   ["Some", conType("T")]
- * ]).ok;
- *
- * const scrut = conTerm("opt", appType(conType("Option"), conType("Int")));
- * const match = matchTerm(scrut, [
- *   [variantPattern("None", tuplePattern([])), conTerm("0", conType("Int"))],
- *   [variantPattern("Some", tuplePattern([varPattern("x"), wildcardPattern()])), varTerm("x")]
- * ]);
- * const result = inferType(state, match);
- * console.log("match:", showType(result.ok));  // "Int"
+ * inferType(state, traitMethodTerm(varTerm("eqDict"), "eq"));
+ * // => ok(Int → Int → Bool)
  * ```
  *
- * @see {@link checkType} Checking counterpart
- * @see {@link inferTypeWithMode} Bidirectional dispatcher
- * @see {@link inferLamType} Lambda rule
+ * ---------------------------------------------------------------------------
+ * Related
+ * ---------------------------------------------------------------------------
+ * - {@link checkType} — checking mode (expects a type)
+ * - {@link inferTypeWithMode} — unified bidirectional dispatcher
+ * - {@link unifyTypes}, {@link solveConstraints} — constraint machinery
+ * - {@link normalizeType} — ensures inferred types are in canonical form
+ *
+ * @param state - The typechecker state (environment + meta variables)
+ * @param term - The term whose type we want to infer
+ * @returns The inferred and normalized type of the term, or a {@link TypingError}
  */
 export function inferType(
   state: TypeCheckerState,
@@ -4935,40 +5838,39 @@ function checkInjectValue(
 }
 
 /**
- * Extracts spine head (constructor) from left-associated applications.
+ * Extracts the **head constructor** of a left‑associated type application.
  *
- * **Purpose**: Deconstructs nominal types: `Either<Int,Bool>` → `Either`.
- * Used with `getSpineArgs` in unification, enum lookup, `showType`.
+ * Many type constructors are applied in *spine form*:
  *
- * @param ty - Possibly nested app type
- * @returns Head type (con/var)
+ *   Either<Int, Bool>
+ *   ≡ appType(appType(Either, Int), Bool)
  *
- * @example Nested nominal app
+ * The **spine head** is the leftmost element:
+ *
+ *   getSpineHead(Either<Int, Bool>)  →  Either
+ *
+ * This helper walks through nested `AppType` nodes until it reaches the base
+ * constructor or variable.
+ *
+ * Why it's useful:
+ * - Identifying the root constructor of nominal types (`Either`, `List`)
+ * - Enum/ADT lookup during pattern checking and injection
+ * - Unification of nominal applications
+ * - Pretty‑printing types (`showType`)
+ *
+ * @param ty - A possibly nested type application
+ * @returns The head type (e.g., a `con` or `var` node)
+ *
+ * @example
  * ```ts
- * import { getSpineHead, appType, conType } from "system-f-omega";
- *
- * const either = appType(appType(conType("Either"), conType("Int")), conType("Bool"));
- * console.log("head:", showType(getSpineHead(either)));  // "Either"
+ * const t = appType(appType(conType("Either"), Int), Bool);
+ * getSpineHead(t);   // => conType("Either")
  * ```
  *
- * @example Single app
+ * @example Non-application:
  * ```ts
- * import { getSpineHead, appType, conType } from "system-f-omega";
- *
- * const listInt = appType(conType("List"), conType("Int"));
- * console.log("head:", showType(getSpineHead(listInt)));  // "List"
+ * getSpineHead(conType("Int"));  // => Int
  * ```
- *
- * @example Non-app
- * ```ts
- * import { getSpineHead, conType, arrowType } from "system-f-omega";
- *
- * console.log("con:", showType(getSpineHead(conType("Int"))));       // "Int"
- * console.log("arrow:", showType(getSpineHead(arrowType(conType("Int"), conType("Bool")))));  // "(Int → Bool)"
- * ```
- *
- * @internal Used by {@link unifyTypes}, {@link checkPattern}
- * @see {@link getSpineArgs} Args extractor
  */
 export function getSpineHead(ty: Type): Type {
   let current = ty;
@@ -5675,55 +6577,120 @@ function extractParentFromConstructor(type: Type): Type | null {
 }
 
 /**
- * Synthesizes HKT constructor from structural variant (infer self-type).
+ * Synthesizes a **type‑level lambda constructor** from a structural variant.
  *
- * **Purpose**: Converts `<Left: a | Right: b>` → `λt0.λt1.<Left:t0|Right:t1>`.
- * Peels `selfKind` → arg kinds/names → nest lambdas inside-out.
- * Used to infer enum constructors from patterns.
+ * This function takes a *structural variant type* like:
  *
- * @param vtype - Structural variant
- * @param selfKind - Target kind (e.g., `* → *`)
- * @returns Lambda type constructor
+ *   <Left: t0 | Right: t1>
  *
- * @example Unary variant → * → *
+ * and produces a **higher‑kinded type constructor** that can be applied to
+ * type arguments:
+ *
+ *   λt0::*. λt1::*. <Left: t0 | Right: t1>
+ *
+ * This allows structural variants to behave like named enums (e.g. `Either`)
+ * when performing trait resolution or higher‑kinded unification.
+ *
+ * ---------------------------------------------------------------------------
+ * Why this function exists
+ * ---------------------------------------------------------------------------
+ * Sometimes the typechecker encounters a **variant pattern** or **scrutinee**
+ * without a nominal enum name.
+ *
+ * Example:
  * ```ts
- * import { createVariantLambda, variantType, starKind, arrowKind, lamType } from "system-f-omega";
- * import { conType } from "system-f-omega";
- *
- * const v = variantType([["None", { tuple: [] }], ["Some", conType("a")]]);
- * const lambda = createVariantLambda(v, arrowKind(starKind, starKind));
- * console.log(showType(lambda));  // "λt0::*. <None: ⊥ | Some: t0>"
+ * match x {
+ *   Left(v)  => ...
+ *   Right(w) => ...
+ * }
  * ```
  *
- * @example Binary → * → * → *
- * ```ts
- * import { createVariantLambda, variantType, starKind, arrowKind } from "system-f-omega";
- * import { tupleType, varType } from "system-f-omega";
+ * Here the scrutinee might be a structural type:
  *
+ *   <Left: A | Right: B>
+ *
+ * But to unify this with a polymorphic enum implementation like:
+ *
+ *   impl Functor<Either> { ... }
+ *
+ * we need a *lambda constructor* that acts like:
+ *
+ *   Either ≡ λL::*. λR::*. <Left: L | Right: R>
+ *
+ * `createVariantLambda` generates exactly that.
+ *
+ * In short:
+ * **It turns a structural variant into a reusable type constructor.**
+ *
+ * ---------------------------------------------------------------------------
+ * How it works
+ * ---------------------------------------------------------------------------
+ * 1. The `selfKind` tells us **how many type parameters** the constructor should take:
+ *    - `* → *` → unary: generate λt0
+ *    - `* → (* → *)` → binary: generate λt1. λt0
+ *
+ * 2. It extracts the number and order of argument kinds by peeling the `arrowKind`.
+ *
+ * 3. It wraps the variant body in that many type‑lambdas.
+ *
+ * Example:
+ * ```ts
+ * vtype = <Left: a | Right: b>
+ * selfKind = * → * → *
+ *
+ * createVariantLambda(vtype, selfKind)
+ *   → λt1::*. λt0::*.
+ *        <Left: t0 | Right: t1>
+ * ```
+ *
+ * ---------------------------------------------------------------------------
+ * When it's used
+ * ---------------------------------------------------------------------------
+ * - **Trait resolution**: inferring the “self” type for trait implementations
+ * - **Nominalizing** structural variants for unification
+ * - **Pattern inference**: determining enum identity from variant patterns
+ *
+ * This is one of the key glue functions that allow the system to interoperate
+ * between:
+ * - structural types (`variantType`)
+ * - nominal ADTs (declared enums)
+ * - higher‑kinded trait implementations
+ *
+ * ---------------------------------------------------------------------------
+ * @param vtype - A structural variant type (must contain `"variant"` tag)
+ * @param selfKind - The kind of the overall type constructor (`*`, `* → *`, ...)
+ * @returns A type‑level lambda that abstracts over the appropriate number of
+ *          type parameters, or `vtype` unchanged if it is not a variant.
+ *
+ * ---------------------------------------------------------------------------
+ * @example Unary example
+ * ```ts
  * const v = variantType([
- *   ["Left", varType("l")],
+ *   ["None", tupleType([])],
+ *   ["Some", varType("a")]
+ * ]);
+ *
+ * createVariantLambda(v, arrowKind(starKind, starKind));
+ * // => λt0::*. <None: ⊥ | Some: t0>
+ * ```
+ *
+ * @example Binary example
+ * ```ts
+ * const v = variantType([
+ *   ["Left",  varType("l")],
  *   ["Right", varType("r")]
  * ]);
- * const lambda = createVariantLambda(v, arrowKind(starKind, arrowKind(starKind, starKind)));
- * console.log(showType(lambda));  // "λt1::*. λt0::*. <Left: t0 | Right: t1>"
+ *
+ * createVariantLambda(v,
+ *   arrowKind(starKind, arrowKind(starKind, starKind))
+ * );
+ * // => λt1::*. λt0::*. <Left: t0 | Right: t1>
  * ```
- *
- * @example Non-variant passthrough
- * ```ts
- * import { createVariantLambda, conType, starKind } from "system-f-omega";
- *
- * const ty = conType("Int");
- * const result = createVariantLambda(ty, starKind);
- * console.log("passthrough:", showType(result));  // "Int"
- * ```
- *
- * @internal Used by {@link inferSelfFromArgument}
- * @see {@link inferSelfFromArgument} Pattern inference
  */
 export function createVariantLambda(vtype: Type, selfKind: Kind): Type {
   if (!("variant" in vtype)) return vtype;
 
-  // 1️⃣ Determine argument kinds by peeling arrows
+  // Determine argument kinds by peeling arrows
   const argKinds: Kind[] = [];
   let k: Kind = selfKind;
   while ("arrow" in k) {
@@ -5731,10 +6698,10 @@ export function createVariantLambda(vtype: Type, selfKind: Kind): Type {
     k = k.arrow.to;
   }
 
-  // 2️⃣ Synthesize variable names: t0, t1, ...
+  // Synthesize variable names: t0, t1, ...
   const argNames = argKinds.map((_, i) => `t${i}`);
 
-  // 3️⃣ Build λ abstractions from inside out
+  // Build λ abstractions from inside out
   let res: Type = vtype;
   for (let i = argNames.length - 1; i >= 0; i--) {
     res = lamType(argNames[i]!, argKinds[i]!, res);
@@ -5795,55 +6762,69 @@ function inferVarType(state: TypeCheckerState, term: VarTerm) {
 }
 
 /**
- * Collects unbound meta-variables (`?N` without solutions) in `ty`.
+ * Collects all **unbound meta‑variables** (`?N`) appearing inside a type.
  *
- * **Purpose**: Finds unsolved evars for generalization, error reporting.
- * Recurses structurally, skips solved metas.
+ * Meta‑variables represent *unknown types* created during inference
+ * (via {@link freshMetaVar}).
+ * A meta‑var is **unbound** if it does not yet have a solution recorded in
+ * `state.meta.solutions`.
  *
- * @param state - Checker state (solutions lookup)
- * @param ty - Type to scan
- * @param metas - Accumulator set (defaults empty)
- * @returns Array of unbound evar names
+ * This helper walks the structure of a type and gathers the names of all such
+ * unsolved metas.
  *
- * @example Single unbound meta
+ * ---------------------------------------------------------------------------
+ * Why this matters
+ * ---------------------------------------------------------------------------
+ * Unbound meta‑vars indicate:
+ * - type inference is incomplete
+ * - a type still depends on unknown information
+ *
+ * This function is useful for:
+ * - **generalization checks** (do not generalize a type with unresolved metas)
+ * - **error reporting** (show which metas are stuck)
+ * - **debugging** normalization and unification
+ *
+ * ---------------------------------------------------------------------------
+ * How it works
+ * ---------------------------------------------------------------------------
+ * - Recursively scans the structure of `ty`
+ * - When it sees a meta‑var `?N`:
+ *   - If `state.meta.solutions` has no entry for `?N`
+ *     → add to result
+ * - Traverses:
+ *   - applications
+ *   - arrows
+ *   - tuples
+ *   - records
+ *   - variants
+ * - Does **not** recurse into binders (`∀`, `λ`, `μ`) since they do not bind metas
+ *
+ * NOTE: This function only looks for **meta‑vars**, not rigid type variables.
+ *
+ * ---------------------------------------------------------------------------
+ * @param state - Checker state containing meta‑var solutions
+ * @param ty - Type to inspect
+ * @param metas - Internal accumulator (optional)
+ * @returns A list of unsolved meta‑variable names (e.g., `["?0", "?3"]`)
+ *
+ * ---------------------------------------------------------------------------
+ * @example One unbound meta:
  * ```ts
- * import { freshState, freshMetaVar, getUnboundMetas } from "system-f-omega";
- * import { arrowType } from "system-f-omega";
- *
- * const state = freshState();
- * const meta = freshMetaVar(state.meta);
- * const ty = arrowType(meta, meta);
- * const unbound = getUnboundMetas(state, ty);
- * console.log("unbound:", unbound);  // ["?0"]
+ * const mv = freshMetaVar(state.meta); // ?0
+ * getUnboundMetas(state, mv);  // ["?0"]
  * ```
  *
- * @example Solved vs unbound
+ * @example Solved meta:
  * ```ts
- * import { freshState, freshMetaVar, getUnboundMetas, conType } from "system-f-omega";
- *
- * const state = freshState();
- * const meta1 = freshMetaVar(state.meta);  // ?0 unbound
- * state.meta.solutions.set(meta1.evar, conType("Int"));  // Solved
- * const meta2 = freshMetaVar(state.meta);  // ?1 unbound
- * const unbound = getUnboundMetas(state, meta2);
- * console.log("unbound:", unbound);  // ["?1"]
+ * state.meta.solutions.set("?0", conType("Int"));
+ * getUnboundMetas(state, varType("A"));  // []
  * ```
  *
- * @example Nested data
+ * @example Nested structure:
  * ```ts
- * import { freshState, freshMetaVar, getUnboundMetas, recordType } from "system-f-omega";
- *
- * const state = freshState();
- * const meta1 = freshMetaVar(state.meta);
- * const meta2 = freshMetaVar(state.meta);
- * const rec = recordType([["x", meta1], ["y", meta2]]);
- * const unbound = getUnboundMetas(state, rec);
- * console.log("record metas:", unbound);  // ["?0", "?1"]
+ * const t = recordType([["x", ?0], ["y", ?1]]);
+ * getUnboundMetas(state, t);  // ["?0", "?1"]
  * ```
- *
- * @internal Utility for generalization/errors
- * @see {@link freshMetaVar} Creates metas
- * @see {@link solveMetaVar} Solves metas
  */
 export function getUnboundMetas(
   state: TypeCheckerState,
@@ -5869,64 +6850,124 @@ export function getUnboundMetas(
 }
 
 /**
- * Solves constraint worklist: processes until empty.
+ * Processes and resolves a **worklist of constraints** produced during
+ * type inference and unification.
  *
- * **Purpose**: Unification engine: `while(constraints) processConstraint()`.
- * Mutates `subst`. Short-circuits on first error.
+ * This is the “constraint solver” at the heart of the typechecker.
  *
- * Core solver for inference/checking.
+ * A constraint may be:
+ * - **Type equality** (`τ₁ = τ₂`)
+ * - **Kind equality** (`κ₁ = κ₂`)
+ * - **Deferred kind check** (`Γ ⊢ τ : κ`)
+ * - **Deferred type check** (`Γ ⊢ e : τ`)
  *
- * @param state - Checker state
- * @param worklist - Constraints to solve
- * @param subst - Bindings (mutated, defaults empty)
- * @returns Final `subst` or first error
+ * Each constraint is handled by {@link processConstraint}, which may:
+ * - generate new constraints,
+ * - update the substitution map,
+ * - or raise a typing error.
  *
- * @example Success: Simple type equality
+ * ---------------------------------------------------------------------------
+ * Why this exists
+ * ---------------------------------------------------------------------------
+ * The typechecker uses a **worklist‑based algorithm**:
+ *
+ * 1. Typing rules do *not* immediately solve unifications.
+ * 2. Instead, they generate *constraints* describing relationships that must hold.
+ * 3. The constraint solver repeatedly processes these until:
+ *    - all constraints are solved → success, or
+ *    - a contradiction is found → type error.
+ *
+ * This makes the typechecker:
+ * - more modular (inference rules just generate constraints)
+ * - more expressive (supports deferred checks, HKTs, trait evidence, etc.)
+ * - able to unify many interacting constraints at once
+ *
+ * ---------------------------------------------------------------------------
+ * Substitution behavior
+ * ---------------------------------------------------------------------------
+ * `subst` is a map of meta‑variable bindings accumulated during solving:
+ *
+ *   ?0 := Int
+ *   ?1 := List<?2>
+ *
+ * The solver *mutates* this map:
+ * - `unifyTypes` updates it for flex‑rigid bindings
+ * - `unifyKinds` may add no bindings, only validation
+ * - deferred checks add new `type_eq` / `kind_eq` constraints
+ *
+ * At the end:
+ *
+ *     ok(subst)
+ *
+ * contains all meta‑variable solutions discovered during solving.
+ *
+ * The caller (e.g. `checkType`, `inferAppType`) typically merges these with
+ * global meta‑var solutions.
+ *
+ * ---------------------------------------------------------------------------
+ * Algorithm (simplified)
+ * ---------------------------------------------------------------------------
+ *
+ * while (worklist not empty):
+ *   - pop next constraint
+ *   - call `processConstraint`
+ *   - `processConstraint` may:
+ *       - update `subst`
+ *       - push new constraints
+ *       - return an error
+ *
+ * If we reach the end with no errors:
+ *   return ok(subst)
+ *
+ * ---------------------------------------------------------------------------
+ * Error cases
+ * ---------------------------------------------------------------------------
+ * Any error produced by `processConstraint`, including:
+ * - `type_mismatch`
+ * - `kind_mismatch`
+ * - `cyclic`
+ * - `not_a_type_function`
+ * - `missing_trait_impl` (if deferred typechecking fails)
+ *
+ * ---------------------------------------------------------------------------
+ * Examples
+ * ---------------------------------------------------------------------------
+ *
+ * **Simple type equality**
  * ```ts
- * import { freshState, solveConstraints, typeEq, varType, conType } from "system-f-omega";
- *
- * const state = freshState();
- * const worklist = [typeEq({ var: "a" }, conType("Int"))];
- * const subst = new Map<string, Type>();
- * const result = solveConstraints(state, worklist, subst);
- * console.log("ok:", "ok" in result);  // true
- * console.log("a:", showType(subst.get("a")!));  // "Int"
+ * const wl = [typeEq(varType("a"), conType("Int"))];
+ * solveConstraints(state, wl, new Map());
+ * // => ok(Map { "a" -> Int })
  * ```
  *
- * @example Failure: Kind mismatch
+ * **Kind mismatch**
  * ```ts
- * import { freshState, solveConstraints, kindEq, starKind, arrowKind } from "system-f-omega";
- *
- * const state = freshState();
- * const worklist = [kindEq(starKind, arrowKind(starKind, starKind))];
- * const result = solveConstraints(state, worklist);
- * console.log("error:", "kind_mismatch" in result.err);  // true
+ * const wl = [kindEq(starKind, arrowKind(starKind, starKind))];
+ * solveConstraints(state, wl);
+ * // => err({ kind_mismatch: ... })
  * ```
  *
- * @example Chained unification (worklist growth)
+ * **Chained unification**
+ * Constraints may add more constraints before they can be solved.
  * ```ts
- * import { freshState, solveConstraints, unifyTypes, arrowType, varType, conType } from "system-f-omega";
- *
- * const state = freshState();
- * const worklist: Constraint[] = [];
- * const subst = new Map<string, Type>();
- * unifyTypes(state, varType("a"), arrowType(conType("Int"), conType("Bool")), worklist, subst);
- * const result = solveConstraints(state, worklist, subst);
- * console.log("chained ok:", "ok" in result);  // true
+ * unifyTypes(state, A → B, Int → Bool, wl, subst);
+ * solveConstraints(state, wl, subst);
+ * // => A := Int, B := Bool
  * ```
  *
- * @example Empty worklist
- * ```ts
- * import { freshState, solveConstraints } from "system-f-omega";
+ * ---------------------------------------------------------------------------
+ * Related:
+ * ---------------------------------------------------------------------------
+ * - {@link Constraint} — the supported constraint types
+ * - {@link processConstraint} — processes a single constraint
+ * - {@link unifyTypes} — generates `type_eq` constraints
+ * - {@link hasType} / {@link hasKind} — generate deferred constraints
+ * - {@link mergeSubsts} — combines solver results with global substitutions
  *
- * const state = freshState();
- * const result = solveConstraints(state, []);
- * console.log("empty ok:", "ok" in result && result.ok.size === 0);  // true
- * ```
- *
- * @see {@link processConstraint} Constraint dispatcher
- * @see {@link typeEq} Type constraint
- * @see {@link unifyTypes} Adds to worklist
+ * @param state - The typechecker state (context + meta‑vars)
+ * @param worklist - A list of constraints to solve
+ * @param subst - (Optional) existing substitution map to extend
+ * @returns The completed substitution map, or a typing error
  */
 export function solveConstraints(
   state: TypeCheckerState,
@@ -5942,78 +6983,112 @@ export function solveConstraints(
 }
 
 /**
- * Dispatches constraint processing (worklist solver step).
+ * Processes a **single constraint** in the solver worklist.
  *
- * **Purpose**: Handles each `Constraint` variant:
- * - `type_eq`: Apply subst/normalize → `unifyTypes` (recursive).
- * - `kind_eq`: `unifyKinds`.
- * - `has_kind`: Subst → `checkKind` → add `kindEq`.
- * - `has_type`: `inferType` → add `typeEq`.
+ * This is the central dispatcher used by {@link solveConstraints}.
+ * Each constraint describes something the typechecker must eventually enforce:
  *
- * Called by `solveConstraints` in loop.
+ * - **Type equality**        (`τ₁ = τ₂`)
+ * - **Kind equality**        (`κ₁ = κ₂`)
+ * - **Deferred kind check**  (`Γ ⊢ τ : κ`)
+ * - **Deferred type check**  (`Γ ⊢ e : τ`)
  *
- * @param state - Checker state
- * @param constraint - Single constraint
- * @param worklist - Queue (mutated by generators)
- * @param subst - Bindings (mutated)
- * @returns `ok(null)` or error
+ * `processConstraint` handles exactly one of these, possibly:
+ * - updating the local substitution map
+ * - pushing new constraints onto the worklist
+ * - or returning a typing error
  *
- * @example type_eq: Unification
+ * ---------------------------------------------------------------------------
+ * Constraint types and how they are processed
+ * ---------------------------------------------------------------------------
+ *
+ * 1. **Type equality** (`{ type_eq: { left, right } }`)
+ *    - First apply current substitutions to both sides
+ *    - Normalize both sides
+ *    - Call {@link unifyTypes}, which:
+ *      - may update `subst`
+ *      - may add new constraints to `worklist`
+ *      - may return an error
+ *
+ * 2. **Kind equality** (`{ kind_eq: { left, right } }`)
+ *    - Compare kinds structurally using {@link unifyKinds}
+ *    - Errors if mismatched
+ *
+ * 3. **Deferred kind check** (`{ has_kind: { ty, kind, state } }`)
+ *    - Apply current substitutions to the type
+ *    - Run {@link checkKind} using the stored state
+ *    - If successful, push a new **kind equality** constraint:
+ *        `inferredKind = expectedKind`
+ *    - This allows kind checking to wait until meta‑vars are solved
+ *
+ * 4. **Deferred type check** (`{ has_type: { term, ty, state } }`)
+ *    - Infer the type of the term using the stored state
+ *    - Add a new **type equality** constraint:
+ *        `inferredType = expectedType`
+ *    - Like `has_kind`, this supports staged checking
+ *
+ * ---------------------------------------------------------------------------
+ * Why this exists
+ * ---------------------------------------------------------------------------
+ * Deferred and incremental solving is essential for:
+ * - higher‑kinded polymorphism
+ * - type‑level lambdas and beta‑reduction
+ * - trait dictionary validation
+ * - match typing (especially branches)
+ * - general constraint‑based inference
+ *
+ * `unifyTypes` alone cannot solve all relationships immediately.
+ * Instead, constraints build up, and `processConstraint` handles them
+ * one step at a time.
+ *
+ * ---------------------------------------------------------------------------
+ * Worklist interaction
+ * ---------------------------------------------------------------------------
+ * - This function always consumes **one** constraint.
+ * - It may push *more* constraints to the end of `worklist`.
+ * - `solveConstraints` repeats until the worklist is empty or an error occurs.
+ *
+ * ---------------------------------------------------------------------------
+ * Substitution interaction
+ * ---------------------------------------------------------------------------
+ * - Type and kind equality may bind meta‑variables
+ * - Substitution is mutated *in place*
+ * - Deferred constraints use the updated substitutions when re‑processing
+ *
+ * ---------------------------------------------------------------------------
+ * Examples
+ * ---------------------------------------------------------------------------
+ *
+ * **Type equality**
  * ```ts
- * import { freshState, processConstraint, typeEq, varType, conType } from "system-f-omega";
- *
- * const state = freshState();
- * const subst = new Map<string, Type>();
- * const worklist: Constraint[] = [];
- * const result = processConstraint(state, typeEq(varType("a"), conType("Int")), worklist, subst);
- * console.log("type_eq ok:", "ok" in result);  // true
- * console.log("bound:", subst.has("a"));       // true
+ * processConstraint(state, typeEq(A, Int), worklist, subst);
+ * // => subst["A"] = Int
  * ```
  *
- * @example kind_eq: Success/failure
+ * **Kind equality**
  * ```ts
- * import { freshState, processConstraint, kindEq, starKind } from "system-f-omega";
- *
- * const state = freshState();
- * const subst = new Map();
- * const worklist = [];
- *
- * const eqOk = processConstraint(state, kindEq(starKind, starKind), worklist, subst);
- * console.log("kind_eq ok:", "ok" in eqOk);  // true
- *
- * const eqErr = processConstraint(state, kindEq(starKind, { arrow: { from: starKind, to: starKind } }), [], new Map());
- * console.log("kind mismatch:", "kind_mismatch" in eqErr.err);  // true
+ * processConstraint(state, kindEq(starKind, starKind), wl, subst);
+ * // => ok
  * ```
  *
- * @example has_kind: Defers to kindEq
+ * **Deferred kind check**
  * ```ts
- * import { freshState, processConstraint, hasKind, conType, starKind } from "system-f-omega";
- *
- * const state = freshState();
- * const subst = new Map();
- * const worklist: Constraint[] = [];
- * const result = processConstraint(state, hasKind(conType("Int"), starKind, state), worklist, subst);
- * console.log("has_kind ok:", "ok" in result);  // true
- * console.log("worklist grew:", worklist.length > 0);  // true (kindEq added)
+ * hasKind(conType("List"), arrowKind(*, *), state)
+ * // resolves to: kindEq(ListKind, arrowKind(*, *))
  * ```
  *
- * @example has_type: Defers to typeEq
+ * **Deferred type check**
  * ```ts
- * import { freshState, processConstraint, hasType, lamTerm, varTerm, arrowType, conType } from "system-f-omega";
- *
- * const state = freshState();
- * const subst = new Map();
- * const worklist: Constraint[] = [];
- * const id = lamTerm("x", conType("Int"), varTerm("x"));
- * const expected = arrowType(conType("Int"), conType("Int"));
- * const result = processConstraint(state, hasType(id, expected, state), worklist, subst);
- * console.log("has_type ok:", "ok" in result);  // true
- * console.log("worklist grew:", worklist.length > 0);  // true (typeEq added)
+ * hasType(term, expectedTy, state)
+ * // resolves to: typeEq(inferredTy, expectedTy)
  * ```
  *
- * @internal Called by {@link solveConstraints}
- * @see {@link typeEq} Type constraint
- * @see {@link unifyTypes} Recursive unifier
+ * ---------------------------------------------------------------------------
+ * @param state - Full typechecker state (used for kind/type inference)
+ * @param constraint - The constraint to process
+ * @param worklist - The active constraint queue (may be mutated)
+ * @param subst - The local substitution map (mutated by solving)
+ * @returns `ok(null)` on success, or a `TypingError`
  */
 export function processConstraint(
   state: TypeCheckerState,
@@ -6068,69 +7143,100 @@ export function processConstraint(
 }
 
 /**
- * Top-level type inference: `Γ ⊢ term : τ` (alias for `inferType`).
+ * Top‑level entrypoint for **type inference**.
  *
- * **Purpose**: Convenience entrypoint. Use directly or via `inferTypeWithMode`.
+ * This is simply an alias for {@link inferType}, provided for convenience and
+ * symmetry with `checkType` and `inferTypeWithMode`.
  *
- * @param state - Checker state
- * @param term - Term to infer
- * @returns Inferred type or error
+ * Use this when you want to *infer* a type (synthesis mode), i.e.:
  *
- * @see {@link inferType} Implementation
- * @see {@link inferTypeWithMode} Bidirectional
+ *    Γ ⊢ term ⇒ τ
+ *
+ * If you instead need to *check* a term against a known type, use
+ * {@link checkType} or {@link inferTypeWithMode} with check mode.
+ *
+ * @param state - Typechecker state (context + meta‑variables)
+ * @param term - The term to infer a type for
+ * @returns The inferred type or a {@link TypingError}
+ *
+ * @see {@link inferType} The underlying implementation
+ * @see {@link inferTypeWithMode} Bidirectional dispatcher
  * @see {@link checkType} Checking mode
  */
 export const typeCheck = inferType;
 
 /**
- * Constraint-based type inference: `Γ ⊢ term : ?result`.
+ * Performs **constraint‑based type inference** for a term.
  *
- * **Purpose**: Meta-inference via worklist: `hasType(term, $result, state)` → solve.
- * Fallback to `inferType` if unsolved. For complex scenarios (deferred solving).
+ * This is an alternative entrypoint to plain `inferType`. Instead of inferring
+ * the type directly, it:
  *
- * @param state - Checker state
- * @param term - Term to infer
- * @returns Solved `$result` or fallback inference
+ * 1. Creates a fresh meta‑variable for the result type (`$result`)
+ * 2. Generates a **deferred type‑checking constraint**
+ *      Γ ⊢ term : $result
+ * 3. Solves all resulting constraints using {@link solveConstraints}
+ * 4. If `$result` is solved → return it
+ *    otherwise → fall back to normal inference
  *
- * @example Success: Extracts $result
+ * ------------------------------------------------------------
+ * Why this exists
+ * ------------------------------------------------------------
+ * Most of the typechecker eagerly solves constraints inside inference rules.
+ * However, some situations benefit from **fully deferring** typechecking:
+ *
+ * - large or deeply nested terms
+ * - terms involving many meta‑variables
+ * - debugging unification behavior
+ * - explicit constraint‑driven inference (Hindley–Milner style)
+ *
+ * This function lets the solver accumulate *all* constraints generated by the
+ * typing of the term and resolve them in one batch.
+ *
+ * It is mainly a **utility / experimental helper** rather than a primary
+ * typing API.
+ *
+ * ------------------------------------------------------------
+ * Returned type
+ * ------------------------------------------------------------
+ * The result is:
+ *
+ *   ok(τ)     if $result was solved
+ *   err(e)    on any constraint or unification error
+ *
+ * If the result meta‑var `$result` was never solved (the constraint system did
+ * not determine a final type), we fall back to:
+ *
+ *   inferType(state, term)
+ *
+ * so the function always produces a type unless a real error occurs.
+ *
+ * ------------------------------------------------------------
+ * Example
+ * ------------------------------------------------------------
  * ```ts
- * import { freshState, addType, typecheckWithConstraints, lamTerm, varTerm, conType, starKind } from "system-f-omega";
- *
- * let state = freshState();
- * state = addType(state, "Int", starKind).ok;
- *
- * const id = lamTerm("x", conType("Int"), varTerm("x"));
- * const result = typecheckWithConstraints(state, id);
- * console.log("constraint:", showType(result.ok));  // "(Int → Int)"
+ * const id = lamTerm("x", Int, varTerm("x"));
+ * const res = typecheckWithConstraints(state, id);
+ * // => ok(Int → Int)
  * ```
  *
- * @example With bindings (let-like)
+ * With prior context:
  * ```ts
- * import { freshState, addType, addTerm, typecheckWithConstraints, appTerm, varTerm, conTerm, conType, starKind } from "system-f-omega";
- * import { lamTerm } from "system-f-omega";
- *
- * let state = freshState();
- * state = addType(state, "Int", starKind).ok;
- * state = addTerm(state, "id", lamTerm("x", conType("Int"), varTerm("x"))).ok;
- *
- * const app = appTerm(varTerm("id"), conTerm("0", conType("Int")));
- * const result = typecheckWithConstraints(state, app);
- * console.log("app:", showType(result.ok));  // "Int"
+ * state = addTerm(state, "f", lamTerm("x", Int, varTerm("x"))).ok;
+ * const res = typecheckWithConstraints(state, appTerm(varTerm("f"), conTerm("42", Int)));
+ * // => ok(Int)
  * ```
  *
- * @example Fallback (no constraints solved)
- * ```ts
- * import { freshState, typecheckWithConstraints, conTerm, conType } from "system-f-omega";
+ * ------------------------------------------------------------
+ * Related
+ * ------------------------------------------------------------
+ * - {@link hasType} — creates deferred type constraints
+ * - {@link solveConstraints} — processes the worklist
+ * - {@link inferType} — fallback inference
+ * - {@link applySubstitution} — used to extract `$result`
  *
- * const state = freshState();
- * const num = conTerm("42", conType("Int"));
- * const result = typecheckWithConstraints(state, num);
- * console.log("fallback:", showType(result.ok));  // "Int"
- * ```
- *
- * @see {@link inferType} Fallback implementation
- * @see {@link hasType} Generated constraint
- * @see {@link solveConstraints} Solver
+ * @param state - The typechecker state (context + meta env)
+ * @param term - The term to infer using constraint solving
+ * @returns The inferred type or a {@link TypingError}
  */
 export function typecheckWithConstraints(
   state: TypeCheckerState,
@@ -6150,83 +7256,160 @@ export function typecheckWithConstraints(
 }
 
 /**
- * Normalizes types: expands aliases/enums, β-reduces apps, unfolds μ (cycle-safe).
+ * Fully **normalizes** a type by recursively expanding, reducing, and resolving
+ * all type‑level structure until it reaches its canonical form.
  *
- * **Purpose**: Simplifies to core form:
- * - **Aliases**: Expand param-matching (`Id<Int>` → `Int`).
- * - **Enums**: Nominal → structural variant (recursive → `μX.<...X...>`).
- * - **Apps**: β-reduce `(λt.τ) σ` → `τ[t↦σ]`.
- * - **Cycles**: Guard `seen` → unchanged/⊥.
- * - **Metas**: Follow solutions.
+ * This is one of the most important functions in the entire type system.
  *
- * Used everywhere: unification, equality, printing, checking.
+ * “Normalization” means:
+ *   - Expand type aliases
+ *   - Expand nominal enums into structural variants (and μ‑types if recursive)
+ *   - β‑reduce type‑level lambdas (`(λA. body) T`)
+ *   - Follow solved meta‑variables
+ *   - Unfold μ‑types safely (with cycle protection)
+ *   - Normalize inside all compound types (arrows, records, variants, tuples, ...)
  *
- * @param state - Checker state (ctx/metas)
- * @param ty - Input type
- * @param seen - Cycle set (defaults empty)
- * @returns Normalized type
+ * After normalization, two semantically identical types have the **same shape**,
+ * allowing consistent:
+ *   - type equality (`typesEqual`)
+ *   - unification (`unifyTypes`)
+ *   - constructor checking
+ *   - trait resolution
+ *   - pattern matching
  *
- * @example Alias expansion
+ * ---------------------------------------------------------------------------
+ * Why normalization is needed
+ * ---------------------------------------------------------------------------
+ * Almost every subsystem of the typechecker depends on being able to compare
+ * types in a canonical form:
+ *
+ * - **Alias expansion**
+ *     ```
+ *     type Id<A> = A
+ *     normalize(Id<Int>) → Int
+ *     ```
+ *
+ * - **Enum expansion**
+ *     ```
+ *     enum Option<T> = None | Some(T)
+ *     normalize(Option<Int>)
+ *         → <None: ⊥ | Some: Int>
+ *     ```
+ *
+ * - **Recursive enum expansion**
+ *     ```
+ *     List<T> = Nil | Cons(T, List<T>)
+ *     normalize(List<Int>)
+ *         → μX. <Nil: ⊥ | Cons: (Int, X)>
+ *     ```
+ *
+ * - **Type lambda β‑reduction**
+ *     ```
+ *     (λA. A → A) Int  →  Int → Int
+ *     ```
+ *
+ * - **Meta‑variable resolution**
+ *     ```
+ *     ?0 := Int
+ *     normalize(?0) → Int
+ *     ```
+ *
+ * Without full normalization, unification, equality, and pattern matching would fail
+ * on semantically equivalent but syntactically different types.
+ *
+ * ---------------------------------------------------------------------------
+ * Cycle detection (`seen`)
+ * ---------------------------------------------------------------------------
+ * Recursive types or aliases can create cycles:
+ *
+ *   μX. X
+ *   type Bad = Bad
+ *
+ * To prevent infinite recursion, `seen` stores variables and alias keys that we
+ * have already attempted to normalize.
+ * If a cycle is detected, normalization returns either:
+ *   - the unresolved type, or
+ *   - `⊥` (never type) for clearly impossible cycles
+ *
+ * ---------------------------------------------------------------------------
+ * Key normalization steps
+ * ---------------------------------------------------------------------------
+ *
+ * 1. **Meta variables**
+ *    Follow the global solution if solved:
+ *      `?0 := Int` → normalize(Int)
+ *
+ * 2. **Type aliases**
+ *    If `Alias<A, B> = body` and we see `Alias<T, U>`:
+ *      - substitute parameters
+ *      - normalize substituted body
+ *
+ * 3. **Enum expansion**
+ *    Converts nominal enum types into *structural variant types*, applying
+ *    parameters appropriately.
+ *
+ * 4. **Recursive enums**
+ *    Wrap the variant in `μX` when the enum is marked recursive.
+ *
+ * 5. **Type lambdas**
+ *    For `appType(lamType(var, kind, body), arg)`:
+ *      substitute and normalize the resulting body (`β`‑reduction)
+ *
+ * 6. **Compound types**
+ *    Normalize subcomponents in:
+ *      - arrow types
+ *      - tuples
+ *      - records
+ *      - variants
+ *      - bounded foralls / foralls
+ *      - apps, recursively
+ *
+ * ---------------------------------------------------------------------------
+ * Examples
+ * ---------------------------------------------------------------------------
+ *
+ * **Alias**
  * ```ts
- * import { freshState, addType, addTypeAlias, normalizeType, conType, varType, starKind, appType } from "system-f-omega";
- *
- * let state = freshState();
- * state = addType(state, "Int", starKind).ok;
- * state = addTypeAlias(state, "Id", ["A"], [starKind], varType("A")).ok;
- *
- * const idInt = appType(conType("Id"), conType("Int"));
- * const norm = normalizeType(state, idInt);
- * console.log("alias:", showType(norm));  // "Int"
+ * addTypeAlias(state, "Id", ["A"], [*], A);
+ * normalize(Id<Int>) → Int
  * ```
  *
- * @example Enum expansion (non-recursive)
+ * **Enum**
  * ```ts
- * import { freshState, addType, addEnum, normalizeType, appType, conType, starKind } from "system-f-omega";
- * import { tupleType } from "system-f-omega";
- *
- * let state = freshState();
- * state = addType(state, "Int", starKind).ok;
- * state = addEnum(state, "Option", ["T"], [starKind], [
- *   ["None", tupleType([])],
- *   ["Some", conType("T")]
- * ]).ok;
- *
- * const optInt = appType(conType("Option"), conType("Int"));
- * const norm = normalizeType(state, optInt);
- * console.log("enum:", showType(norm));  // "<None: ⊥ | Some: Int>"
+ * enum Option<T> = None | Some(T)
+ * normalize(Option<Int>) → <None: ⊥ | Some: Int>
  * ```
  *
- * @example Recursive enum → μ
+ * **Recursive enum**
  * ```ts
- * import { freshState, addType, addEnum, normalizeType, appType, conType, starKind, varType } from "system-f-omega";
- * import { tupleType } from "system-f-omega";
- *
- * let state = freshState();
- * state = addType(state, "Int", starKind).ok;
- * state = addEnum(state, "List", ["T"], [starKind], [
- *   ["Nil", tupleType([])],
- *   ["Cons", tupleType([conType("T"), appType(conType("List"), varType("T"))])]
- * ], true).ok;
- *
- * const listInt = appType(conType("List"), conType("Int"));
- * const norm = normalizeType(state, listInt);
- * console.log("recursive:", showType(norm));  // "μX0.<Nil: ⊥ | Cons: (Int, X0<Int>)>"
+ * enum List<T> (recursive)
+ * normalize(List<Int>)
+ *   → μX. <Nil: ⊥ | Cons: (Int, X)>
  * ```
  *
- * @example Beta-reduction (app lam)
+ * **Lambda**
  * ```ts
- * import { freshState, normalizeType, lamType, appType, varType, starKind, conType } from "system-f-omega";
- *
- * const state = freshState();
- * const idLam = lamType("t", starKind, varType("t"));
- * const idInt = appType(idLam, conType("Int"));
- * const norm = normalizeType(state, idInt);
- * console.log("beta:", showType(norm));  // "Int"
+ * normalize((λA. A) Int) → Int
  * ```
  *
- * @see {@link substituteType} Used in expansions
- * @see {@link getSpineArgs} Nominal spine
- * @see {@link typesEqual} Calls normalize
+ * **Meta‑vars**
+ * ```ts
+ * ?0 := Bool
+ * normalize(?0) → Bool
+ * ```
+ *
+ * ---------------------------------------------------------------------------
+ * Related
+ * ---------------------------------------------------------------------------
+ * - {@link substituteType} — used in alias, lambda, and μ‑type unfolding
+ * - {@link getSpineArgs} / {@link getSpineHead} — used for enum expansion
+ * - {@link unifyTypes} — called *after* normalization
+ * - {@link typesEqual} — depends critically on normalized types
+ *
+ * @param state - Typechecker state containing context and meta‑var solutions
+ * @param ty - The type to normalize
+ * @param seen - Internal set used to prevent infinite recursion (cycle detection)
+ * @returns A normalized type in canonical form
  */
 export function normalizeType(
   state: TypeCheckerState,
@@ -6435,59 +7618,119 @@ export function normalizeType(
 }
 
 /**
- * Instantiates bounded forall + resolves trait dictionaries.
+ * Instantiates a **bounded polymorphic type** (a `∀{constraints}. τ`) and
+ * resolves all required **trait dictionaries** for it.
  *
- * **Purpose**: `∀{C}. τ` → `τ[α↦?N]` + `checkTraitConstraints(C[α↦?N])`.
- * Non-bounded: Passthrough `{type: ty, dicts: []}`.
+ * In other words, this converts:
  *
- * Used for trait app auto-resolution.
+ *     ∀Self::K where C₁(Self), C₂(Self), ... . body
  *
- * @param state - Checker state
- * @param ty - Bounded forall type
- * @returns `{ type: instantiatedBody, dicts: Term[] }` or error
+ * into:
  *
- * @example Success: Resolves constraints
+ *     body[Self := ?N],  along with  dictionaries for each constraint
+ *
+ * producing a monomorphic type plus the trait evidence needed at runtime.
+ *
+ * ---------------------------------------------------------------------------
+ * Why this function exists
+ * ---------------------------------------------------------------------------
+ * A *bounded forall* (also called constrained polymorphism) introduces:
+ * - a type variable (e.g. `Self`)
+ * - a kind for that type variable
+ * - one or more **trait constraints**, e.g.:
+ *
+ *       Eq<Self>, Show<Self>
+ *
+ * To use such a type concretely, we must:
+ * 1. Instantiate `Self` with a fresh type meta‑variable (`?N`)
+ * 2. Substitute that meta‑var into every constraint
+ * 3. Resolve each constraint into an actual dictionary term
+ *    using {@link checkTraitConstraints}
+ * 4. Substitute the meta‑var into the body type
+ *
+ * This is the bounded‑forall analogue of {@link instantiateType}.
+ *
+ * ---------------------------------------------------------------------------
+ * What it returns
+ * ---------------------------------------------------------------------------
+ * On success:
+ *
+ *   ok({ type: instantiatedBody, dicts: [d₁, d₂, ...] })
+ *
+ * where:
+ * - `type`  = the instantiated body with fresh meta‑vars
+ * - `dicts` = the dictionaries needed to satisfy all trait constraints
+ *
+ * On failure:
+ *   - the first trait constraint error (e.g. `missing_trait_impl`)
+ *
+ * ---------------------------------------------------------------------------
+ * Algorithm (simplified)
+ * ---------------------------------------------------------------------------
+ *
+ * If `ty` is:
+ *
+ *   ∀Self::K where [C₁, C₂, ...]. body
+ *
+ * then:
+ *
+ * 1. Create a fresh meta‑variable `?N` to replace `Self`
+ *
+ * 2. Instantiate each constraint:
+ *        Ci[Self := ?N]
+ *
+ * 3. Resolve all constraints:
+ *        dicts = checkTraitConstraints(state, instantiatedConstraints)
+ *
+ * 4. Substitute `Self := ?N` into the body:
+ *        instantiatedBody = substituteType(Self, ?N, body)
+ *
+ * 5. Return `{ instantiatedBody, dicts }`
+ *
+ * If `ty` is **not** a bounded‑forall:
+ *   → Return the type unchanged with `dicts: []`
+ *
+ * ---------------------------------------------------------------------------
+ * Examples
+ * ---------------------------------------------------------------------------
+ *
+ * **Basic bounded forall**
  * ```ts
- * import { freshState, addType, addTraitDef, traitImplBinding, dictTerm, conType, boundedForallType, instantiateWithTraits, starKind, arrowType, lamTerm, varTerm } from "system-f-omega";
+ * const ty =
+ *   ∀Self::* where Eq<Self>. (Self → Int)
  *
- * let state = freshState();
- * state = addType(state, "Int", starKind).ok;
- * state = addType(state, "Bool", starKind).ok;
- * state = addTraitDef(state, "Eq", "A", starKind, [["eq", arrowType(conType("A"), conType("Bool"))]]).ok;
- * const eqDict = dictTerm("Eq", conType("Int"), [["eq", lamTerm("x", conType("Int"), conTerm("true", conType("Bool")))]]);
- * state.ctx.push(traitImplBinding("Eq", conType("Int"), eqDict));
- *
- * const bounded = boundedForallType("a", starKind, [{ trait: "Eq", type: conType("Int") }], arrowType(varType("a"), conType("Int")));
- * const result = instantiateWithTraits(state, bounded);
- * console.log("success:", "ok" in result && result.ok.dicts.length === 1);  // true
+ * instantiateWithTraits(state, ty)
+ *   → {
+ *       type: (?0 → Int),
+ *       dicts: [eqDictFor?0]
+ *     }
  * ```
  *
- * @example Passthrough: Non-bounded
+ * **Multiple constraints**
  * ```ts
- * import { freshState, instantiateWithTraits, arrowType, conType } from "system-f-omega";
- *
- * const state = freshState();
- * const simple = arrowType(conType("Int"), conType("Bool"));
- * const result = instantiateWithTraits(state, simple);
- * console.log("passthrough:", "ok" in result && result.ok.dicts.length === 0);  // true
+ * ∀T where [Eq<T>, Show<T>]. ...
+ * // Resolves to [eqDictForT, showDictForT]
  * ```
  *
- * @example Failure: Missing impl
+ * **Missing trait implementation**
  * ```ts
- * import { freshState, addType, addTraitDef, boundedForallType, instantiateWithTraits, starKind, conType } from "system-f-omega";
- *
- * let state = freshState();
- * state = addType(state, "String", starKind).ok;
- * state = addTraitDef(state, "Eq", "A", starKind, [["eq", conType("Bool")]]).ok;
- * // No Eq<String>!
- *
- * const bounded = boundedForallType("a", starKind, [{ trait: "Eq", type: conType("String") }], conType("String"));
- * const result = instantiateWithTraits(state, bounded);
- * console.log("missing:", "missing_trait_impl" in result.err);  // true
+ * instantiateWithTraits(state,
+ *   ∀A where Ord<A>. A
+ * );
+ * // err: { missing_trait_impl: { trait: "Ord", type: A } }
  * ```
  *
- * @see {@link checkTraitConstraints} Resolves dicts
- * @see {@link autoInstantiate} Uses for trait apps
+ * ---------------------------------------------------------------------------
+ * Related
+ * ---------------------------------------------------------------------------
+ * - {@link checkTraitConstraints} — resolves each constraint into a dictionary
+ * - {@link substituteType} — performs Self := ?N substitution
+ * - {@link instantiateType} — non‑bounded forall instantiation
+ * - {@link traitAppTerm} — the term‑level application of trait lambdas
+ *
+ * @param state - The typechecker state (used to resolve trait implementations)
+ * @param ty - A type that may or may not be a bounded forall
+ * @returns A monomorphic instantiated type plus its trait dictionaries
  */
 export function instantiateWithTraits(
   state: TypeCheckerState,
@@ -6519,66 +7762,112 @@ export function instantiateWithTraits(
 }
 
 /**
- * Auto-instantiates polymorphic terms: applies type args + trait dicts.
+ * Automatically **instantiates polymorphic terms**, including both:
  *
- * **Purpose**: Convenience: `polyTerm` → `polyTerm[?N] with dicts` (quantifier-free).
- * - **Forall**: Fresh `?N` → `tyappTerm` → substitute.
- * - **Bounded**: `instantiateWithTraits` → `traitAppTerm(?N, dicts)`.
+ * 1. **System F type polymorphism**
+ *      ∀A. τ    →    τ[A := ?N]
  *
- * Used for implicit application of polymorphic values/dicts.
+ * 2. **Trait‑bounded polymorphism**
+ *      ∀Self where C(Self). τ    →    τ[Self := ?M] with dictionaries
  *
- * @param state - Checker state
- * @param term - Possibly polymorphic term
- * @returns `{ term: instantiated, type: monomorphic }`
+ * It returns both the **instantiated term** (with implicit `tyapp` or
+ * `trait_app` inserted) and the resulting **monomorphic type**.
  *
- * @example Forall: Auto-tyapp
+ * ---------------------------------------------------------------------------
+ * Why this exists
+ * ---------------------------------------------------------------------------
+ * Normally, to use a polymorphic value you must explicitly apply:
+ * - type arguments (for type lambdas / `∀`)
+ * - dictionaries (for trait‑bounded foralls)
+ *
+ * Example (explicit):
  * ```ts
- * import { freshState, inferType, autoInstantiate, tylamTerm, lamTerm, varTerm, varType, starKind } from "system-f-omega";
+ * poly    : ∀A. A → A
+ * polyInt : (Int → Int)    = poly[Int]
  *
- * const state = freshState();
- * const polyId = tylamTerm("a", starKind, lamTerm("x", varType("a"), varTerm("x")));
- * const result = autoInstantiate(state, polyId);
- * console.log("instantiated:", showTerm(result.ok.term));  // "Λa::*. λx:a. x [?0]"
- * console.log("type:", showType(result.ok.type));         // "?0 → ?0"
+ * eqLam   : ∀Self where Eq<Self>. Self → Bool
+ * app     : Int → Bool     = eqLam[Int] with { eqIntDict }
  * ```
  *
- * @example Bounded forall: Auto-trait-app
+ * `autoInstantiate` makes this implicit and ergonomic:
+ *
  * ```ts
- * import { freshState, addType, addTraitDef, traitImplBinding, dictTerm, autoInstantiate, traitLamTerm, conType, starKind, arrowType, lamTerm, varTerm } from "system-f-omega";
- *
- * let state = freshState();
- * state = addType(state, "Int", starKind).ok;
- * state = addTraitDef(state, "Eq", "A", starKind, [["eq", arrowType(conType("A"), conType("Bool"))]]).ok;
- * const dict = dictTerm("Eq", conType("Int"), [["eq", lamTerm("x", conType("Int"), conTerm("true", conType("Bool")))]]);
- * state.ctx.push(traitImplBinding("Eq", conType("Int"), dict));
- *
- * const traitLam = traitLamTerm("d", "Eq", "Self", starKind, [{ trait: "Eq", type: { var: "Self" } }], arrowType(varType("Self"), conType("Int")));
- * const result = autoInstantiate(state, traitLam);
- * console.log("trait-app:", "ok" in result && result.ok.dicts.length > 0);  // true
+ * autoInstantiate(state, poly)   // inserts [ ?N ]
+ * autoInstantiate(state, eqLam)  // inserts [ ?M ] with dicts
  * ```
  *
- * @example Failure: Missing trait impl
+ * This is especially useful when the user never writes explicit type
+ * applications or dictionary arguments.
+ *
+ * ---------------------------------------------------------------------------
+ * How it works (high‑level)
+ * ---------------------------------------------------------------------------
+ * 1. **Infer the type of the term** using {@link inferType}.
+ *
+ * 2. While the type begins with a `forall`:
+ *      - allocate a fresh meta‑variable `?N`
+ *      - insert an implicit `tyapp` into the term
+ *      - substitute `A := ?N` into the type
+ *
+ * 3. While the type begins with a `bounded_forall`:
+ *      - use {@link instantiateWithTraits} to instantiate `Self := ?M`
+ *      - obtain required dictionaries
+ *      - insert a `trait_app` node into the term
+ *
+ * 4. When no more polymorphic binders remain:
+ *      → return the instantiated term and resulting type.
+ *
+ * This yields a **fully applied, monomorphic** version of the original term.
+ *
+ * ---------------------------------------------------------------------------
+ * What it returns
+ * ---------------------------------------------------------------------------
  * ```ts
- * import { freshState, addType, addTraitDef, traitLamTerm, autoInstantiate, starKind, varType } from "system-f-omega";
- *
- * let state = freshState();
- * state = addType(state, "String", starKind).ok;
- * state = addTraitDef(state, "Eq", "A", starKind, [["eq", varType("Bool")]]).ok;
- * // No Eq<String>!
- *
- * const traitLam = traitLamTerm("d", "Eq", "Self", starKind, [{ trait: "Eq", type: conType("String") }], varType("Self"));
- * const result = autoInstantiate(state, traitLam);
- * console.log("missing impl:", "missing_trait_impl" in result.err);  // true
+ * ok({
+ *   term:  instantiatedTerm,   // term with tyapps / traitApps inserted
+ *   type:  monomorphicType     // all foralls eliminated
+ * })
  * ```
  *
- * @example Mixed: Forall + bounded
+ * On error:
+ *   - Any trait implementation lookup failure
+ *     (missing impl, wrong number of dictionaries, etc.)
+ *   - Errors encountered during inference
+ *
+ * ---------------------------------------------------------------------------
+ * Examples
+ * ---------------------------------------------------------------------------
+ *
+ * **Simple ∀ instantiation**
  * ```ts
- * import { freshState, autoInstantiate, tylamTerm, traitLamTerm } from "system-f-omega";
- * // Complex setup omitted - combines tyapp + trait-app
+ * const poly = ΛA::*. λx:A. x
+ * autoInstantiate(state, poly)
+ * // => term: poly [?0]
+ * //    type: (?0 → ?0)
  * ```
  *
- * @see {@link instantiateWithTraits} Trait instantiation
- * @see {@link inferType} Initial type
+ * **Trait‑bounded instantiation**
+ * ```ts
+ * const lam = ΛSelf where Eq<Self>. λx:Self. x
+ * autoInstantiate(state, lam)
+ * // => term: lam [?1] with { eqDictFor?1 }
+ * //    type: (?1 → ?1)
+ * ```
+ *
+ * **Mixed case**
+ * Terms may have nested foralls and bounded foralls; both are handled.
+ *
+ * ---------------------------------------------------------------------------
+ * Related
+ * ---------------------------------------------------------------------------
+ * - {@link inferType} — gets the starting polymorphic type
+ * - {@link tyappTerm} — inserted for ∀ instantiation
+ * - {@link traitAppTerm} — inserted for trait-bounded instantiation
+ * - {@link instantiateWithTraits} — handles constraints + dicts
+ *
+ * @param state - The typechecker state
+ * @param term - A possibly polymorphic term
+ * @returns The instantiated term and resulting monomorphic type, or a typing error
  */
 export function autoInstantiate(
   state: TypeCheckerState,
@@ -6614,51 +7903,61 @@ export function autoInstantiate(
 }
 
 /**
- * Recursively resolves meta-vars in `ty` via `meta.solutions` (arrow-only recurse).
+ * Resolves **solved meta‑variables** inside a type by following their solutions
+ * in `state.meta.solutions`.
  *
- * **Purpose**: Eliminates solved `?N` (follow chains). Partial: only arrows recurse fully.
+ * This is a lightweight helper used to “chase” meta‑vars:
  *
- * @param state - Checker state
- * @param ty - Type with metas
- * @returns Resolved type (unresolved metas unchanged)
+ *   ?0 := Int
+ *   resolveMetaVars(state, ?0)   →   Int
  *
- * @example Resolved meta
+ * Unlike {@link applySubstitution}, this function:
+ * - only replaces **meta‑variables** (not rigid variables or full structures)
+ * - only recursively resolves **arrow types** beyond the head
+ * - does not apply a general substitution map
+ *
+ * It is mainly used to:
+ * - clean up types for error reporting
+ * - display more readable results in the REPL
+ * - simplify arrow types whose components contain meta‑var chains
+ *
+ * ---------------------------------------------------------------------------
+ * When to use this vs. applySubstitution
+ * ---------------------------------------------------------------------------
+ *
+ * Use `resolveMetaVars` when:
+ * - you just want to collapse solved meta‑vars
+ * - you want a fast, shallow cleanup for printing or debugging
+ *
+ * Use `applySubstitution` when:
+ * - you need full substitution (including rigid variables)
+ * - you need binder‑aware rewriting
+ * - you are performing unification or typechecking
+ *
+ * ---------------------------------------------------------------------------
+ * @param state - The typechecker state (contains meta‑var solutions)
+ * @param ty - The type whose meta‑vars should be resolved
+ * @returns A type with all solved meta‑vars replaced by their solutions
+ *
+ * @example
  * ```ts
- * import { freshState, freshMetaVar, resolveMetaVars, conType } from "system-f-omega";
- *
- * const state = freshState();
- * const meta = freshMetaVar(state.meta);
- * state.meta.solutions.set(meta.evar, conType("Int"));
- * const resolved = resolveMetaVars(state, meta);
- * console.log("resolved:", showType(resolved));  // "Int"
+ * // Suppose ?0 := Int
+ * const t = { evar: "?0" };
+ * resolveMetaVars(state, t);   // => Int
  * ```
  *
- * @example Arrow chain
+ * @example Arrow chain:
  * ```ts
- * import { freshState, freshMetaVar, resolveMetaVars, arrowType, conType } from "system-f-omega";
- *
- * const state = freshState();
- * const meta1 = freshMetaVar(state.meta);  // ?0
- * const meta2 = freshMetaVar(state.meta);  // ?1
- * state.meta.solutions.set(meta1.evar, conType("Int"));
- * state.meta.solutions.set(meta2.evar, arrowType(meta1, conType("Bool")));
- * const resolved = resolveMetaVars(state, meta2);
- * console.log("chain:", showType(resolved));  // "(Int → Bool)"
+ * // Suppose ?1 := (?0 → Bool), and ?0 := Int
+ * resolveMetaVars(state, { evar: "?1" });
+ * // => (Int → Bool)
  * ```
  *
- * @example Unresolved meta
+ * @example Unsolved meta:
  * ```ts
- * import { freshState, freshMetaVar, resolveMetaVars } from "system-f-omega";
- *
- * const state = freshState();
- * const meta = freshMetaVar(state.meta);  // No solution
- * const resolved = resolveMetaVars(state, meta);
- * console.log("unresolved:", showType(resolved));  // "?0"
+ * resolveMetaVars(state, { evar: "?5" });
+ * // => ?5   (unchanged)
  * ```
- *
- * @internal Partial resolver (arrows only)
- * @see {@link applySubstitution} Full substitution
- * @see {@link freshMetaVar} Creates metas
  */
 export function resolveMetaVars(state: TypeCheckerState, ty: Type): Type {
   if (isMetaVar(ty)) {
@@ -6676,33 +7975,34 @@ export function resolveMetaVars(state: TypeCheckerState, ty: Type): Type {
 }
 
 /**
- * Computes kind arity: number of arguments until `*`.
+ * Computes the **arity** of a kind — the number of type arguments it expects.
  *
- * **Purpose**: Counts HKT parameters: `* → *` → 1, `* → (* → *)` → 2.
- * Used for enum/alias arity matching, trait param validation.
+ * Examples:
+ * - `*` has arity **0**
+ * - `* → *` has arity **1**
+ * - `* → (* → *)` has arity **2**
  *
- * @param kind - Input kind
- * @returns Arity (0 for `*`)
+ * This is useful when validating:
+ * - type constructor applications (`List<Int>` expects 1 argument)
+ * - enum definitions (checking parameter count)
+ * - trait implementations (ensuring correct constructor shape)
+ * - type alias expansion
  *
- * @example Base cases
+ * The function simply walks along the right‑associated chain of arrow kinds:
+ *
+ *    κ = κ₁ → (κ₂ → (* → *))
+ *    arity = 3
+ *
+ * @param kind - The kind to measure
+ * @returns The number of arguments the kind expects
+ *
+ * @example
  * ```ts
- * import { kindArity, starKind, arrowKind } from "system-f-omega";
- *
- * console.log("star:", kindArity(starKind));  // 0
- * console.log("unary:", kindArity(arrowKind(starKind, starKind)));  // 1
+ * kindArity(starKind);                       // 0
+ * kindArity(arrowKind(starKind, starKind));  // 1
+ * kindArity(arrowKind(starKind,
+ *            arrowKind(starKind, starKind))); // 2
  * ```
- *
- * @example Nested HKT
- * ```ts
- * import { kindArity, starKind, arrowKind } from "system-f-omega";
- *
- * const binary = arrowKind(starKind, arrowKind(starKind, starKind));
- * console.log("binary:", kindArity(binary));  // 2
- * ```
- *
- * @internal HKT utility
- * @see {@link inferDictType} Trait arity
- * @see {@link addEnum} Param matching
  */
 export function kindArity(kind: Kind): number {
   if ("star" in kind) return 0;
@@ -6717,56 +8017,43 @@ export function kindArity(kind: Kind): number {
 }
 
 /**
- * Checks if `type` contains unbound meta-variables (unsolved `?N`).
+ * Checks whether a type contains **any unsolved meta‑variables** (`?N`).
  *
- * **Purpose**: Detects inference incompleteness (generalization guard).
- * Recurses structurally. Used for error reporting, generalization.
+ * Meta‑variables represent unknown types created during inference
+ * (via {@link freshMetaVar}). A meta‑var is **unbound** if it does not have a
+ * solution recorded in `state.meta.solutions`.
  *
- * @param state - Checker state (solutions lookup)
- * @param type - Type to scan
- * @returns `true` if any unbound meta
+ * This function answers the yes/no question:
  *
- * @example Unbound meta
+ *    “Is this type fully solved, or does it still contain unknowns?”
+ *
+ * Why this matters:
+ * - Used to decide whether a type may be generalized
+ * - Helps detect incomplete inference
+ * - Useful for debugging or reporting unsolved meta‑vars in errors
+ *
+ * The function recursively inspects:
+ * - type applications (`F<A>`)
+ * - arrows
+ * - tuples
+ * - records
+ * - variants
+ *
+ * It does **not** inspect binders (`forall`, `lambda`, `mu`), because those
+ * bind rigid variables, not meta‑variables.
+ *
+ * @param state - The typechecker state (contains meta‑var solutions)
+ * @param type - The type to inspect
+ * @returns `true` if any meta‑variables inside `type` remain unsolved
+ *
+ * @example
  * ```ts
- * import { freshState, freshMetaVar, hasUnboundMetas } from "system-f-omega";
+ * const a = freshMetaVar(state.meta); // ?0
+ * hasUnboundMetas(state, a);          // true
  *
- * const state = freshState();
- * const meta = freshMetaVar(state.meta);
- * console.log("unbound:", hasUnboundMetas(state, meta));  // true
+ * state.meta.solutions.set("?0", conType("Int"));
+ * hasUnboundMetas(state, a);          // false
  * ```
- *
- * @example Solved meta
- * ```ts
- * import { freshState, freshMetaVar, hasUnboundMetas, conType } from "system-f-omega";
- *
- * const state = freshState();
- * const meta = freshMetaVar(state.meta);
- * state.meta.solutions.set(meta.evar, conType("Int"));
- * console.log("solved:", hasUnboundMetas(state, meta));  // false
- * ```
- *
- * @example Nested unbound
- * ```ts
- * import { freshState, freshMetaVar, hasUnboundMetas, recordType } from "system-f-omega";
- *
- * const state = freshState();
- * const meta1 = freshMetaVar(state.meta);
- * const meta2 = freshMetaVar(state.meta);
- * const rec = recordType([["x", meta1], ["y", meta2]]);
- * console.log("nested:", hasUnboundMetas(state, rec));  // true
- * ```
- *
- * @example No metas
- * ```ts
- * import { freshState, hasUnboundMetas, conType } from "system-f-omega";
- *
- * const state = freshState();
- * console.log("concrete:", hasUnboundMetas(state, conType("Int")));  // false
- * ```
- *
- * @internal Utility for generalization
- * @see {@link getUnboundMetas} Collects names
- * @see {@link freshMetaVar} Creates metas
  */
 export function hasUnboundMetas(state: TypeCheckerState, type: Type): boolean {
   if (isMetaVar(type) && !state.meta.solutions.has(type.evar)) {
@@ -6793,48 +8080,81 @@ export function hasUnboundMetas(state: TypeCheckerState, type: Type): boolean {
 }
 
 /**
- * Collects **free** type variables in `type` (skips bound in ∀/λ).
+ * Collects all **free type variable names** that appear inside a type.
  *
- * **Purpose**: FTV for dependency analysis, renaming, generalization.
- * Recurses structurally, shadows binders.
+ * This function walks the structure of a type and gathers every occurrence of a
+ * `VarType` (`{ var: "A" }`). It *excludes* variables that are **bound** by:
  *
- * @param type - Input type
- * @param vars - Accumulator set (defaults empty)
- * @returns Array of free var names
+ * - `forall` (universal quantification)
+ * - `lam`   (type‑level lambda abstraction)
+ * - `mu`    (recursive type binder)
  *
- * @example Free vars in arrow
+ * In other words, it returns the set of **free type variables** in the type.
+ *
+ * ---------------------------------------------------------------------------
+ * Why this matters
+ * ---------------------------------------------------------------------------
+ * Free type variables are used for:
+ * - **Dependency analysis** during module importing
+ *   (e.g., which type constructors a type depends on)
+ * - **Generalization checks**
+ *   (e.g., only generalize variables not in scope)
+ * - **Renaming / alpha‑conversion** tasks
+ * - **Pretty‑printing and debugging**
+ *
+ * This function does *not* detect meta‑variables (`?N`).
+ * For that, see {@link getUnboundMetas}.
+ *
+ * ---------------------------------------------------------------------------
+ * Bound vs free example
+ * ---------------------------------------------------------------------------
  * ```ts
- * import { collectTypeVars, arrowType, varType } from "system-f-omega";
+ * const t = forallType("A", starKind,
+ *   arrowType(varType("A"), varType("B"))
+ * );
  *
- * const ty = arrowType(varType("a"), varType("b"));
- * console.log("free:", collectTypeVars(ty));  // ["a", "b"]
+ * collectTypeVars(t)
+ * // => ["B"]   (A is bound, B is free)
  * ```
  *
- * @example Skips forall binder
- * ```ts
- * import { collectTypeVars, forallType, arrowType, varType, starKind } from "system-f-omega";
+ * ---------------------------------------------------------------------------
+ * What it walks
+ * ---------------------------------------------------------------------------
+ * Recurses through:
+ * - type applications (`F<A>`)
+ * - arrow types
+ * - tuples
+ * - records
+ * - variants
  *
- * const poly = forallType("a", starKind, arrowType(varType("a"), varType("b")));
- * console.log("free:", collectTypeVars(poly));  // ["b"] (a bound)
+ * Skips substitution under binders:
+ * - `forall A. ...`
+ * - `lam A. ...`
+ * - `mu A. ...`
+ *
+ * ---------------------------------------------------------------------------
+ * @param type - The type to inspect
+ * @param vars - Internal accumulator (optional)
+ * @returns All free type variable names as an array
+ *
+ * ---------------------------------------------------------------------------
+ * @example Simple
+ * ```ts
+ * collectTypeVars(arrowType(varType("A"), varType("B")));
+ * // => ["A", "B"]
  * ```
  *
- * @example Nested data
+ * @example Bound variable (not collected)
  * ```ts
- * import { collectTypeVars, recordType, varType } from "system-f-omega";
- *
- * const rec = recordType([["x", varType("a")], ["y", varType("b")]]);
- * console.log("record:", collectTypeVars(rec));  // ["a", "b"]
+ * collectTypeVars(forallType("A", starKind, varType("A")));
+ * // => []
  * ```
  *
- * @example No free vars
+ * @example Records and variants
  * ```ts
- * import { collectTypeVars } from "system-f-omega";
- *
- * console.log("concrete:", collectTypeVars({ con: "Int" }));  // []
+ * collectTypeVars(recordType([["x", varType("A")], ["y", varType("B")]]));
+ * // => ["A", "B"]
  * ```
- *
- * @internal FTV utility
- * @see {@link computeFreeTypes} Full free names
  */
 export function collectTypeVars(
   type: Type,
@@ -6938,535 +8258,597 @@ function stripAppsByArity(
 }
 
 /**
- * Constructs arrow kind `from → to`.
+ * Constructs a **function kind** (`from → to`) at the kind level.
  *
- * **Purpose**: HKT constructors: `* → *` (List), `* → (* → *)` (nested).
- * Used in `addType`, polymorphism binders.
+ * Kinds describe the “shape” of types:
+ * - `*` is the kind of concrete types
+ * - `* → *` is the kind of unary type constructors (`List`, `Option`)
+ * - `(* → *) → *` is the kind of higher‑order type constructors (`Functor`)
+ *
+ * `arrowKind(from, to)` creates a kind‑level function that maps types of kind
+ * `from` to types of kind `to`.
+ *
+ * Used when:
+ * - declaring higher‑kinded type constructors (`addType`)
+ * - building polymorphic binders (`forall`, `λ`)
+ * - checking type applications (`checkAppKind`)
  *
  * @param from - Domain kind
  * @param to - Codomain kind
- * @returns `{ arrow: { from, to } }`
+ * @returns A new arrow‑kind (`{ arrow: { from, to } }`)
  *
- * @example Unary HKT
+ * @example
  * ```ts
- * import { arrowKind, starKind, showKind } from "system-f-omega";
- *
- * const listKind = arrowKind(starKind, starKind);
- * console.log("List:", showKind(listKind));  // "(* → *)"
+ * const listKind = arrowKind(starKind, starKind); // List :: * → *
+ * const functorKind = arrowKind(
+ *   arrowKind(starKind, starKind),
+ *   starKind
+ * ); // Functor :: (* → *) → *
  * ```
- *
- * @example Nested HKT
- * ```ts
- * import { arrowKind, starKind, showKind } from "system-f-omega";
- *
- * const nested = arrowKind(starKind, arrowKind(starKind, starKind));
- * console.log("nested:", showKind(nested));  // "(* → ((* → *) → *))"
- * ```
- *
- * @example Usage: addType
- * ```ts
- * import { freshState, addType, arrowKind, starKind } from "system-f-omega";
- *
- * const state = addType(freshState(), "List", arrowKind(starKind, starKind));
- * console.log("added:", "ok" in state);  // true
- * ```
- *
- * @see {@link starKind} Base kind
- * @see {@link kindsEqual} Equality
- * @see {@link addType} Binds HKTs
  */
 export const arrowKind = (from: Kind, to: Kind): Kind => ({
   arrow: { from, to },
 });
 
 /**
- * Constructs type variable `{ var: name }`.
+ * Constructs a **type variable**.
  *
- * **Purpose**: Free/bound vars in arrows, foralls, records.
+ * Type variables represent:
+ * - parameters in polymorphic types (`∀A. ...`)
+ * - parameters in type‑level lambdas (`λA::*. ...`)
+ * - unknown types during inference (rigid variables, not meta‑vars)
  *
- * @param name - Variable name (`"a"`, `"Self"`)
- * @returns `{ var: name }`
+ * A type variable has no intrinsic meaning by itself; its interpretation
+ * depends on how it is bound in the surrounding type.
  *
- * @example Basic var
+ * Used in:
+ * - arrow types (`A → B`)
+ * - polymorphic bodies (`∀A. A → A`)
+ * - type constructors and aliases
+ * - type‑level substitution
+ *
+ * @param name - The variable name (`"A"`, `"Self"`, `"T"`)
+ * @returns A `VarType` object `{ var: name }`
+ *
+ * @example
  * ```ts
- * import { varType, showType } from "system-f-omega";
- *
- * console.log("a:", showType(varType("a")));  // "a"
+ * varType("A");               // A
+ * arrowType(varType("A"), varType("B"));  // A → B
+ * forallType("A", starKind, varType("A"));
  * ```
- *
- * @example Arrow/foralls
- * ```ts
- * import { varType, arrowType, forallType, starKind, showType } from "system-f-omega";
- *
- * console.log("a→b:", showType(arrowType(varType("a"), varType("b"))));  // "(a → b)"
- * console.log("∀a.a:", showType(forallType("a", starKind, varType("a"))));  // "∀a::*. a"
- * ```
- *
- * @see {@link conType} Concrete types
- * @see {@link arrowType} Usage
- * @see {@link forallType} Bound vars
  */
 export const varType = (name: string): VarType => ({ var: name });
 
 /**
- * Constructs function type `from → to`.
+ * Constructs a **function type** (`from → to`).
  *
- * **Purpose**: Lambda/trait method types. Core to typing.
+ * Function types are one of the core type constructors in the language.
  *
- * @param from - Domain type
- * @param to - Codomain type
- * @returns `{ arrow: { from, to } }`
+ * Examples:
+ * - `Int → Bool`
+ * - `(A → B) → C`
+ * - `Self → Int` (inside traits)
  *
- * @example Basic function
+ * Used in:
+ * - lambda terms (`λx:τ. body`)
+ * - trait method signatures
+ * - unification of function applications
+ * - pattern checking and type‑level substitution
+ *
+ * The `from` and `to` types must each have kind `*` (checked by `checkArrowKind`).
+ *
+ * @param from - Parameter type (domain)
+ * @param to - Result type (codomain)
+ * @returns A `Type` representing `from → to`
+ *
+ * @example
  * ```ts
- * import { arrowType, conType, showType } from "system-f-omega";
+ * arrowType(conType("Int"), conType("Bool"));
+ * // => (Int → Bool)
  *
- * console.log("Int→Bool:", showType(arrowType(conType("Int"), conType("Bool"))));  // "(Int → Bool)"
+ * arrowType(
+ *   arrowType(varType("A"), varType("B")),
+ *   varType("C")
+ * );
+ * // => ((A → B) → C)
  * ```
- *
- * @example Nested/poly
- * ```ts
- * import { arrowType, varType, conType, showType } from "system-f-omega";
- *
- * console.log("a→b:", showType(arrowType(varType("a"), varType("b"))));  // "(a → b)"
- * console.log("((a→b)→c):", showType(arrowType(arrowType(varType("a"), varType("b")), conType("c"))));  // "((a → b) → c)"
- * ```
- *
- * @example Lambda inference
- * ```ts
- * import { freshState, addType, inferType, lamTerm, varTerm, arrowType, conType, starKind, showType } from "system-f-omega";
- *
- * let state = freshState();
- * state = addType(state, "Int", starKind).ok;
- *
- * const id = lamTerm("x", conType("Int"), varTerm("x"));
- * const result = inferType(state, id);
- * console.log("inferred:", showType(result.ok));  // "(Int → Int)"
- * ```
- *
- * @see {@link lamTerm} Usage
- * @see {@link inferLamType} Infers arrows
- * @see {@link varType} Domain/codomain vars
  */
 export const arrowType = (from: Type, to: Type): Type => ({
   arrow: { from, to },
 });
 
 /**
- * Constructs universal quantifier `∀name::kind. body`.
+ * Constructs a **universal (polymorphic) type**:
  *
- * **Purpose**: Polymorphism: type variables, trait bounds.
+ *     ∀name::kind. body
  *
- * @param name - Bound var (`"a"`, `"Self"`)
- * @param kind - Var kind (`*`, `*→*`)
- * @param body - Body type
- * @returns `{ forall: { var, kind, body } }`
+ * This binds a **type variable** (`name`) of a given **kind** (`kind`) within
+ * the `body` type.
  *
- * @example Basic polymorphism
+ * Universal types represent *parametric polymorphism* (System F):
+ *
+ * - `∀A::*. A → A` — the polymorphic identity function
+ * - `∀F::(* → *). F<Int>` — higher‑kinded polymorphism
+ *
+ * The binder associates `name` with a kind so that type applications can be
+ * checked for correctness (`A` must be applied only to arguments of the right
+ * kind).
+ *
+ * Used in:
+ * - type‑level abstractions (`ΛA::κ. e`)
+ * - polymorphic functions
+ * - auto‑instantiation via `instantiateType`
+ * - type λ‑calculus and higher‑kinded inference
+ *
+ * @param name - The bound type variable (e.g. `"A"`, `"Self"`)
+ * @param kind - The kind of the variable (`*`, `* → *`, ...)
+ * @param body - The body type in which the variable is in scope
+ * @returns A `ForallType` node
+ *
+ * @example Basic polymorphism:
  * ```ts
- * import { forallType, varType, arrowType, starKind, showType } from "system-f-omega";
- *
- * console.log("∀a.a→a:", showType(forallType("a", starKind, arrowType(varType("a"), varType("a")))));  // "∀a::*. (a → a)"
+ * forallType("A", starKind,
+ *   arrowType(varType("A"), varType("A"))
+ * );
+ * // => ∀A::*. (A → A)
  * ```
  *
- * @example HKT bound
+ * @example Higher‑kinded:
  * ```ts
- * import { forallType, varType, arrowType, arrowKind, starKind, showType } from "system-f-omega";
- *
- * console.log("∀F:F<A>:", showType(forallType("F", arrowKind(starKind, starKind), varType("F"))));  // "∀F::(* → *). F"
+ * forallType("F", arrowKind(starKind, starKind), varType("F"));
+ * // => ∀F::(* → *). F
  * ```
- *
- * @example Tylam inference
- * ```ts
- * import { freshState, inferType, tylamTerm, lamTerm, varTerm, forallType, varType, arrowType, starKind, showType } from "system-f-omega";
- *
- * const state = freshState();
- * const polyId = tylamTerm("a", starKind, lamTerm("x", varType("a"), varTerm("x")));
- * const expected = forallType("a", starKind, arrowType(varType("a"), varType("a")));
- * const result = inferType(state, polyId);
- * console.log("inferred:", showType(result.ok));  // "∀a::*. (a → a)"
- * ```
- *
- * @see {@link tylamTerm} Term counterpart
- * @see {@link instantiateType} Skolemizes
- * @see {@link starKind} Common kind
  */
 export const forallType = (name: string, kind: Kind, body: Type) => ({
   forall: { var: name, kind, body },
 });
 
 /**
- * Constructs type application `func arg`.
+ * Constructs a **type application**:
  *
- * **Purpose**: HKT saturation: `List<Int>`, `Either<Int,Bool>`.
+ *     func arg
  *
- * @param func - Type constructor/function
- * @param arg - Argument type
- * @returns `{ app: { func, arg } }`
+ * This is how higher‑kinded types (type constructors) receive type arguments.
  *
- * @example Unary HKT
+ * Examples:
+ * - `List<Int>`     → `appType(conType("List"), conType("Int"))`
+ * - `Either<A, B>`  → `appType(appType(Either, A), B)`
+ *
+ * Internally, type applications are always represented in **left‑associated**
+ * form:
+ *
+ *     F A B  ≡  ((F A) B)
+ *
+ * Used in:
+ * - applying type constructors (`List`, `Either`, etc.)
+ * - instantiating polymorphic types
+ * - type‑level lambda application and beta‑reduction
+ * - enum/alias expansion during `normalizeType`
+ * - nominal type unification (using `getSpineHead` / `getSpineArgs`)
+ *
+ * Kind checking:
+ * - `func` must have a kind of the form `κ₁ → κ₂`
+ * - `arg` must have kind `κ₁`
+ * - the resulting application has kind `κ₂`
+ * (checked by `checkAppKind`)
+ *
+ * @param func - The type‑level function or constructor
+ * @param arg - The type argument to apply
+ * @returns A type application node
+ *
+ * @example Unary type constructor:
  * ```ts
- * import { appType, conType, showType } from "system-f-omega";
- *
- * const listInt = appType(conType("List"), conType("Int"));
- * console.log("List<Int>:", showType(listInt));  // "List<Int>"
+ * appType(conType("List"), conType("Int"));
+ * // => List<Int>
  * ```
  *
- * @example Nested app (binary)
+ * @example Binary constructor:
  * ```ts
- * import { appType, conType, showType } from "system-f-omega";
- *
- * const eitherIntBool = appType(appType(conType("Either"), conType("Int")), conType("Bool"));
- * console.log("Either<Int,Bool>:", showType(eitherIntBool));  // "Either<Int, Bool>"
+ * const either = conType("Either");
+ * appType(appType(either, conType("String")), conType("Bool"));
+ * // => Either<String, Bool>
  * ```
- *
- * @example Normalized spine
- * ```ts
- * import { freshState, addType, normalizeType, appType, conType, starKind, showType } from "system-f-omega";
- *
- * let state = freshState();
- * state = addType(state, "List", starKind).ok;
- * const listInt = appType(conType("List"), conType("Int"));
- * const norm = normalizeType(state, listInt);
- * console.log("normalized:", showType(norm));  // "List<Int>"
- * ```
- *
- * @see {@link getSpineArgs} Deconstructs
- * @see {@link normalizeType} β-reduces apps
- * @see {@link showType} Pretty-prints
  */
 export const appType = (func: Type, arg: Type) => ({ app: { func, arg } });
 
 /**
- * Constructs type lambda `λname::kind. body` (HKT constructor).
+ * Constructs a **type‑level lambda abstraction**:
  *
- * **Purpose**: Type functions: `λt::*. t → t` (id), `λF::(*→*). F<Int>`.
+ *     λname::kind. body
  *
- * @param name - Bound var
- * @param kind - Var kind
- * @param body - Body type
- * @returns `{ lam: { var, kind, body } }`
+ * This is the type‑level analogue of a term‑level lambda (`λx. e`), but it
+ * abstracts over **types** rather than values.
  *
- * @example Basic type lambda
+ * Type lambdas make it possible to write **type functions**, such as:
+ * - higher‑kinded constructors
+ *   ```
+ *   λT::*. List<T>
+ *   ```
+ * - type‑level identity
+ *   ```
+ *   λA::*. A
+ *   ```
+ * - currying multi‑argument type constructors
+ *   ```
+ *   λA::*. λB::*. (Either<A, B>)
+ *   ```
+ *
+ * Type applications (`appType`) can then apply arguments to type lambdas, and
+ * `normalizeType` will **β‑reduce**:
+ *
+ *     (λA. body) arg   →   body[A := arg]
+ *
+ * Used in:
+ * - enum normalization (recursive ADTs often expand into lambdas)
+ * - `createVariantLambda` for structural variant constructors
+ * - type‑level β‑reduction in `normalizeType`
+ * - higher‑kinded polymorphism
+ *
+ * @param name - Bound type variable name
+ * @param kind - The kind of the bound variable (`*`, `* → *`, etc.)
+ * @param body - The type expression where the variable is in scope
+ * @returns A type lambda node
+ *
+ * @example Identity type function:
  * ```ts
- * import { lamType, varType, starKind, showType } from "system-f-omega";
- *
- * const idLam = lamType("t", starKind, varType("t"));
- * console.log("λt.t:", showType(idLam));  // "λt::*. t"
+ * lamType("A", starKind, varType("A"));
+ * // => λA::*. A
  * ```
  *
- * @example HKT constructor
+ * @example Higher‑kinded:
  * ```ts
- * import { lamType, arrowKind, starKind, varType, showType } from "system-f-omega";
- *
- * const listLam = lamType("F", arrowKind(starKind, starKind), varType("F"));
- * console.log("λF:F:", showType(listLam));  // "λF::(* → *). F"
+ * lamType(
+ *   "F",
+ *   arrowKind(starKind, starKind),
+ *   appType(varType("F"), conType("Int"))
+ * );
+ * // => λF::(* → *). F<Int>
  * ```
- *
- * @example App + normalize
- * ```ts
- * import { freshState, normalizeType, lamType, appType, varType, starKind, conType, showType } from "system-f-omega";
- *
- * const state = freshState();
- * const idLam = lamType("t", starKind, varType("t"));
- * const idInt = appType(idLam, conType("Int"));
- * const norm = normalizeType(state, idInt);
- * console.log("β-reduced:", showType(norm));  // "Int"
- * ```
- *
- * @see {@link appType} Apply lambdas
- * @see {@link normalizeType} β-reduces
- * @see {@link tylamTerm} Term counterpart
  */
 export const lamType = (name: string, kind: Kind, body: Type) => ({
   lam: { var: name, kind, body },
 });
 
 /**
- * Constructs concrete type constructor `{ con: name }`.
+ * Constructs a **concrete type constructor**.
  *
- * **Purpose**: Primitives/enums: `"Int"`, `"List"`, `"Either"`.
+ * A `ConType` represents:
+ * - primitive types (`"Int"`, `"Bool"`, `"String"`)
+ * - user‑defined nominal types (`"List"`, `"Option"`)
+ * - enum/ADT names before they are expanded by `normalizeType`
+ * - type constructors waiting for arguments (`List :: * → *`)
  *
- * @param con - Constructor name
- * @returns `{ con: name }`
+ * `conType("Int")` corresponds to the type `Int`.
  *
- * @example Primitive
+ * When applied via {@link appType}, it forms higher‑kinded applications:
+ *
  * ```ts
- * import { conType, showType } from "system-f-omega";
- *
- * console.log("Int:", showType(conType("Int")));  // "Int"
+ * appType(conType("List"), conType("Int"));  // List<Int>
  * ```
  *
- * @example Type constructor
+ * Used in:
+ * - type applications
+ * - enum / alias resolution
+ * - pattern checking (`checkPattern`)
+ * - unification and nominal matching
+ *
+ * @param con - The type constructor name
+ * @returns A `ConType` node `{ con: name }`
+ *
+ * @example
  * ```ts
- * import { conType, showType } from "system-f-omega";
- *
- * console.log("List:", showType(conType("List")));  // "List"
+ * conType("Int");         // Int
+ * conType("List");        // List
+ * appType(conType("List"), conType("Int"));  // List<Int>
  * ```
- *
- * @example App usage
- * ```ts
- * import { conType, appType, showType } from "system-f-omega";
- *
- * console.log("List<Int>:", showType(appType(conType("List"), conType("Int"))));  // "List<Int>"
- * ```
- *
- * @see {@link appType} HKT saturation
- * @see {@link addType} Binds constructors
- * @see {@link addEnum} Enum heads
  */
 export const conType = (con: string) => ({ con });
 
 /**
- * Constructs record type `{ label: τ, ... }` (structural rows).
+ * Constructs a **record type**:
  *
- * **Purpose**: Product types with labeled fields. Supports width subsumption.
+ *     { label₁: T₁, label₂: T₂, ... }
  *
- * @param record - Field list `[[label, type], ...]`
- * @returns `{ record: [[string, Type]] }`
+ * Record types describe **structural products** with **named fields**.
+ * They support **width subtyping**:
  *
- * @example Basic record
+ *     { x: Int }  <:  { x: Int, y: Bool }
+ *
+ * meaning a record with *more* fields can be used where a record with *fewer*
+ * fields is expected.
+ *
+ * Examples:
+ * - `{ x: Int, y: Bool }`
+ * - `{ name: String, age: Int }`
+ *
+ * Used in:
+ * - record terms (`recordTerm`)
+ * - pattern matching (`recordPattern`)
+ * - projection (`projectTerm`)
+ * - structural unification (`unifyRecordTypes`)
+ * - normalization and type equality
+ *
+ * Kind checking:
+ * - Every field type must have kind `*`
+ *   (validated by `checkRecordKind`)
+ *
+ * @param record - An array of `[label, type]` pairs describing fields
+ * @returns A `RecordType` node `{ record: [...] }`
+ *
+ * @example
  * ```ts
- * import { recordType, conType, showType } from "system-f-omega";
- *
- * const person = recordType([
- *   ["name", conType("String")],
- *   ["age", conType("Int")]
+ * recordType([
+ *   ["x", conType("Int")],
+ *   ["y", conType("Bool")]
  * ]);
- * console.log("record:", showType(person));  // "{name: String, age: Int}"
+ * // => { x: Int, y: Bool }
  * ```
  *
- * @example Nested fields
+ * @example Width subtyping:
  * ```ts
- * import { recordType, conType, arrowType, showType } from "system-f-omega";
+ * const small = recordType([["x", Int]]);
+ * const big   = recordType([["x", Int], ["y", Bool]]);
  *
- * const funcRec = recordType([
- *   ["f", arrowType(conType("Int"), conType("Bool"))],
- *   ["g", conType("String")]
- * ]);
- * console.log("nested:", showType(funcRec));  // "{f: (Int → Bool), g: String}"
+ * isAssignableTo(state, small, big);  // true
  * ```
- *
- * @example Inference
- * ```ts
- * import { freshState, addType, inferType, recordTerm, conTerm, recordType, conType, starKind, showType } from "system-f-omega";
- *
- * let state = freshState();
- * state = addType(state, "Int", starKind).ok;
- * state = addType(state, "Bool", starKind).ok;
- *
- * const recVal = recordTerm([
- *   ["x", conTerm("1", conType("Int"))],
- *   ["y", conTerm("true", conType("Bool"))]
- * ]);
- * const result = inferType(state, recVal);
- * console.log("inferred:", showType(result.ok));  // "{x: Int, y: Bool}"
- * ```
- *
- * @see {@link recordTerm} Value constructor
- * @see {@link inferRecordType} Inference rule
- * @see {@link projectTerm} Field access
  */
 export const recordType = (record: [string, Type][]) => ({ record });
 
 /**
- * Constructs variant type `<label: τ | ...>` (sum types).
+ * Constructs a **structural variant (sum) type**:
  *
- * **Purpose**: Disjoint unions. Used in enum expansion, injectTerm.
+ *     < Label₁: T₁ | Label₂: T₂ | ... >
  *
- * @param variant - Case list `[[label, type], ...]`
- * @returns `{ variant: [[string, Type]] }`
+ * Variant types represent **tagged unions**, also known as:
+ * - algebraic sum types
+ * - discriminated unions
+ * - enum‑like data structures
  *
- * @example Basic variant
+ * Each case consists of:
+ *   - a **label** (e.g. `"Some"`, `"None"`, `"Left"`)
+ *   - a **payload type** (e.g. `Int`, `(A, B)`, or `()` for unit / zero payload)
+ *
+ * Examples:
+ * - `<None: () | Some: Int>`
+ * - `<Left: A | Right: B>`
+ * - `<Nil: () | Cons: (A, List<A>)>`
+ *
+ * This is the *structural* counterpart to **nominal enums** defined via
+ * `addEnum`. Nominal enums are **expanded** into structural variants by
+ * {@link normalizeType}.
+ *
+ * Features of structural variants:
+ * - They do **not** rely on a named enum definition.
+ * - They support **recursive shapes**, especially under `muType`.
+ * - They interact with pattern matching (`variantPattern`).
+ * - They unify structurally via `unifyVariants`.
+ *
+ * Kind checking:
+ * - Each payload type must have kind `*`
+ *   (validated by `checkVariantKind`)
+ *
+ * Used in:
+ * - pattern matching (`checkPattern`)
+ * - variant injections (`injectTerm`)
+ * - enum expansion (`normalizeType`)
+ * - structural unification and type equality (`unifyVariants`, `typesEqual`)
+ *
+ * @param variant - An array of `[label, type]` pairs representing cases
+ * @returns A `VariantType` node `{ variant: [...] }`
+ *
+ * @example Binary variant:
  * ```ts
- * import { variantType, conType, showType } from "system-f-omega";
- *
- * const either = variantType([
- *   ["Left", conType("Int")],
- *   ["Right", conType("String")]
+ * variantType([
+ *   ["Left",  conType("Int")],
+ *   ["Right", conType("Bool")]
  * ]);
- * console.log("variant:", showType(either));  // "<Left: Int | Right: String>"
+ * // => <Left: Int | Right: Bool>
  * ```
  *
- * @example Nested cases
+ * @example Recursive (combined with muType):
  * ```ts
- * import { variantType, conType, arrowType, showType } from "system-f-omega";
- *
- * const result = variantType([
- *   ["Ok", conType("Int")],
- *   ["Err", arrowType(conType("String"), conType("String"))]
- * ]);
- * console.log("nested:", showType(result));  // "<Ok: Int | Err: (String → String)>"
+ * muType("X", variantType([
+ *   ["Nil", tupleType([])],
+ *   ["Cons", tupleType([conType("Int"), varType("X")])]
+ * ]));
+ * // => μX.<Nil: () | Cons: (Int, X)>
  * ```
- *
- * @example Enum expansion inference
- * ```ts
- * import { freshState, addType, addEnum, normalizeType, appType, conType, variantType, starKind, showType } from "system-f-omega";
- *
- * let state = freshState();
- * state = addType(state, "Int", starKind).ok;
- * state = addEnum(state, "Option", ["T"], [starKind], [
- *   ["None", { tuple: [] }],
- *   ["Some", conType("T")]
- * ]).ok;
- *
- * const optInt = appType(conType("Option"), conType("Int"));
- * const expanded = normalizeType(state, optInt);
- * console.log("expanded:", showType(expanded));  // "<None: ⊥ | Some: Int>"
- * ```
- *
- * @see {@link injectTerm} Variant values
- * @see {@link addEnum} Expands to variant
- * @see {@link normalizeType} Enum normalization
  */
 export const variantType = (variant: [string, Type][]) => ({ variant });
 
 /**
- * Constructs recursive mu type `μvar. body` (equi-recursive).
+ * Constructs a **recursive type** using a µ‑binder:
  *
- * **Purpose**: Fixed-points: lists, trees. Unfolds via `substituteType`.
+ *     μX. body
  *
- * @param var_name - Binder (`"L"`)
- * @param body - Body (contains `var_name`)
- * @returns `{ mu: { var, body } }`
+ * This represents an **equi‑recursive type**, where the type is considered
+ * equal to its own unfolding:
  *
- * @example Basic mu
+ *     μX. T   ≡   T[X := μX. T]
+ *
+ * Recursive types are used to encode:
+ * - linked lists
+ * - trees
+ * - recursive enums (after normalization)
+ * - self‑referential or cyclic data structures
+ *
+ * Examples:
+ * - `μL. (Int, L)` — a simple recursive pair (list‑like)
+ * - `μT. <Leaf: Int | Node: (T, T)>` — a recursive tree
+ *
+ * `muType` does **not** unfold automatically.
+ * Unfolding happens when:
+ * - matching variant patterns on a recursive enum
+ * - using `unfoldTerm` in evaluation
+ * - normalization requires expansion of a recursive enum
+ *
+ * Kind checking:
+ * - The µ‑variable is treated as having kind `*`
+ * - The body must also check as kind `*`
+ *   (verified by `checkMuKind`)
+ *
+ * Used in:
+ * - `normalizeType` (expanding recursive enums into µ‑types)
+ * - `inferUnfoldType` / `inferFoldType`
+ * - `unifyMuTypes` (alpha‑renaming + structural unification)
+ * - pattern matching on recursive structures
+ *
+ * @param var_name - The bound recursive type variable name (e.g., `"X"`)
+ * @param body - The body of the recursive type, which may refer to `var_name`
+ * @returns A `MuType` node `{ mu: { var, body } }`
+ *
+ * @example List‑like recursive structure:
  * ```ts
- * import { muType, varType, showType } from "system-f-omega";
- *
- * const listMu = muType("L", varType("L"));
- * console.log("μL.L:", showType(listMu));  // "μL.L"
+ * muType("L", tupleType([conType("Int"), varType("L")]));
+ * // => μL.(Int, L)
  * ```
  *
- * @example Recursive list
+ * @example Recursive enum after normalization:
  * ```ts
- * import { muType, tupleType, varType, conType, showType } from "system-f-omega";
- *
- * const listInt = muType("L", tupleType([conType("Int"), varType("L")]));
- * console.log("list:", showType(listInt));  // "μL.(Int, L)"
+ * muType("X",
+ *   variantType([
+ *     ["Nil",  tupleType([])],
+ *     ["Cons", tupleType([conType("Int"), varType("X")])]
+ *   ])
+ * );
  * ```
- *
- * @example Enum expansion
- * ```ts
- * import { freshState, addType, addEnum, normalizeType, appType, conType, muType, starKind, showType } from "system-f-omega";
- * import { tupleType, varType } from "system-f-omega";
- *
- * let state = freshState();
- * state = addType(state, "Int", starKind).ok;
- * state = addEnum(state, "List", ["T"], [starKind], [
- *   ["Nil", tupleType([])],
- *   ["Cons", tupleType([conType("T"), appType(conType("List"), varType("T"))])]
- * ], true).ok;
- *
- * const listInt = appType(conType("List"), conType("Int"));
- * const expanded = normalizeType(state, listInt);
- * console.log("expanded:", showType(expanded));  // "μX.<Nil: ⊥ | Cons: (Int, X<Int>)>"
- * ```
- *
- * @see {@link normalizeType} Unfolds in enums
- * @see {@link foldTerm} Packs into mu
- * @see {@link inferFoldType} Typing rule
  */
 export const muType = (var_name: string, body: Type): Type => ({
   mu: { var: var_name, body },
 });
 
 /**
- * Constructs tuple type `(τ₁, τ₂, ...)` (product without labels).
+ * Constructs a **tuple (product) type**:
  *
- * **Purpose**: Unlabeled products. Zero-arity = unit `()`.
+ *     (T₁, T₂, ..., Tₙ)
  *
- * @param elements - Tuple element types
- * @returns `{ tuple: Type[] }`
+ * Tuples represent ordered, fixed‑length collections of values.
+ * They differ from records in that:
+ * - tuple fields are **positional**, not named
+ * - tuple types must have **exact arity** (no width subtyping)
  *
- * @example Unit (empty tuple)
+ * Examples:
+ * - `(Int, Bool)` — a 2‑tuple
+ * - `(A, (B, C))` — nested tuples
+ * - `()` — the empty tuple (unit type)
+ *
+ * Used in:
+ * - tuple terms (`tupleTerm`)
+ * - tuple pattern matching (`tuplePattern`)
+ * - tuple projection (`tupleProjectTerm`)
+ * - structural unification (`unifyTupleTypes`)
+ * - recursive types (payload of variant cases in lists/trees)
+ *
+ * Kind checking:
+ * - All elements must have kind `*`
+ *   (validated by `checkTupleKind`)
+ *
+ * @param elements - Array of element types in order
+ * @returns A `TupleType` node `{ tuple: [...] }`
+ *
+ * @example
  * ```ts
- * import { tupleType, showType } from "system-f-omega";
- *
- * const unit = tupleType([]);
- * console.log("unit:", showType(unit));  // "()"
+ * tupleType([conType("Int"), conType("Bool")]);
+ * // => (Int, Bool)
  * ```
  *
- * @example Basic tuple
+ * @example Unit tuple:
  * ```ts
- * import { tupleType, conType, showType } from "system-f-omega";
- *
- * const pair = tupleType([conType("Int"), conType("Bool")]);
- * console.log("pair:", showType(pair));  // "(Int, Bool)"
+ * tupleType([]);
+ * // => ()
  * ```
- *
- * @example Nested tuple
- * ```ts
- * import { tupleType, conType, showType } from "system-f-omega";
- *
- * const nested = tupleType([conType("Int"), tupleType([conType("Bool"), conType("String")])]);
- * console.log("nested:", showType(nested));  // "(Int, (Bool, String))"
- * ```
- *
- * @example Inference
- * ```ts
- * import { freshState, addType, inferType, tupleTerm, conTerm, tupleType, conType, starKind, showType } from "system-f-omega";
- *
- * let state = freshState();
- * state = addType(state, "Int", starKind).ok;
- * state = addType(state, "Bool", starKind).ok;
- *
- * const tupVal = tupleTerm([conTerm("1", conType("Int")), conTerm("true", conType("Bool"))]);
- * const result = inferType(state, tupVal);
- * console.log("inferred:", showType(result.ok));  // "(Int, Bool)"
- * ```
- *
- * @see {@link tupleTerm} Value constructor
- * @see {@link inferTupleType} Inference rule
- * @see {@link tuplePattern} Pattern matching
  */
 export const tupleType = (elements: Type[]): Type => ({ tuple: elements });
 
 /**
- * Constructs bounded universal `∀name::kind where C₁, C₂. body`.
+ * Constructs a **bounded universal type**, also written:
  *
- * **Purpose**: Trait-bounded polymorphism: `∀Self::*. Eq<Self>. Self → Self`.
+ *     ∀name::kind where C₁, C₂, ... . body
  *
- * @param name - Bound var (`"Self"`)
- * @param kind - Var kind
- * @param constraints - Trait bounds `[{trait: "Eq", type: τ}, ...]`
- * @param body - Body type
- * @returns `{ bounded_forall: { var, kind, constraints, body } }`
+ * This represents *trait‑bounded polymorphism*:
+ * a type that is universally quantified over a type variable **with
+ * additional constraints** that the variable must satisfy.
  *
- * @example Basic bounded forall
+ * For example:
+ *
  * ```ts
- * import { boundedForallType, varType, starKind, showType } from "system-f-omega";
- *
- * const eqSelf = boundedForallType("Self", starKind, [], varType("Self"));
- * console.log("basic:", showType(eqSelf));  // "∀Self::* where . Self"
+ * ∀Self::* where Eq<Self>. (Self → Int)
  * ```
  *
- * @example With constraints
- * ```ts
- * import { boundedForallType, varType, starKind, showType } from "system-f-omega";
- * import { conType } from "system-f-omega";
+ * means:
+ *   “For every type `Self` that implements `Eq`, the function has type
+ *    `Self → Int`.”
  *
- * const eqId = boundedForallType("Self", starKind, [{ trait: "Eq", type: varType("Self") }], arrowType(varType("Self"), varType("Self")));
- * console.log("constrained:", showType(eqId));  // "∀Self::* where Eq<Self>. (Self → Self)"
+ * ---------------------------------------------------------------------------
+ * Components
+ * ---------------------------------------------------------------------------
+ * - `name` — the bound type variable (`"Self"`, `"A"`, `"T"`, …)
+ * - `kind` — the kind of the variable (`*`, `* → *`, …)
+ * - `constraints` — list of trait requirements, each a `TraitConstraint`:
+ *     `{ trait: "Eq", type: varType("Self") }`
+ * - `body` — the type in which the bound variable is in scope
+ *
+ * ---------------------------------------------------------------------------
+ * How it is used
+ * ---------------------------------------------------------------------------
+ * Bounded foralls are produced by:
+ * - {@link traitLamTerm} (trait lambdas)
+ * - trait‑polymorphic functions and methods
+ *
+ * They are consumed by:
+ * - {@link instantiateWithTraits}
+ * - {@link inferTraitAppType}
+ * - {@link autoInstantiate}
+ *
+ * The idea:
+ *
+ * - A type variable introduced by a bounded forall must satisfy certain trait
+ *   constraints.
+ * - When instantiating the type (e.g., during function application), the
+ *   typechecker must **find dictionaries** that satisfy all constraints.
+ *
+ * ---------------------------------------------------------------------------
+ * Examples
+ * ---------------------------------------------------------------------------
+ *
+ * **Single constraint**
+ * ```ts
+ * boundedForallType(
+ *   "Self",
+ *   starKind,
+ *   [{ trait: "Eq", type: varType("Self") }],
+ *   arrowType(varType("Self"), conType("Int"))
+ * );
+ *
+ * // ∀Self::* where Eq<Self>. (Self → Int)
  * ```
  *
- * @example Trait lambda checking
+ * **Multiple constraints**
  * ```ts
- * import { freshState, addType, addTraitDef, checkType, traitLamTerm, boundedForallType, varType, arrowType, starKind, conType, showType } from "system-f-omega";
- *
- * let state = freshState();
- * state = addType(state, "Int", starKind).ok;
- * state = addTraitDef(state, "Eq", "A", starKind, [["eq", arrowType(conType("A"), conType("Bool"))]]).ok;
- *
- * const traitLam = traitLamTerm("d", "Eq", "Self", starKind, [{ trait: "Eq", type: varType("Self") }], arrowType(varType("Self"), conType("Int")));
- * const expected = boundedForallType("Self", starKind, [{ trait: "Eq", type: varType("Self") }], arrowType(varType("Self"), conType("Int")));
- * const result = checkType(state, traitLam, expected);
- * console.log("checked:", "ok" in result);  // true
+ * boundedForallType(
+ *   "T",
+ *   starKind,
+ *   [
+ *     { trait: "Eq",   type: varType("T") },
+ *     { trait: "Show", type: varType("T") },
+ *   ],
+ *   varType("T")
+ * );
  * ```
  *
- * @see {@link traitLamTerm} Term counterpart
- * @see {@link checkType} Validates bounds
- * @see {@link instantiateWithTraits} Resolves constraints
+ * ---------------------------------------------------------------------------
+ * Related
+ * ---------------------------------------------------------------------------
+ * - {@link TraitConstraint} — describes each constraint
+ * - {@link instantiateWithTraits} — performs instantiation and dictionary lookup
+ * - {@link traitLamTerm} — term‑level constructor for bounded polymorphism
+ * - {@link checkType} — checks trait lambdas against bounded forall types
+ *
+ * @param name - The bound type variable
+ * @param kind - The variable's kind
+ * @param constraints - Trait constraints required on the variable
+ * @param body - The type expression under the quantifier
+ * @returns A `BoundedForallType` node
  */
 export const boundedForallType = (
   name: string,
@@ -7478,919 +8860,1001 @@ export const boundedForallType = (
 });
 
 /**
- * Constructs term variable `{ var: name }`.
+ * Constructs a **term variable**.
  *
- * **Purpose**: References bound vars in lambdas/apps/lets.
+ * Term variables refer to values bound in:
+ * - lambda abstractions (`λx. body`)
+ * - let-bindings (`let x = value in body`)
+ * - pattern matches (variables introduced by patterns)
+ * - the global or local typing context
  *
- * @param name - Variable name (`"x"`, `"self"`)
- * @returns `{ var: name }`
+ * During inference, the variable’s type is looked up in the context using
+ * {@link inferVarType}.
  *
- * @example Basic variable
+ * This is the term‑level analogue of {@link varType} for type variables.
+ *
+ * @param name - The variable name (`"x"`, `"f"`, `"self"`, ...)
+ * @returns A `VarTerm` node `{ var: name }`
+ *
+ * @example
  * ```ts
- * import { varTerm, showTerm } from "system-f-omega";
- *
- * console.log("x:", showTerm(varTerm("x")));  // "x"
+ * varTerm("x");        // => "x"
+ * lamTerm("x", Int, varTerm("x"));
  * ```
  *
- * @example Lambda usage
- * ```ts
- * import { varTerm, lamTerm, conType, showTerm } from "system-f-omega";
- *
- * const id = lamTerm("x", conType("Int"), varTerm("x"));
- * console.log("λx.x:", showTerm(id));  // "λx:Int.x"
- * ```
- *
- * @example Inference
- * ```ts
- * import { freshState, addType, addTerm, inferType, varTerm, conType, starKind, showType } from "system-f-omega";
- *
- * let state = freshState();
- * state = addType(state, "Int", starKind).ok;
- * state = addTerm(state, "x", { con: { name: "42", type: conType("Int") } }).ok;
- *
- * const result = inferType(state, varTerm("x"));
- * console.log("inferred:", showType(result.ok));  // "Int"
- * ```
- *
- * @see {@link lamTerm} Bound usage
- * @see {@link inferType} Lookup
- * @see {@link addTerm} Binding
+ * @see {@link inferVarType} Variable lookup rule
  */
 export const varTerm = (name: string) => ({ var: name });
 
 /**
- * Constructs lambda `λarg:τ. body`.
+ * Constructs a **lambda term** (function abstraction):
  *
- * **Purpose**: Function abstraction. Infers arrow type.
+ *     λarg:type. body
  *
- * @param arg - Parameter name
- * @param type - Parameter type (annotated)
- * @param body - Body term
- * @returns `{ lam: { arg, type, body } }`
+ * This represents a function value in the language.
+ * The parameter type **must be annotated**, since the system does not infer
+ * function argument types automatically in pure inference mode.
  *
- * @example Basic lambda
+ * Lambda terms are typed using the rule:
+ *
+ *     Γ, arg : type ⊢ body : T
+ *     ─────────────────────────  (Lam)
+ *       Γ ⊢ λarg:type. body : (type → T)
+ *
+ * The annotation ensures checking mode and inference are well‑behaved.
+ *
+ * Used in:
+ * - function definitions
+ * - dictionary methods
+ * - trait lambdas
+ * - match branches (functions as values)
+ *
+ * Typechecking/inference:
+ * - {@link inferLamType} handles inference for lambdas
+ * - {@link checkType} checks lambdas against expected arrow types
+ *
+ * @param arg - The function argument name (`"x"`)
+ * @param type - The annotated parameter type
+ * @param body - The function body term
+ * @returns A `LamTerm` node `{ lam: { arg, type, body } }`
+ *
+ * @example
  * ```ts
- * import { lamTerm, conType, varTerm, showTerm } from "system-f-omega";
- *
- * const id = lamTerm("x", conType("Int"), varTerm("x"));
- * console.log("λx.x:", showTerm(id));  // "λx:Int.x"
+ * lamTerm("x", conType("Int"), varTerm("x"));
+ * // => λx:Int. x
  * ```
  *
- * @example Inference
+ * @example Higher‑order:
  * ```ts
- * import { freshState, addType, inferType, lamTerm, varTerm, conType, starKind, showType } from "system-f-omega";
- *
- * let state = freshState();
- * state = addType(state, "Int", starKind).ok;
- *
- * const id = lamTerm("x", conType("Int"), varTerm("x"));
- * const result = inferType(state, id);
- * console.log("inferred:", showType(result.ok));  // "(Int → Int)"
+ * lamTerm("f",
+ *   arrowType(Int, Int),
+ *   appTerm(varTerm("f"), conTerm("0", Int))
+ * );
  * ```
  *
- * @example Checking
- * ```ts
- * import { freshState, addType, checkType, lamTerm, varTerm, arrowType, conType, starKind, showType } from "system-f-omega";
- *
- * let state = freshState();
- * state = addType(state, "Int", starKind).ok;
- *
- * const id = lamTerm("x", conType("Int"), varTerm("x"));
- * const expected = arrowType(conType("Int"), conType("Int"));
- * const result = checkType(state, id, expected);
- * console.log("checked:", showType(result.ok.type));  // "(Int → Int)"
- * ```
- *
- * @see {@link inferLamType} Inference rule
- * @see {@link varTerm} Body var
- * @see {@link inferType} Usage
+ * @see {@link inferLamType}
+ * @see {@link appTerm}
  */
 export const lamTerm = (arg: string, type: Type, body: Term) => ({
   lam: { arg, type, body },
 });
 
 /**
- * Constructs term application `(callee arg)`.
+ * Constructs a **term‑level function application**:
  *
- * **Purpose**: Function application. Infers result via callee type.
+ *     (callee arg)
  *
- * @param callee - Function term
- * @param arg - Argument term
- * @returns `{ app: { callee, arg } }`
+ * This represents applying a function to an argument.
+ * It is the term analogue of type application (`tyappTerm`) and is typed using
+ * the usual application rule:
  *
- * @example Basic application
+ *     Γ ⊢ callee : A → B
+ *     Γ ⊢ arg : A
+ *     ───────────────────── (App)
+ *     Γ ⊢ callee arg : B
+ *
+ * Inference:
+ * - {@link inferAppType} handles application inference
+ * - It automatically instantiates polymorphic functions (`∀`) as needed
+ * - It also handles trait‑bounded functions by resolving dictionaries
+ *
+ * Used in:
+ * - calling user‑defined functions
+ * - calling lambda expressions
+ * - applying dictionary methods
+ * - applying polymorphic terms once instantiated
+ *
+ * @param callee - The function term being called
+ * @param arg - The argument term being passed
+ * @returns An `AppTerm` node `{ app: { callee, arg } }`
+ *
+ * @example Basic application:
  * ```ts
- * import { appTerm, varTerm, showTerm } from "system-f-omega";
- *
- * const app = appTerm(varTerm("f"), varTerm("x"));
- * console.log("app:", showTerm(app));  // "(f x)"
+ * appTerm(varTerm("f"), varTerm("x"));
+ * // => (f x)
  * ```
  *
- * @example Inference
+ * @example Calling a lambda:
  * ```ts
- * import { freshState, addType, addTerm, inferType, appTerm, varTerm, lamTerm, conTerm, conType, starKind, showType } from "system-f-omega";
- *
- * let state = freshState();
- * state = addType(state, "Int", starKind).ok;
- * state = addTerm(state, "id", lamTerm("x", conType("Int"), varTerm("x"))).ok;
- *
- * const app = appTerm(varTerm("id"), conTerm("0", conType("Int")));
- * const result = inferType(state, app);
- * console.log("inferred:", showType(result.ok));  // "Int"
+ * const id = lamTerm("x", Int, varTerm("x"));
+ * appTerm(id, conTerm("42", Int));
+ * // => (λx:Int. x 42)
  * ```
  *
- * @example Checking
- * ```ts
- * import { freshState, addType, addTerm, checkType, appTerm, varTerm, lamTerm, conTerm, arrowType, conType, starKind, showType } from "system-f-omega";
- *
- * let state = freshState();
- * state = addType(state, "Int", starKind).ok;
- * state = addTerm(state, "add1", lamTerm("x", conType("Int"), varTerm("x"))).ok;
- *
- * const app = appTerm(varTerm("add1"), conTerm("0", conType("Int")));
- * const expected = conType("Int");
- * const result = checkType(state, app, expected);
- * console.log("checked:", showType(result.ok.type));  // "Int"
- * ```
- *
- * @see {@link inferAppType} Inference rule
- * @see {@link lamTerm} Callee usage
- * @see {@link inferType} Full inference
+ * @see {@link inferAppType} Application typing rule
+ * @see {@link lamTerm} Function abstraction
  */
 export const appTerm = (callee: Term, arg: Term) => ({ app: { callee, arg } });
 
 /**
- * Constructs type lambda `Λname::kind. body` (polymorphic abstraction).
+ * Constructs a **type‑level lambda term**:
  *
- * **Purpose**: Type-level functions. Infers forall type.
+ *     Λname::kind. body
  *
- * @param name - Bound type var
- * @param kind - Var kind
- * @param body - Body term
- * @returns `{ tylam: { var, kind, body } }`
+ * This introduces a **polymorphic type parameter** at the term level.
+ * It is the term‑level analogue of a universal type (`∀name::kind. ...`),
+ * produced during type inference by {@link inferTylamType}.
  *
- * @example Basic type lambda
+ * `tylamTerm` allows terms to be *explicitly polymorphic*, similar to:
+ * - System F `ΛA. e`
+ * - Haskell with `RankNTypes` and `/\` notation
+ *
+ * When applied using {@link tyappTerm}, a fresh or concrete type is substituted
+ * for the bound type variable.
+ *
+ * ---------------------------------------------------------------------------
+ * Example: Polymorphic identity function
+ * ---------------------------------------------------------------------------
  * ```ts
- * import { tylamTerm, showTerm } from "system-f-omega";
- * import { starKind } from "system-f-omega";
+ * const id =
+ *   tylamTerm("A", starKind,
+ *     lamTerm("x", varType("A"), varTerm("x"))
+ *   );
  *
- * const polyId = tylamTerm("a", starKind, { var: "x" });
- * console.log("Λa.x:", showTerm(polyId));  // "Λa::*. x"
+ * // Printed: ΛA::*. λx:A. x
  * ```
  *
- * @example Inference
+ * Applying it to a type:
  * ```ts
- * import { freshState, inferType, tylamTerm, lamTerm, varTerm, varType, starKind, showType } from "system-f-omega";
- *
- * const state = freshState();
- * const polyId = tylamTerm("a", starKind, lamTerm("x", varType("a"), varTerm("x")));
- * const result = inferType(state, polyId);
- * console.log("inferred:", showType(result.ok));  // "∀a::*. (a → a)"
+ * tyappTerm(id, conType("Int"));
+ * // => (ΛA. λx:A. x) [Int]
  * ```
  *
- * @example Checking
- * ```ts
- * import { freshState, checkType, tylamTerm, lamTerm, varTerm, varType, forallType, arrowType, starKind, showType } from "system-f-omega";
+ * ---------------------------------------------------------------------------
+ * Usage
+ * ---------------------------------------------------------------------------
+ * - Represent explicitly polymorphic functions
+ * - Support higher‑rank polymorphism (passing polymorphic functions as values)
+ * - Enable controlled instantiation via `tyappTerm`, `inferTyappType`, and
+ *   `autoInstantiate`
  *
- * const state = freshState();
- * const polyId = tylamTerm("a", starKind, lamTerm("x", varType("a"), varTerm("x")));
- * const expected = forallType("a", starKind, arrowType(varType("a"), varType("a")));
- * const result = checkType(state, polyId, expected);
- * console.log("checked:", showType(result.ok.type));  // "∀a::*. (a → a)"
+ * Kind checking ensures the parameter has the correct kind inside the body.
+ *
+ * @param name - The bound type variable (`"A"`)
+ * @param kind - The kind of the variable (`*`, `* → *`, ...)
+ * @param body - The term in which the variable is in scope
+ * @returns A `TyLamTerm` node `{ tylam: { var, kind, body } }`
+ *
+ * @example Higher‑kinded polymorphism:
+ * ```ts
+ * tylamTerm("F", arrowKind(starKind, starKind),
+ *   lamTerm("x", appType(varType("F"), Int), varTerm("x"))
+ * );
  * ```
  *
+ * @see {@link tyappTerm} Type application
  * @see {@link inferTylamType} Inference rule
- * @see {@link tyappTerm} Application
- * @see {@link forallType} Inferred type
+ * @see {@link forallType} Type‑level universal
  */
 export const tylamTerm = (name: string, kind: Kind, body: Term) => ({
   tylam: { var: name, kind, body },
 });
+
 /**
- * Constructs type application `term [type]`.
+ * Constructs a **type application term**:
  *
- * **Purpose**: Saturates type lambdas. Infers via callee forall.
+ *     term [type]
  *
- * @param term - Polymorphic term (tylam)
- * @param type - Type argument
- * @returns `{ tyapp: { term, type } }`
+ * This applies a polymorphic term (introduced with {@link tylamTerm}) to a
+ * specific **type argument**. It is the term‑level analogue of applying a
+ * type constructor with {@link appType}.
  *
- * @example Basic type app
+ * In System F notation:
+ *
+ *     (ΛA::κ. body) [T]
+ *
+ * performs `A := T` inside `body`, after kind checking and substitution.
+ *
+ * ---------------------------------------------------------------------------
+ * When this is used
+ * ---------------------------------------------------------------------------
+ * - To instantiate explicitly polymorphic functions:
+ *     ```ts
+ *     tyappTerm(polyId, Int)    // polyId[Int]
+ *     ```
+ *
+ * - As an intermediate step during inference:
+ *     - `inferTyappType` handles type‑application typing
+ *     - type arguments must have the correct kind for the binder
+ *
+ * - For higher‑rank polymorphism:
+ *     ```ts
+ *     f (ΛA. e)   // passing a polymorphic function
+ *     ```
+ *     and the caller may then apply it using `tyappTerm`.
+ *
+ * - In `autoInstantiate`, this is inserted automatically when a term with a
+ *   `forall` type is used without explicit type arguments.
+ *
+ * ---------------------------------------------------------------------------
+ * Kind checking
+ * ---------------------------------------------------------------------------
+ * Via {@link inferTyappType}, the type argument must match the kind declared
+ * by the type lambda:
+ *
+ *     ΛA::κ. ...   applied to   T
+ *
+ * requires:
+ *
+ *     Γ ⊢ T : κ
+ *
+ * ---------------------------------------------------------------------------
+ * @param term - The polymorphic term being instantiated
+ * @param type - The type argument to apply
+ * @returns A `TyAppTerm` node `{ tyapp: { term, type } }`
+ *
+ * @example
  * ```ts
- * import { tyappTerm, showTerm } from "system-f-omega";
- * import { conType } from "system-f-omega";
+ * const polyId = tylamTerm("A", starKind,
+ *   lamTerm("x", varType("A"), varTerm("x"))
+ * );
  *
- * const app = tyappTerm({ var: "polyId" }, conType("Int"));
- * console.log("app:", showTerm(app));  // "polyId [Int]"
- * ```
- *
- * @example Inference
- * ```ts
- * import { freshState, inferType, tyappTerm, tylamTerm, lamTerm, varTerm, varType, conType, starKind, showType } from "system-f-omega";
- *
- * let state = freshState();
- * const polyId = tylamTerm("a", starKind, lamTerm("x", varType("a"), varTerm("x")));
  * const idInt = tyappTerm(polyId, conType("Int"));
- * const result = inferType(state, idInt);
- * console.log("inferred:", showType(result.ok));  // "(Int → Int)"
+ * // Printed: (ΛA::*. λx:A. x) [Int]
  * ```
  *
- * @example Checking
- * ```ts
- * import { freshState, checkType, tyappTerm, tylamTerm, lamTerm, varTerm, varType, arrowType, conType, starKind, showType } from "system-f-omega";
- *
- * let state = freshState();
- * const polyId = tylamTerm("a", starKind, lamTerm("x", varType("a"), varTerm("x")));
- * const idInt = tyappTerm(polyId, conType("Int"));
- * const expected = arrowType(conType("Int"), conType("Int"));
- * const result = checkType(state, idInt, expected);
- * console.log("checked:", showType(result.ok.type));  // "(Int → Int)"
- * ```
- *
- * @see {@link inferTyappType} Inference rule
- * @see {@link tylamTerm} Callee usage
- * @see {@link inferType} Full inference
+ * @see {@link tylamTerm} Type‑level lambda
+ * @see {@link inferTyappType} Typing rule for type application
+ * @see {@link forallType} Polymorphic types
  */
 export const tyappTerm = (term: Term, type: Type) => ({
   tyapp: { term, type },
 });
+
 /**
- * Constructs typed constant `{ con: { name, type } }`.
+ * Constructs a **constant term** (literal or nullary constructor) with an
+ * explicit type annotation.
  *
- * **Purpose**: Literals/promoted constructors with explicit type.
+ * A `ConTerm` represents values such as:
+ * - numeric literals (`"42" : Int`)
+ * - boolean literals (`"true" : Bool`)
+ * - nullary enum constructors (`None : Option<T>`, `Nil : List<T>`)
+ * - other primitive or built‑in constants
  *
- * @param name - Constant name/value (`"42"`, `"true"`)
- * @param type - Type annotation
- * @returns `{ con: { name, type } }`
+ * The type annotation is required so inference for constants is immediate:
+ * the typechecker simply returns `type` during {@link inferType}.
  *
- * @example Basic constant
+ * ---------------------------------------------------------------------------
+ * When it is used
+ * ---------------------------------------------------------------------------
+ * - Literal values in source programs
+ * - Enum constructors with no payload
+ * - Built‑in constants
+ * - Term‑level representation for pattern matching (`conPattern`)
+ *
+ * ---------------------------------------------------------------------------
+ * How it interacts with the typechecker
+ * ---------------------------------------------------------------------------
+ * - Inference: returns the annotated type unchanged
+ *   (`inferType(state, conTerm(...)) → type`)
+ *
+ * - Pattern matching: constructor patterns (`conPattern`) use the `name`
+ *   field for matching and check the type for compatibility.
+ *
+ * - Injection: nullary variant constructors can be expressed as `conTerm`
+ *   when combined with `injectTerm`.
+ *
+ * @param name - The literal or constructor name (e.g. `"42"`, `"true"`, `"None"`)
+ * @param type - The type annotation for this value
+ * @returns A `ConTerm` node `{ con: { name, type } }`
+ *
+ * @example
  * ```ts
- * import { conTerm, conType, showTerm } from "system-f-omega";
- *
- * const num = conTerm("42", conType("Int"));
- * console.log("con:", showTerm(num));  // "42"
+ * conTerm("42", conType("Int"));
+ * // => 42 : Int
  * ```
  *
- * @example Inference
+ * @example Nullary enum constructor:
  * ```ts
- * import { freshState, addType, inferType, conTerm, conType, starKind, showType } from "system-f-omega";
- *
- * let state = freshState();
- * state = addType(state, "Int", starKind).ok;
- *
- * const num = conTerm("42", conType("Int"));
- * const result = inferType(state, num);
- * console.log("inferred:", showType(result.ok));  // "Int"
+ * conTerm("None", appType(conType("Option"), varType("A")));
  * ```
  *
- * @example Record field
- * ```ts
- * import { freshState, addType, inferType, recordTerm, conTerm, conType, starKind, showType } from "system-f-omega";
- *
- * let state = freshState();
- * state = addType(state, "Int", starKind).ok;
- *
- * const rec = recordTerm([["x", conTerm("1", conType("Int"))]]);
- * const result = inferType(state, rec);
- * console.log("record:", showType(result.ok));  // "{x: Int}"
- * ```
- *
- * @see {@link inferType} Constant lookup
- * @see {@link recordTerm} Field usage
- * @see {@link injectTerm} Variant payload
+ * @see {@link inferType} Constant typing rule
+ * @see {@link conPattern} Pattern‑matching counterpart
  */
 export const conTerm = (name: string, type: Type) => ({ con: { name, type } });
 
 /**
- * Constructs record value `{ label = term, ... }`.
+ * Constructs a **record value**:
  *
- * **Purpose**: Labeled products. Infers record type.
+ *     { label₁ = e₁, label₂ = e₂, ... }
  *
- * @param record - Field list `[[label, term], ...]`
- * @returns `{ record: [[string, Term]] }`
+ * A `RecordTerm` pairs each field label with a term expression.
+ * Records are **structural**: the order of fields does not matter, and the type
+ * of a record is determined entirely by the types of its fields.
  *
- * @example Basic record
+ * Example values:
+ * - `{ x = 1, y = true }`
+ * - `{ point = (x, y) }`
+ *
+ * ---------------------------------------------------------------------------
+ * Type inference
+ * ---------------------------------------------------------------------------
+ * `inferRecordType` infers a record’s type by inferring the type of each field:
+ *
  * ```ts
- * import { recordTerm, conTerm, conType, showTerm } from "system-f-omega";
- *
- * const person = recordTerm([
- *   ["name", conTerm("Alice", conType("String"))],
- *   ["age", conTerm("30", conType("Int"))]
- * ]);
- * console.log("record:", showTerm(person));  // "{name = Alice, age = 30}"
+ * { x = 1, y = true }
+ *   ⇒ { x: Int, y: Bool }
  * ```
  *
- * @example Inference
+ * Record types unify structurally (labels must match), and are compatible
+ * with record patterns in `match` expressions.
+ *
+ * ---------------------------------------------------------------------------
+ * Used in
+ * ---------------------------------------------------------------------------
+ * - constructing structured data values
+ * - pattern matching (`recordPattern`)
+ * - field projection (`projectTerm`)
+ * - unification of record types (`unifyRecordTypes`)
+ *
+ * ---------------------------------------------------------------------------
+ * @param record - An array of `[label, term]` field pairs
+ * @returns A `RecordTerm` node `{ record: [...] }`
+ *
+ * @example
  * ```ts
- * import { freshState, addType, inferType, recordTerm, conTerm, conType, starKind, showType } from "system-f-omega";
- *
- * let state = freshState();
- * state = addType(state, "Int", starKind).ok;
- * state = addType(state, "String", starKind).ok;
- *
- * const rec = recordTerm([
+ * recordTerm([
  *   ["x", conTerm("1", conType("Int"))],
- *   ["y", conTerm("hello", conType("String"))]
+ *   ["y", conTerm("true", conTerm("Bool"))]
  * ]);
- * const result = inferType(state, rec);
- * console.log("inferred:", showType(result.ok));  // "{x: Int, y: String}"
+ * // => { x = 1, y = true }
  * ```
  *
- * @example Projection
- * ```ts
- * import { freshState, addType, inferType, recordTerm, projectTerm, conTerm, conType, starKind, showType } from "system-f-omega";
- *
- * let state = freshState();
- * state = addType(state, "Int", starKind).ok;
- *
- * const rec = recordTerm([["x", conTerm("1", conType("Int"))]]);
- * const proj = projectTerm(rec, "x");
- * const result = inferType(state, proj);
- * console.log("project:", showType(result.ok));  // "Int"
- * ```
- *
- * @see {@link inferRecordType} Inference rule
+ * @see {@link inferRecordType} Infers the type of a record term
+ * @see {@link recordType} The type‑level counterpart
  * @see {@link projectTerm} Field access
- * @see {@link recordType} Type counterpart
+ * @see {@link recordPattern} Pattern‑matching form
  */
 export const recordTerm = (record: [string, Term][]) => ({ record });
 
 /**
- * Constructs record projection `record.label`.
+ * Constructs a **record field projection**:
  *
- * **Purpose**: Field access. Infers field type.
+ *     record.label
  *
- * @param record - Record term
- * @param label - Field name
- * @returns `{ project: { record, label } }`
+ * This extracts a field from a record value.
+ * For example, given:
  *
- * @example Basic projection
+ *     { x = 1, y = true }.x   ⇒   1
+ *
+ * The term stores:
+ * - `record` — the record expression being accessed
+ * - `label`  — the field name to extract
+ *
+ * ---------------------------------------------------------------------------
+ * Type inference
+ * ---------------------------------------------------------------------------
+ * Handled by {@link inferProjectType}:
+ *
+ * 1. Infer the type of the `record` expression.
+ * 2. Normalize the type (expands aliases/variants if needed).
+ * 3. Verify it is a `RecordType`.
+ * 4. Look up the field `label`.
+ * 5. Return the corresponding field type.
+ *
+ * Errors:
+ * - `not_a_record` — the scrutinee is not a record type
+ * - `missing_field` — the record does not contain the requested label
+ *
+ * ---------------------------------------------------------------------------
+ * Used in
+ * ---------------------------------------------------------------------------
+ * - accessing parts of record values
+ * - constructing more complex expressions
+ * - typing record projections inside match branches
+ *
+ * @param record - The record expression to project from
+ * @param label - The field label to extract
+ *
+ * @returns A `ProjectTerm` node `{ project: { record, label } }`
+ *
+ * @example
  * ```ts
- * import { projectTerm, recordTerm, conTerm, conType, showTerm } from "system-f-omega";
- *
- * const rec = recordTerm([["x", conTerm("1", conType("Int"))]]);
- * const proj = projectTerm(rec, "x");
- * console.log("proj:", showTerm(proj));  // "{x = 1}.x"
+ * const rec = recordTerm([["x", conTerm("1", Int)]]);
+ * projectTerm(rec, "x");
+ * // => {x = 1}.x
  * ```
  *
- * @example Inference
- * ```ts
- * import { freshState, addType, inferType, recordTerm, projectTerm, conTerm, conType, starKind, showType } from "system-f-omega";
- *
- * let state = freshState();
- * state = addType(state, "Int", starKind).ok;
- * state = addType(state, "Bool", starKind).ok;
- *
- * const rec = recordTerm([
- *   ["x", conTerm("1", conType("Int"))],
- *   ["y", conTerm("true", conType("Bool"))]
- * ]);
- * const proj = projectTerm(rec, "x");
- * const result = inferType(state, proj);
- * console.log("inferred:", showType(result.ok));  // "Int"
- * ```
- *
- * @example Checking
- * ```ts
- * import { freshState, addType, checkType, recordTerm, projectTerm, conTerm, conType, starKind, showType } from "system-f-omega";
- *
- * let state = freshState();
- * state = addType(state, "Int", starKind).ok;
- *
- * const rec = recordTerm([["x", conTerm("1", conType("Int"))]]);
- * const proj = projectTerm(rec, "x");
- * const expected = conType("Int");
- * const result = checkType(state, proj, expected);
- * console.log("checked:", showType(result.ok.type));  // "Int"
- * ```
- *
- * @see {@link inferProjectType} Inference rule
- * @see {@link recordTerm} Record values
- * @see {@link inferType} Full inference
+ * @see {@link inferProjectType} Inference rule for projections
+ * @see {@link recordTerm} Value constructor
+ * @see {@link recordType} Type constructor
  */
 export const projectTerm = (record: Term, label: string) => ({
   project: { record, label },
 });
 
 /**
- * Constructs variant injection `<label=value> as variant_type`.
+ * Constructs a **variant injection** (tagged value):
  *
- * **Purpose**: Tagged sum values. Infers via case lookup.
+ *     <label = value> as variant_type
  *
- * @param label - Variant label (`"Left"`, `"Some"`)
- * @param value - Payload term
- * @param variant_type - Variant/enum type
- * @returns `{ inject: { label, value, variant_type } }`
+ * This creates a value belonging to a sum type (variant or enum), such as:
  *
- * @example Basic injection
+ * - `<Some = 42> as Option<Int>`
+ * - `<Left = "err"> as Either<String, Int>`
+ * - `<Nil = ()> as List<Int>`
+ *
+ * The term carries:
+ * - `label`         — the constructor/tag name
+ * - `value`         — the payload expression
+ * - `variant_type`  — the expected variant/enum type
+ *
+ * ---------------------------------------------------------------------------
+ * Type inference
+ * ---------------------------------------------------------------------------
+ * The typing rule for injections is handled by {@link inferInjectType}:
+ *
+ * 1. Infer and normalize `variant_type`.
+ * 2. Determine whether it is a **nominal enum** or **structural variant**.
+ * 3. Check that `label` exists in the variant definition.
+ * 4. Look up the expected payload type for that label.
+ * 5. Type‑check `value` against that payload type.
+ * 6. Return `variant_type`.
+ *
+ * Errors produced:
+ * - `not_a_variant` — supplied type is not a variant/enum
+ * - `invalid_variant_label` — label not present in variant definition
+ * - `type_mismatch` — payload does not match the expected case type
+ *
+ * ---------------------------------------------------------------------------
+ * When it is used
+ * ---------------------------------------------------------------------------
+ * - Constructing values for enums or ADTs
+ * - Creating structural variant values (`variantType`)
+ * - Defining recursive values for lists/trees (`muType`)
+ * - Pattern matching (`variantPattern`) expects matching injected values
+ *
+ * ---------------------------------------------------------------------------
+ * @param label - Variant constructor / tag name
+ * @param value - The payload term for this case
+ * @param variant_type - The variant/enum type the value should belong to
+ *
+ * @returns An `InjectTerm` node `{ inject: { label, value, variant_type } }`
+ *
+ * @example Nominal enum:
  * ```ts
- * import { injectTerm, conTerm, conType, showTerm } from "system-f-omega";
- *
- * const someInt = injectTerm("Some", conTerm("42", conType("Int")), conType("Option"));
- * console.log("inject:", showTerm(someInt));  // "<Some=42> as Option"
+ * injectTerm("Some", conTerm("42", conType("Int")),
+ *   appType(conType("Option"), conType("Int"))
+ * );
  * ```
  *
- * @example Inference (enum)
+ * @example Structural:
  * ```ts
- * import { freshState, addType, addEnum, inferType, injectTerm, conTerm, appType, conType, starKind, showType } from "system-f-omega";
- * import { tupleType } from "system-f-omega";
- *
- * let state = freshState();
- * state = addType(state, "Int", starKind).ok;
- * state = addEnum(state, "Option", ["T"], [starKind], [
- *   ["None", tupleType([])],
- *   ["Some", conType("T")]
- * ]).ok;
- *
- * const someInt = injectTerm("Some", conTerm("42", conType("Int")), appType(conType("Option"), conType("Int")));
- * const result = inferType(state, someInt);
- * console.log("inferred:", showType(result.ok));  // "Option<Int>"
+ * injectTerm("Left", conTerm("1", Int),
+ *   variantType([["Left", Int], ["Right", Bool]])
+ * );
  * ```
  *
- * @example Checking (wrong label)
- * ```ts
- * import { freshState, addEnum, checkType, injectTerm, conTerm, appType, conType, starKind, showType } from "system-f-omega";
- * import { tupleType } from "system-f-omega";
- *
- * let state = freshState();
- * state = addEnum(state, "Option", ["T"], [starKind], [
- *   ["None", tupleType([])],
- *   ["Some", conType("T")]
- * ]).ok;
- *
- * const badInject = injectTerm("Bad", conTerm("42", conType("Int")), appType(conType("Option"), conType("Int")));
- * const expected = appType(conType("Option"), conType("Int"));
- * const result = checkType(state, badInject, expected);
- * console.log("error:", "invalid_variant_label" in result.err);  // true
- * ```
- *
- * @see {@link inferInjectType} Inference rule
- * @see {@link addEnum} Enum variants
- * @see {@link variantType} Structural type
+ * @see {@link inferInjectType} Inference rule for injection
+ * @see {@link variantType} Structural variant constructor
+ * @see {@link variantPattern} Pattern‑matching form
  */
 export const injectTerm = (label: string, value: Term, variant_type: Type) => ({
   inject: { label, value, variant_type },
 });
 
 /**
- * Constructs pattern match `match scrutinee { pat => body | ... }`.
+ * Constructs a **pattern match expression**:
  *
- * **Purpose**: Exhaustive destructuring. Infers common branch type.
+ *     match scrutinee {
+ *       pattern₁ => body₁
+ *       pattern₂ => body₂
+ *       ...
+ *     }
  *
- * @param scrutinee - Value to match
- * @param cases - Pattern-body pairs
- * @returns `{ match: { scrutinee, cases } }`
+ * A `MatchTerm` performs structural case analysis over values such as:
+ * - variants / enums (`Some(x)`, `Left(v)`, …)
+ * - records (`{ x: p }`)
+ * - tuples (`(a, b)`)
  *
- * @example Basic enum match
+ * Each branch consists of:
+ * - a **pattern** describing the shape to match
+ * - a **body** expression evaluated when the pattern succeeds
+ *
+ * ---------------------------------------------------------------------------
+ * Type inference
+ * ---------------------------------------------------------------------------
+ * Typed by {@link inferMatchType}, which:
+ *
+ * 1. Infers the type of the scrutinee
+ * 2. Validates patterns against that type (`checkPattern`)
+ * 3. Ensures all patterns together are **exhaustive** (`checkExhaustive`)
+ * 4. Extends the context with any variables bound by each pattern
+ * 5. Infers each branch’s result type
+ * 6. Merges all branch types via subtyping or unification
+ *
+ * Errors include:
+ * - non‑exhaustive matches (`missing_case`)
+ * - unreachable or invalid constructors (`extra_case`, `invalid_variant_label`)
+ * - incorrect pattern structure (`not_a_variant`, `not_a_record`, etc.)
+ * - inconsistent branch result types (`type_mismatch`)
+ *
+ * ---------------------------------------------------------------------------
+ * @param scrutinee - The expression being matched
+ * @param cases - An array of `[Pattern, Term]` pairs
+ * @returns A `MatchTerm` AST node
+ *
+ * @example Variant match:
  * ```ts
- * import { freshState, addType, addEnum, inferType, matchTerm, variantPattern, varPattern, conTerm, appType, conType, starKind, showType } from "system-f-omega";
- * import { tupleType } from "system-f-omega";
- *
- * let state = freshState();
- * state = addType(state, "Int", starKind).ok;
- * state = addEnum(state, "Option", ["T"], [starKind], [
- *   ["None", tupleType([])],
- *   ["Some", conType("T")]
- * ]).ok;
- *
- * const scrut = conTerm("opt", appType(conType("Option"), conType("Int")));
- * const match = matchTerm(scrut, [
- *   [variantPattern("None", varPattern("x")), conTerm("0", conType("Int"))],
- *   [variantPattern("Some", varPattern("x")), varTerm("x")]
- * ]);
- * const result = inferType(state, match);
- * console.log("inferred:", showType(result.ok));  // "Int"
+ * matchTerm(
+ *   varTerm("opt"),
+ *   [
+ *     [variantPattern("None", wildcardPattern()), conTerm("0", Int)],
+ *     [variantPattern("Some", varPattern("x")), varTerm("x")]
+ *   ]
+ * );
  * ```
  *
- * @example Checking exhaustive
+ * @example Record match:
  * ```ts
- * import { freshState, addEnum, checkExhaustive, variantPattern, varPattern, conType, starKind } from "system-f-omega";
- *
- * let state = freshState();
- * state = addEnum(state, "Color", [], [], [["Red", { var: "Unit" }], ["Blue", { var: "Unit" }]]).ok;
- *
- * const patterns = [variantPattern("Red", varPattern("x")), variantPattern("Blue", varPattern("y"))];
- * const result = checkExhaustive(state, patterns, conType("Color"));
- * console.log("exhaustive:", "ok" in result);  // true
+ * matchTerm(
+ *   recordTerm([["x", conTerm("1", Int)]]),
+ *   [
+ *     [recordPattern([["x", varPattern("n")]]), varTerm("n")]
+ *   ]
+ * );
  * ```
  *
- * @example Failure: Non-exhaustive
- * ```ts
- * import { freshState, addEnum, checkExhaustive, variantPattern, varPattern, conType, starKind } from "system-f-omega";
- *
- * let state = freshState();
- * state = addEnum(state, "Color", [], [], [["Red", { var: "Unit" }], ["Blue", { var: "Unit" }]]).ok;
- *
- * const patterns = [variantPattern("Red", varPattern("x"))];  // Missing Blue
- * const result = checkExhaustive(state, patterns, conType("Color"));
- * console.log("missing:", "missing_case" in result.err);  // true
- * ```
- *
- * @see {@link inferMatchType} Inference rule
- * @see {@link checkExhaustive} Coverage check
- * @see {@link checkPattern} Pattern validation
+ * @see {@link inferMatchType} The match typing rule
+ * @see {@link checkPattern} Pattern correctness
+ * @see {@link checkExhaustive} Exhaustiveness checking
  */
 export const matchTerm = (scrutinee: Term, cases: [Pattern, Term][]): Term => ({
   match: { scrutinee, cases },
 });
 
 /**
- * Constructs fold `fold[μ-type](term)` (packs into recursive type).
+ * Constructs a **fold** term:
  *
- * **Purpose**: Recursive injection: wraps term matching unfolded μ-body.
+ *     fold[μX. body](term)
  *
- * @param type - Mu type (`μX. <Cons: (a, X)>`)
- * @param term - Body term (must match unfolded type)
- * @returns `{ fold: { type, term } }`
+ * `foldTerm` *packs* a value into a recursive `μ`‑type.
+ * It is the term‑level counterpart of a recursive type constructor.
  *
- * @example Basic fold construction
+ * In a recursive type:
+ *
+ *     μX. T
+ *
+ * the `fold` operation takes a value of type:
+ *
+ *     T[X := μX. T]
+ *
+ * and wraps it into the recursive type `μX. T`.
+ *
+ * ---------------------------------------------------------------------------
+ * Why `fold` is needed
+ * ---------------------------------------------------------------------------
+ * System F‑ω models recursive types explicitly.
+ * To treat a concrete structure as an instance of a recursive type, we must
+ * use `fold` to “roll it up.”
+ *
+ * Example (list-like type):
+ *
+ *     ListInt = μL. (Int, L)
+ *
+ * To construct a list node:
+ *
+ *     fold[ListInt] (1, tail)
+ *
+ * ---------------------------------------------------------------------------
+ * How it is typed
+ * ---------------------------------------------------------------------------
+ * Handled by {@link inferFoldType}:
+ *
+ * 1. Check that `type` normalizes to a recursive type (`μX. body`).
+ * 2. Compute the unfolded type `body[X := μX. body]`.
+ * 3. Check that `term` has this unfolded type.
+ * 4. Return the recursive type `type`.
+ *
+ * Errors include:
+ * - folding a non‑recursive type (`type_mismatch`)
+ * - incorrect payload structure
+ *
+ * ---------------------------------------------------------------------------
+ * Used in
+ * ---------------------------------------------------------------------------
+ * - constructing values for recursive enums (lists, trees)
+ * - representing ADTs expanded by {@link normalizeType}
+ * - working with structural recursion in the evaluator
+ *
+ * ---------------------------------------------------------------------------
+ * @param type - A recursive type annotation (`μX. body`)
+ * @param term - A value matching the one‑step unfolded form of the recursive type
+ * @returns A `FoldTerm` node `{ fold: { type, term } }`
+ *
+ * @example
  * ```ts
- * import { foldTerm, muType, showTerm } from "system-f-omega";
- * import { tupleType, conType } from "system-f-omega";
+ * const listInt = muType("L", tupleType([Int, varType("L")]));
  *
- * const listMu = muType("L", tupleType([conType("Int"), { var: "L" }]));
- * const foldVal = foldTerm(listMu, { tuple: [{ con: { name: "1", type: conType("Int") } }, { var: "prev" }] });
- * console.log("fold:", showTerm(foldVal));  // "fold[μL.(Int, L)]((1, prev))"
+ * const consNode = foldTerm(
+ *   listInt,
+ *   tupleTerm([conTerm("1", Int), varTerm("tail")])
+ * );
  * ```
  *
- * @example Inference (recursive enum)
- * ```ts
- * import { freshState, addType, addEnum, inferType, foldTerm, injectTerm, appType, conType, muType, starKind, showType } from "system-f-omega";
- * import { tupleType, varType } from "system-f-omega";
- *
- * let state = freshState();
- * state = addType(state, "Int", starKind).ok;
- * state = addEnum(state, "List", ["T"], [starKind], [
- *   ["Nil", tupleType([])],
- *   ["Cons", tupleType([conType("T"), appType(conType("List"), varType("T"))])]
- * ], true).ok;
- *
- * const listInt = appType(conType("List"), conType("Int"));
- * const nil = injectTerm("Nil", { tuple: [] }, listInt);
- * const folded = foldTerm(listInt, nil);
- * const result = inferType(state, folded);
- * console.log("inferred:", showType(result.ok));  // "List<Int>"
- * ```
- *
- * @example Checking success
- * ```ts
- * import { freshState, addType, addEnum, checkType, foldTerm, injectTerm, appType, conType, starKind, showType } from "system-f-omega";
- * import { tupleType } from "system-f-omega";
- *
- * let state = freshState();
- * state = addType(state, "Int", starKind).ok;
- * state = addEnum(state, "List", ["T"], [starKind], [
- *   ["Nil", tupleType([])],
- *   ["Cons", tupleType([conType("T"), appType(conType("List"), conType("T"))])]
- * ], true).ok;
- *
- * const listInt = appType(conType("List"), conType("Int"));
- * const nil = injectTerm("Nil", { tuple: [] }, listInt);
- * const folded = foldTerm(listInt, nil);
- * const expected = listInt;
- * const result = checkType(state, folded, expected);
- * console.log("checked:", showType(result.ok.type));  // "List<Int>"
- * ```
- *
- * @example Failure: Non-mu type
- * ```ts
- * import { freshState, addType, checkType, foldTerm, conType, starKind, showType } from "system-f-omega";
- *
- * let state = freshState();
- * state = addType(state, "Int", starKind).ok;
- *
- * const folded = foldTerm(conType("Int"), { var: "x" });  // Wrong mu-type
- * const expected = conType("Int");
- * const result = checkType(state, folded, expected);
- * console.log("error:", "type_mismatch" in result.err);  // true
- * ```
- *
- * @see {@link inferFoldType} Inference rule
- * @see {@link muType} Recursive type
+ * @see {@link inferFoldType} Typing rule
  * @see {@link unfoldTerm} Dual operation
+ * @see {@link muType} Recursive types
  */
 export const foldTerm = (type: Type, term: Term): Term => ({
   fold: { type, term },
 });
 
 /**
- * Constructs unfold `unfold(term)` (unpacks recursive mu type).
+ * Constructs an **unfold** term:
  *
- * **Purpose**: Recursive projection: extracts from folded μ-body.
- * Dual to `foldTerm`.
-
- * @param term - Folded mu term
- * @returns `{ unfold: term }`
+ *     unfold(term)
  *
- * @example Basic unfold construction
+ * `unfoldTerm` *unpacks* a value of a recursive `μ`‑type.
+ *
+ * For a recursive type:
+ *
+ *     μX. body
+ *
+ * the `unfold` operation takes a value of type `μX. body` and produces a value
+ * of the **one‑step unfolded type**:
+ *
+ *     body[X := μX. body]
+ *
+ * This is the term‑level counterpart to peeling off one layer of recursion.
+ *
+ * ---------------------------------------------------------------------------
+ * Why `unfold` is needed
+ * ---------------------------------------------------------------------------
+ * Recursive types in System F‑ω do not automatically unroll themselves.
+ *
+ * To inspect or pattern‑match a recursive structure (like a list or tree),
+ * you must call `unfold` to reveal its immediate structure.
+ *
+ * For example:
+ *
+ *     ListInt = μL. <Nil: () | Cons: (Int, L)>
+ *
+ * When matching:
+ *
+ *     match xs {
+ *       Nil      => ...
+ *       Cons(h,t)=> ...
+ *     }
+ *
+ * The scrutinee `xs` must be unfolded once so the pattern sees the `<Nil | Cons>` variant.
+ *
+ * ---------------------------------------------------------------------------
+ * Type inference
+ * ---------------------------------------------------------------------------
+ * {@link inferUnfoldType} checks:
+ *
+ * 1. Infer the type of `term`.
+ * 2. Ensure it normalizes to a recursive type (`μX. body`).
+ * 3. Compute the unfolded type `body[X := μX. body]`.
+ * 4. Return the unfolded type as the type of the whole expression.
+ *
+ * Errors include:
+ * - `not_a_function` (if the scrutinee is not a μ‑type)
+ * - underlying mismatches when unfolding
+ *
+ * ---------------------------------------------------------------------------
+ * Used in
+ * ---------------------------------------------------------------------------
+ * - pattern matching on recursive ADTs
+ * - stepping and evaluating recursive structures
+ * - explicit recursion handling in `inferUnfoldType`
+ * - normalizing recursive values for further analysis
+ *
+ * @param term - A term whose type is expected to be a μ‑type
+ * @returns An `UnfoldTerm` node `{ unfold: term }`
+ *
+ * @example
  * ```ts
- * import { unfoldTerm, showTerm } from "system-f-omega";
- *
- * const unfolded = unfoldTerm({ var: "foldedList" });
- * console.log("unfold:", showTerm(unfolded));  // "unfold(foldedList)"
+ * // Given xs : μL.(Int, L)
+ * const headTail = unfoldTerm(varTerm("xs"));
+ * // headTail : (Int, μL.(Int, L))
  * ```
  *
- * @example Inference (recursive enum)
- * ```ts
- * import { freshState, addType, addEnum, inferType, unfoldTerm, foldTerm, injectTerm, appType, conType, starKind, showType } from "system-f-omega";
- * import { tupleType } from "system-f-omega";
- *
- * let state = freshState();
- * state = addType(state, "Int", starKind).ok;
- * state = addEnum(state, "List", ["T"], [starKind], [
- *   ["Nil", tupleType([])],
- *   ["Cons", tupleType([conType("T"), appType(conType("List"), conType("T"))])]
- * ], true).ok;
- *
- * const listInt = appType(conType("List"), conType("Int"));
- * const nil = injectTerm("Nil", { tuple: [] }, listInt);
- * const folded = foldTerm(listInt, nil);
- * const unfolded = unfoldTerm(folded);
- * const result = inferType(state, unfolded);
- * console.log("inferred:", showType(result.ok));  // "(Int, List<Int>)"
- * ```
- *
- * @example Checking success
- * ```ts
- * import { freshState, addType, addEnum, checkType, unfoldTerm, foldTerm, injectTerm, appType, conType, starKind, tupleType, showType } from "system-f-omega";
- *
- * let state = freshState();
- * state = addType(state, "Int", starKind).ok;
- * state = addEnum(state, "List", ["T"], [starKind], [
- *   ["Nil", tupleType([])],
- *   ["Cons", tupleType([conType("T"), appType(conType("List"), conType("T"))])]
- * ], true).ok;
- *
- * const listInt = appType(conType("List"), conType("Int"));
- * const nil = injectTerm("Nil", { tuple: [] }, listInt);
- * const folded = foldTerm(listInt, nil);
- * const unfolded = unfoldTerm(folded);
- * const expected = tupleType([conType("Int"), listInt]);
- * const result = checkType(state, unfolded, expected);
- * console.log("checked:", showType(result.ok.type));  // "(Int, List<Int>)"
- * ```
- *
- * @see {@link inferUnfoldType} Inference rule
- * @see {@link foldTerm} Dual packing
- * @see {@link muType} Recursive type
+ * @see {@link foldTerm} Dual “pack” operation
+ * @see {@link inferUnfoldType} Typing rule
+ * @see {@link muType} Recursive type form
  */
 export const unfoldTerm = (term: Term): Term => ({
   unfold: term,
 });
 
 /**
- * Constructs tuple value `(term₁, term₂, ...)` (unlabeled product).
+ * Constructs a **tuple value**:
  *
- * **Purpose**: Unlabeled sequences. Zero-arity = unit `{}`.
+ *     (e₁, e₂, ..., eₙ)
  *
- * @param elements - Tuple element terms
- * @returns `{ tuple: Term[] }`
+ * Tuples are ordered, fixed‑size collections of terms.
+ * Unlike records, tuple fields are **positional**, not named.
  *
- * @example Unit (empty tuple)
+ * Examples of tuple terms:
+ * - `(1, true)`
+ * - `(x, (y, z))`
+ * - `()` — the empty tuple (unit)
+ *
+ * ---------------------------------------------------------------------------
+ * Type inference
+ * ---------------------------------------------------------------------------
+ * Handled by {@link inferTupleType}:
+ *
+ * - Infers the type of each element
+ * - Produces a corresponding `TupleType`
+ *
+ * For example:
  * ```ts
- * import { tupleTerm, showTerm } from "system-f-omega";
- *
- * const unit = tupleTerm([]);
- * console.log("unit:", showTerm(unit));  // "()"
+ * tupleTerm([1, true])  ⇒  (Int, Bool)
  * ```
  *
- * @example Basic tuple
- * ```ts
- * import { tupleTerm, conTerm, conType, showTerm } from "system-f-omega";
+ * Tuples also support indexing via {@link tupleProjectTerm}.
  *
- * const pair = tupleTerm([
+ * ---------------------------------------------------------------------------
+ * Used in
+ * ---------------------------------------------------------------------------
+ * - constructing structured data
+ * - variant payloads (`Cons(hd, tl)`)
+ * - recursive ADTs combined with `muType`
+ * - pattern matching (`tuplePattern`)
+ *
+ * ---------------------------------------------------------------------------
+ * @param elements - The ordered list of element expressions
+ * @returns A `TupleTerm` node `{ tuple: [...] }`
+ *
+ * @example
+ * ```ts
+ * tupleTerm([
  *   conTerm("1", conType("Int")),
  *   conTerm("true", conType("Bool"))
  * ]);
- * console.log("pair:", showTerm(pair));  // "(1, true)"
+ * // => (1, true)
  * ```
  *
- * @example Inference
+ * @example Unit tuple:
  * ```ts
- * import { freshState, addType, inferType, tupleTerm, conTerm, conType, starKind, showType } from "system-f-omega";
- *
- * let state = freshState();
- * state = addType(state, "Int", starKind).ok;
- * state = addType(state, "Bool", starKind).ok;
- *
- * const tup = tupleTerm([
- *   conTerm("1", conType("Int")),
- *   conTerm("true", conType("Bool"))
- * ]);
- * const result = inferType(state, tup);
- * console.log("inferred:", showType(result.ok));  // "(Int, Bool)"
+ * tupleTerm([]);   // => ()
  * ```
  *
- * @example Projection
- * ```ts
- * import { freshState, addType, inferType, tupleTerm, tupleProjectTerm, conTerm, conType, starKind, showType } from "system-f-omega";
- *
- * let state = freshState();
- * state = addType(state, "Int", starKind).ok;
- * state = addType(state, "Bool", starKind).ok;
- *
- * const tup = tupleTerm([
- *   conTerm("1", conType("Int")),
- *   conTerm("true", conType("Bool"))
- * ]);
- * const proj = tupleProjectTerm(tup, 0);
- * const result = inferType(state, proj);
- * console.log("proj0:", showType(result.ok));  // "Int"
- * ```
- *
- * @see {@link inferTupleType} Inference rule
- * @see {@link tupleType} Type counterpart
- * @see {@link tupleProjectTerm} Access
+ * @see {@link inferTupleType} Tuple type inference
+ * @see {@link tupleType} Type-level constructor
+ * @see {@link tupleProjectTerm} Accessing tuple elements
  */
 export const tupleTerm = (elements: Term[]): Term => ({ tuple: elements });
 
 /**
- * Constructs tuple projection `tuple.index`.
+ * Constructs a **tuple projection** term:
  *
- * **Purpose**: Nth element access. Infers element type.
+ *     tuple.index
  *
- * @param tuple - Tuple term
- * @param index - 0-based index
- * @returns `{ tuple_project: { tuple, index } }`
+ * This extracts the `index`‑th element (0‑based) from a tuple value.
+ * For example:
  *
- * @example Basic projection
+ *     (1, true, "x").1   ⇒   true
+ *
+ * The term stores:
+ * - `tuple` — the tuple expression being projected
+ * - `index` — which element to extract (0 = first)
+ *
+ * ---------------------------------------------------------------------------
+ * Type inference
+ * ---------------------------------------------------------------------------
+ * Handled by {@link inferTupleProjectType}:
+ *
+ * 1. Infer the type of the tuple expression.
+ * 2. Normalize it.
+ * 3. Ensure it is a `TupleType`:
+ *      - otherwise → `not_a_tuple` error.
+ * 4. Check that the index is within bounds:
+ *      - otherwise → `tuple_index_out_of_bounds`.
+ * 5. Return the element type at that position.
+ *
+ * ---------------------------------------------------------------------------
+ * Used in
+ * ---------------------------------------------------------------------------
+ * - Selecting fields from tuple values
+ * - Working with tuple‑encoded data structures
+ * - Recursive ADTs using tuples for payloads
+ *
+ * ---------------------------------------------------------------------------
+ * @param tuple - The tuple term being projected
+ * @param index - The 0‑based element index to extract
+ * @returns A `TupleProjectTerm` node `{ tuple_project: { tuple, index } }`
+ *
+ * @example Basic usage:
  * ```ts
- * import { tupleProjectTerm, tupleTerm, conTerm, conType, showTerm } from "system-f-omega";
- *
- * const tup = tupleTerm([conTerm("1", conType("Int")), conTerm("true", conType("Bool"))]);
- * const proj = tupleProjectTerm(tup, 0);
- * console.log("proj:", showTerm(proj));  // "((1, true)).0"
+ * const tup = tupleTerm([conTerm("1", Int), conTerm("true", Bool)]);
+ * tupleProjectTerm(tup, 0);
+ * // => ( (1, true) ).0
  * ```
  *
- * @example Inference
+ * @example Out‑of‑bounds (typechecking):
  * ```ts
- * import { freshState, addType, inferType, tupleTerm, tupleProjectTerm, conTerm, conType, starKind, showType } from "system-f-omega";
- *
- * let state = freshState();
- * state = addType(state, "Int", starKind).ok;
- * state = addType(state, "Bool", starKind).ok;
- *
- * const tup = tupleTerm([
- *   conTerm("1", conType("Int")),
- *   conTerm("true", conType("Bool"))
- * ]);
- * const proj = tupleProjectTerm(tup, 0);
- * const result = inferType(state, proj);
- * console.log("inferred:", showType(result.ok));  // "Int"
+ * tupleProjectTerm(tupleTerm([x]), 1);
+ * // inferTupleProjectType → tuple_index_out_of_bounds error
  * ```
  *
- * @example Checking success
- * ```ts
- * import { freshState, addType, checkType, tupleTerm, tupleProjectTerm, conTerm, conType, starKind, showType } from "system-f-omega";
- *
- * let state = freshState();
- * state = addType(state, "Int", starKind).ok;
- *
- * const tup = tupleTerm([conTerm("1", conType("Int")), conTerm("true", conType("Bool"))]);
- * const proj = tupleProjectTerm(tup, 0);
- * const expected = conType("Int");
- * const result = checkType(state, proj, expected);
- * console.log("checked:", showType(result.ok.type));  // "Int"
- * ```
- *
- * @example Failure: Out-of-bounds (inferred)
- * ```ts
- * import { freshState, addType, inferType, tupleTerm, tupleProjectTerm, conTerm, conType, starKind, showType } from "system-f-omega";
- *
- * let state = freshState();
- * state = addType(state, "Int", starKind).ok;
- *
- * const tup = tupleTerm([conTerm("1", conType("Int"))]);
- * const proj = tupleProjectTerm(tup, 1);  // Out-of-bounds
- * const result = inferType(state, proj);
- * console.log("error:", "tuple_index_out_of_bounds" in result.err);  // true
- * ```
- *
- * @see {@link inferTupleProjectType} Inference rule
- * @see {@link tupleTerm} Tuple values
- * @see {@link tupleType} Tuple types
+ * @see {@link inferTupleProjectType} Typing rule
+ * @see {@link tupleTerm} Tuple value constructor
+ * @see {@link tupleType} Type‑level counterpart
  */
 export const tupleProjectTerm = (tuple: Term, index: number): Term => ({
   tuple_project: { tuple, index },
 });
 
 /**
- * Constructs let-binding `let name = value in body`.
+ * Constructs a **let‑binding** term:
  *
- * **Purpose**: Non-recursive binding. Infers via `value` type in `body` context.
+ *     let name = value in body
  *
- * @param name - Bound name
- * @param value - Value term
- * @param body - Body term (uses `name`)
- * @returns `{ let: { name, value, body } }`
+ * A `LetTerm` introduces a **local variable binding**.
+ * The `value` is first typechecked or inferred, then the binding
+ * `name : type(value)` is added to the context used for typing `body`.
  *
- * @example Basic let construction
+ * Let‑bindings are **non‑recursive**:
+ * - `value` cannot reference `name`
+ * - `body` *can* reference `name`
+ *
+ * ---------------------------------------------------------------------------
+ * Type inference
+ * ---------------------------------------------------------------------------
+ * Handled by {@link inferLetType}:
+ *
+ * 1. Infer the type of `value`.
+ *    This yields a concrete type `T`.
+ * 2. Extend the context with `name : T`.
+ * 3. Infer the type of `body` in the extended context.
+ * 4. The type of the whole expression is the type of `body`.
+ *
+ * Example:
  * ```ts
- * import { letTerm, conTerm, conType, varTerm, showTerm } from "system-f-omega";
+ * let x = 42 in x + 1
+ * ```
+ * becomes:
+ * - infer `42 : Int`
+ * - extend Γ with `x : Int`
+ * - infer `x + 1 : Int`
+ * → result: `Int`
  *
- * const letExpr = letTerm("x", conTerm("42", conType("Int")), varTerm("x"));
- * console.log("let:", showTerm(letExpr));  // "let x = 42 in x"
+ * ---------------------------------------------------------------------------
+ * Used in
+ * ---------------------------------------------------------------------------
+ * - binding intermediate expressions
+ * - improving readability and structure of code
+ * - carrying local dictionary bindings during trait inference
+ *
+ * ---------------------------------------------------------------------------
+ * @param name - The name introduced by the binding
+ * @param value - The expression bound to that name
+ * @param body - The expression that can reference `name`
+ * @returns A `LetTerm` node
+ *
+ * @example
+ * ```ts
+ * letTerm("x", conTerm("42", Int), varTerm("x"));
+ * // => let x = 42 in x
  * ```
  *
- * @example Inference
- * ```ts
- * import { freshState, addType, inferType, letTerm, conTerm, varTerm, conType, starKind, showType } from "system-f-omega";
- *
- * let state = freshState();
- * state = addType(state, "Int", starKind).ok;
- *
- * const letExpr = letTerm("x", conTerm("42", conType("Int")), varTerm("x"));
- * const result = inferType(state, letExpr);
- * console.log("inferred:", showType(result.ok));  // "Int"
- * ```
- *
- * @example Nested let
- * ```ts
- * import { freshState, addType, inferType, letTerm, conTerm, varTerm, appTerm, conType, starKind, showType } from "system-f-omega";
- *
- * let state = freshState();
- * state = addType(state, "Int", starKind).ok;
- * state = addType(state, "Bool", starKind).ok;
- *
- * const inner = letTerm("y", conTerm("true", conType("Bool")), varTerm("y"));
- * const outer = letTerm("x", conTerm("1", conType("Int")), appTerm(varTerm("x"), inner));
- * const result = inferType(state, outer);
- * console.log("nested:", showType(result.ok));  // "(Int, Bool)"
- * ```
- *
- * @example Checking
- * ```ts
- * import { freshState, addType, checkType, letTerm, conTerm, varTerm, conType, starKind, showType } from "system-f-omega";
- *
- * let state = freshState();
- * state = addType(state, "Int", starKind).ok;
- *
- * const letExpr = letTerm("x", conTerm("42", conType("Int")), varTerm("x"));
- * const expected = conType("Int");
- * const result = checkType(state, letExpr, expected);
- * console.log("checked:", showType(result.ok.type));  // "Int"
- * ```
- *
- * @see {@link inferLetType} Inference rule
- * @see {@link addTerm} Context binding
- * @see {@link inferType} Full inference
+ * @see {@link inferLetType} Inference rule for let‑bindings
+ * @see {@link varTerm} Local variable references
  */
 export const letTerm = (name: string, value: Term, body: Term): Term => ({
   let: { name, value, body },
 });
 
 /**
- * Constructs trait lambda `Λtrait_var<trait<type_var>>::kind where C. body`.
+ * Constructs a **trait lambda**:
  *
- * **Purpose**: Bounded polymorphism abstraction. Infers bounded forall.
+ *     Λtype_var::kind where constraints. body
  *
- * @param trait_var - Dict var (`"d"`)
- * @param trait - Trait name (`"Eq"`)
- * @param type_var - Type var (`"Self"`)
- * @param kind - Type var kind
- * @param constraints - Bounds `[{trait, type}, ...]`
- * @param body - Body term
- * @returns `{ trait_lam: { ... } }`
+ * This introduces:
+ * - a **type parameter** (`type_var`)
+ * - a **dictionary variable** (`trait_var`) giving access to trait methods
+ * - a list of **trait constraints** that the type parameter must satisfy
  *
- * @example Basic construction
+ * Conceptually, it is the term‑level analogue of a **bounded universal type**:
+ *
+ *     ∀type_var::kind where constraints. body_type
+ *
+ * but with an **implicit dictionary argument** inside the term.
+ *
+ * ---------------------------------------------------------------------------
+ * Example
+ * ---------------------------------------------------------------------------
+ * A trait‑polymorphic identity‑like function:
+ *
  * ```ts
- * import { traitLamTerm, showTerm } from "system-f-omega";
- * import { starKind } from "system-f-omega";
+ * traitLamTerm(
+ *   "d",          // dictionary var
+ *   "Eq",         // required trait
+ *   "Self",       // type param
+ *   starKind,     // Self :: *
+ *   [{ trait: "Eq", type: varType("Self") }],
+ *   lamTerm("x", varType("Self"), varTerm("x"))
+ * )
  *
- * const traitLam = traitLamTerm("d", "Eq", "Self", starKind, [], { var: "x" });
- * console.log("traitLam:", showTerm(traitLam));  // "ΛSelf::* where . x"
+ * // Printed as:
+ * //   ΛSelf::* where Eq<Self>. λx:Self. x
  * ```
  *
- * @example Inference
- * ```ts
- * import { freshState, addType, addTraitDef, inferType, traitLamTerm, varType, arrowType, starKind, showType } from "system-f-omega";
+ * ---------------------------------------------------------------------------
+ * How typechecking works
+ * ---------------------------------------------------------------------------
+ * See {@link inferTraitLamType}, which:
  *
- * let state = freshState();
- * state = addType(state, "Int", starKind).ok;
- * state = addTraitDef(state, "Eq", "A", starKind, [["eq", arrowType(varType("A"), varType("Bool"))]]).ok;
+ * 1. Extends the typechecker context with:
+ *      - the type parameter (`type_var :: kind`)
+ *      - a dictionary variable (`trait_var : Dict<trait, type_var>`)
+ * 2. Typechecks the `body` in this extended context
+ * 3. Returns a **bounded forall type**:
  *
- * const traitLam = traitLamTerm("d", "Eq", "Self", starKind, [{ trait: "Eq", type: varType("Self") }], arrowType(varType("Self"), varType("Int")));
- * const result = inferType(state, traitLam);
- * console.log("inferred:", showType(result.ok));  // "∀Self::* where Eq<Self>. (Self → Int)"
+ *    ∀type_var::kind where constraints. body_type
+ *
+ * ---------------------------------------------------------------------------
+ * Why this form exists
+ * ---------------------------------------------------------------------------
+ * Trait lambdas allow functions to be generic *and* require trait evidence.
+ * They are similar to Haskell’s:
+ *
+ * ```hs
+ * f :: forall a. Eq a => a -> Bool
+ * f x = ...
  * ```
  *
- * @example Checking
+ * where `Eq a` corresponds to a trait constraint and the implicit dictionary
+ * corresponds to `trait_var`.
+ *
+ * Trait lambdas form the basis of:
+ * - trait‑polymorphic functions
+ * - typeclass‑style method dispatch
+ * - implicit dictionary passing (via {@link autoInstantiate} and {@link traitAppTerm})
+ *
+ * ---------------------------------------------------------------------------
+ * @param trait_var - The name of the implicit dictionary variable
+ * @param trait - The primary trait name associated with the dictionary variable
+ * @param type_var - The bound type parameter name
+ * @param kind - The kind of the type parameter (usually `*`)
+ * @param constraints - Additional trait bounds (e.g. `Eq<Self>`, `Show<Self>`)
+ * @param body - The function body that may use both `type_var` and `trait_var`
+ *
+ * @returns A `TraitLamTerm` node
+ *
+ * @example With multiple constraints:
  * ```ts
- * import { freshState, addType, addTraitDef, checkType, traitLamTerm, boundedForallType, varType, arrowType, starKind, showType } from "system-f-omega";
- *
- * let state = freshState();
- * state = addType(state, "Int", starKind).ok;
- * state = addTraitDef(state, "Eq", "A", starKind, [["eq", arrowType(varType("A"), varType("Bool"))]]).ok;
- *
- * const traitLam = traitLamTerm("d", "Eq", "Self", starKind, [{ trait: "Eq", type: varType("Self") }], arrowType(varType("Self"), varType("Int")));
- * const expected = boundedForallType("Self", starKind, [{ trait: "Eq", type: varType("Self") }], arrowType(varType("Self"), varType("Int")));
- * const result = checkType(state, traitLam, expected);
- * console.log("checked:", showType(result.ok.type));  // "∀Self::* where Eq<Self>. (Self → Int)"
+ * traitLamTerm(
+ *   "d",
+ *   "Ord",
+ *   "A",
+ *   starKind,
+ *   [
+ *     { trait: "Ord",  type: varType("A") },
+ *     { trait: "Show", type: varType("A") }
+ *   ],
+ *   body
+ * );
  * ```
  *
- * @see {@link inferTraitLamType} Inference rule
- * @see {@link boundedForallType} Inferred type
- * @see {@link traitAppTerm} Application
+ * @see {@link inferTraitLamType} Typing rule
+ * @see {@link boundedForallType} Type-level representation
+ * @see {@link traitAppTerm} Application of a trait lambda
  */
 export const traitLamTerm = (
   trait_var: string,
@@ -8404,121 +9868,164 @@ export const traitLamTerm = (
 });
 
 /**
- * Constructs trait application `term [type] with dicts`.
+ * Constructs a **trait application** term:
  *
- * **Purpose**: Saturates trait lambdas. Infers via constraints resolution.
+ *     term [type] with dicts { d₁, d₂, ... }
  *
- * @param term - Trait lambda term
- * @param type - Type argument
- * @param dicts - Resolved dictionaries
- * @returns `{ trait_app: { term, type, dicts } }`
+ * This applies a **trait‑polymorphic** term (a `traitLamTerm`) to:
+ * - a **type argument**, and
+ * - an explicit list of **dictionary arguments** providing evidence for the
+ *   trait constraints required by the trait lambda.
  *
- * @example Basic construction
+ * Conceptually similar to Haskell's:
+ *
+ *     f @Int (eqIntDict)
+ *
+ * but presented explicitly in the AST.
+ *
+ * ---------------------------------------------------------------------------
+ * How it works
+ * ---------------------------------------------------------------------------
+ * A trait lambda has the form:
+ *
+ *     ΛSelf::K where C(Self). body
+ *
+ * To instantiate it, a trait application supplies:
+ * - a concrete type `T` (or fresh meta‑variable)
+ * - actual dictionary values that satisfy all constraints
+ *
+ * The typing rule is implemented in {@link inferTraitAppType}:
+ *
+ * 1. Infer the type of `term`
+ * 2. Check that it is a bounded forall:
+ *        ∀Self::K where C. τ
+ * 3. Check that the provided type argument has kind `K`
+ * 4. Substitute `Self := type` in all constraints
+ * 5. Verify the number and shape of `dicts` matches the constraints
+ * 6. Substitute `Self := type` in the body to produce the result type
+ *
+ * Errors include:
+ * - `wrong_number_of_dicts`
+ * - `type_mismatch` (dictionary not matching constraint)
+ * - `kind_mismatch`
+ * - `missing_trait_impl` (if dictionary inference is attempted elsewhere)
+ *
+ * ---------------------------------------------------------------------------
+ * Example
+ * ---------------------------------------------------------------------------
+ * Given:
  * ```ts
- * import { traitAppTerm, showTerm } from "system-f-omega";
- * import { conType } from "system-f-omega";
- *
- * const app = traitAppTerm({ var: "traitLam" }, conType("Int"), [{ var: "eqDict" }]);
- * console.log("traitApp:", showTerm(app));  // "traitLam [Int] with dicts {eqDict}"
+ * const lam = traitLamTerm(
+ *   "d", "Eq", "Self", starKind,
+ *   [{ trait: "Eq", type: varType("Self") }],
+ *   arrowType(varType("Self"), conType("Bool"))
+ * );
  * ```
  *
- * @example Inference
+ * Application:
  * ```ts
- * import { freshState, addType, addTraitDef, traitImplBinding, dictTerm, inferType, traitAppTerm, traitLamTerm, conType, starKind, arrowType, varType, lamTerm, conTerm, showType } from "system-f-omega";
- *
- * let state = freshState();
- * state = addType(state, "Int", starKind).ok;
- * state = addType(state, "Bool", starKind).ok;
- * state = addTraitDef(state, "Eq", "A", starKind, [["eq", arrowType(conType("A"), conType("Bool"))]]).ok;
- * const dict = dictTerm("Eq", conType("Int"), [["eq", lamTerm("x", conType("Int"), conTerm("true", conType("Bool")))]]);
- * state.ctx.push(traitImplBinding("Eq", conType("Int"), dict));
- *
- * const traitLam = traitLamTerm("d", "Eq", "Self", starKind, [{ trait: "Eq", type: varType("Self") }], arrowType(varType("Self"), conType("Int")));
- * const app = traitAppTerm(traitLam, conType("Int"), [{ var: "eqDict" }]);
- * const result = inferType(state, app);
- * console.log("inferred:", showType(result.ok));  // "Int"
+ * traitAppTerm(lam, conType("Int"), [eqIntDict])
  * ```
  *
- * @example Checking
- * ```ts
- * import { freshState, addType, addTraitDef, traitImplBinding, dictTerm, checkType, traitAppTerm, traitLamTerm, conType, starKind, arrowType, varType, lamTerm, conTerm, showType } from "system-f-omega";
- *
- * let state = freshState();
- * state = addType(state, "Int", starKind).ok;
- * state = addTraitDef(state, "Eq", "A", starKind, [["eq", arrowType(conType("A"), conType("Bool"))]]).ok;
- * const dict = dictTerm("Eq", conType("Int"), [["eq", lamTerm("x", conType("Int"), conTerm("true", conType("Bool")))]]);
- * state.ctx.push(traitImplBinding("Eq", conType("Int"), dict));
- *
- * const traitLam = traitLamTerm("d", "Eq", "Self", starKind, [{ trait: "Eq", type: varType("Self") }], arrowType(varType("Self"), conType("Int")));
- * const app = traitAppTerm(traitLam, conType("Int"), [{ var: "eqDict" }]);
- * const expected = conType("Int");
- * const result = checkType(state, app, expected);
- * console.log("checked:", showType(result.ok.type));  // "Int"
+ * Represents:
+ * ```
+ * ΛSelf where Eq<Self>. body   applied to   [Int] with {eqIntDict}
  * ```
  *
- * @see {@link inferTraitAppType} Inference rule
- * @see {@link traitLamTerm} Callee usage
- * @see {@link checkTraitConstraints} Resolves dicts
+ * ---------------------------------------------------------------------------
+ * When it is used
+ * ---------------------------------------------------------------------------
+ * - Explicit trait applications in user code (if exposed)
+ * - Automatically inserted by {@link autoInstantiate}
+ * - Trait dictionary passing for inference
+ * - Handling bounded polymorphism at term level
+ *
+ * ---------------------------------------------------------------------------
+ * @param term - The trait‑polymorphic term being instantiated
+ * @param type - The type argument being applied
+ * @param dicts - Dictionary terms satisfying the required trait constraints
+ * @returns A `TraitAppTerm` node
+ *
+ * @example
+ * ```ts
+ * traitAppTerm(varTerm("eqFunctor"), conType("Int"), [dict1, dict2]);
+ * ```
+ *
+ * @see {@link traitLamTerm} Introduction form
+ * @see {@link inferTraitAppType} Typing rule
+ * @see {@link instantiateWithTraits} Dictionary resolution
  */
 export const traitAppTerm = (term: Term, type: Type, dicts: Term[]): Term => ({
   trait_app: { term, type, dicts },
 });
 
 /**
- * Constructs trait dictionary `dict trait<type> { method = impl, ... }`.
+ * Constructs a **trait dictionary** term:
  *
- * **Purpose**: Explicit impl proof. Used in traitImplBinding, inferDictType.
+ *     dict Trait<Type> { method₁ = impl₁, method₂ = impl₂, ... }
  *
- * @param trait - Trait name (`"Eq"`)
- * @param type - Impl type (`Int`)
- * @param methods - Method impls `[[name, term], ...]`
- * @returns `{ dict: { trait, type, methods } }`
+ * A dictionary packages the concrete implementations of all methods required
+ * by a trait for a specific type.
+ * This is the dictionary‑passing interpretation of typeclasses.
  *
- * @example Basic dictionary
+ * Example:
  * ```ts
- * import { dictTerm, conType, showTerm } from "system-f-omega";
- * import { lamTerm, varTerm } from "system-f-omega";
+ * dict Eq<Int> {
+ *   eq = λx:Int. λy:Int. ...
+ * }
+ * ```
  *
- * const eqDict = dictTerm("Eq", conType("Int"), [
- *   ["eq", lamTerm("x", conType("Int"), varTerm("x"))]
+ * The dictionary contains:
+ * - `trait`   — the trait name (`"Eq"`, `"Show"`, `"Functor"`, ...)
+ * - `type`    — the type for which the trait is implemented
+ * - `methods` — a list of `[name, term]` pairs giving each method’s implementation
+ *
+ * ---------------------------------------------------------------------------
+ * How dictionaries are used
+ * ---------------------------------------------------------------------------
+ * Dictionaries serve as **explicit trait evidence** and are used by:
+ * - {@link traitMethodTerm} for method projection (`d.eq`)
+ * - {@link inferTraitAppType} when fulfilling trait constraints
+ * - {@link instantiateWithTraits} during bounded forall instantiation
+ * - {@link traitImplBinding} when storing global implementations in the context
+ *
+ * In other words, dictionaries are *runtime* or *term-level* witnesses that a
+ * type satisfies a trait.
+ *
+ * ---------------------------------------------------------------------------
+ * Typechecking dictionaries
+ * ---------------------------------------------------------------------------
+ * {@link inferDictType} validates that:
+ * - the dictionary implements a known trait
+ * - all required methods are supplied
+ * - each method’s implementation matches the trait’s signature
+ * - the type argument has the correct kind
+ *
+ * Errors include:
+ * - `missing_method`
+ * - `kind_mismatch`
+ * - `type_mismatch` during method checking
+ *
+ * ---------------------------------------------------------------------------
+ * @param trait - The trait name being implemented
+ * @param type - The type for which this trait implementation applies
+ * @param methods - List of method implementations `[methodName, methodTerm]`
+ *
+ * @returns A `DictTerm` node `{ dict: { trait, type, methods } }`
+ *
+ * @example
+ * ```ts
+ * dictTerm("Eq", conType("Int"), [
+ *   ["eq", lamTerm("x", Int,
+ *            lamTerm("y", Int,
+ *              conTerm("true", Bool)
+ *            ))]
  * ]);
- * console.log("dict:", showTerm(eqDict));  // "dict Eq<Int> { eq = λx:Int.x }"
  * ```
  *
- * @example Trait impl binding + inference
- * ```ts
- * import { freshState, addType, addTraitDef, traitImplBinding, dictTerm, inferType, traitMethodTerm, conType, starKind, arrowType, lamTerm, varTerm, showType } from "system-f-omega";
- *
- * let state = freshState();
- * state = addType(state, "Int", starKind).ok;
- * state = addType(state, "Bool", starKind).ok;
- * state = addTraitDef(state, "Eq", "A", starKind, [["eq", arrowType(conType("A"), conType("Bool"))]]).ok;
- *
- * const eqDict = dictTerm("Eq", conType("Int"), [["eq", lamTerm("x", conType("Int"), conTerm("true", conType("Bool")))]]);
- * state.ctx.push(traitImplBinding("Eq", conType("Int"), eqDict));
- *
- * const method = traitMethodTerm(eqDict, "eq");
- * const result = inferType(state, method);
- * console.log("method:", showType(result.ok));  // "(Int → Bool)"
- * ```
- *
- * @example inferDictType validation
- * ```ts
- * import { freshState, addType, addTraitDef, inferType, dictTerm, conType, starKind, arrowType, lamTerm, varTerm, conTerm, showType } from "system-f-omega";
- *
- * let state = freshState();
- * state = addType(state, "Int", starKind).ok;
- * state = addType(state, "Bool", starKind).ok;
- * state = addTraitDef(state, "Eq", "A", starKind, [["eq", arrowType(conType("A"), conType("Bool"))]]).ok;
- *
- * const eqDict = dictTerm("Eq", conType("Int"), [["eq", lamTerm("x", conType("Int"), conTerm("true", conType("Bool")))]]);
- * const result = inferType(state, eqDict);
- * console.log("dictType:", showType(result.ok));  // "Dict<Eq, Int>"
- * ```
- *
- * @see {@link inferDictType} Validates methods
- * @see {@link traitImplBinding} Context storage
- * @see {@link traitMethodTerm} Method access
+ * @see {@link inferDictType} Dictionary typing rule
+ * @see {@link traitMethodTerm} Accessing methods in a dictionary
+ * @see {@link checkTraitImplementation} Resolving trait constraints
  */
 export const dictTerm = (
   trait: string,
@@ -8529,616 +10036,735 @@ export const dictTerm = (
 });
 
 /**
- * Constructs trait method access `dict.method`.
+ * Constructs a **trait method access** term:
  *
- * **Purpose**: Dictionary method projection. Infers method signature.
+ *     dict.method
  *
- * @param dict - Dictionary term
- * @param method - Method name
- * @returns `{ trait_method: { dict, method } }`
+ * This extracts a method implementation from a **trait dictionary**.
+ * It is the term‑level mechanism for calling trait‑based operations.
  *
- * @example Basic construction
+ * Example:
  * ```ts
- * import { traitMethodTerm, showTerm } from "system-f-omega";
- *
- * const method = traitMethodTerm({ var: "eqDict" }, "eq");
- * console.log("method:", showTerm(method));  // "eqDict.eq"
+ * eqDict.eq     // access the 'eq' method of an Eq<T> dictionary
+ * showDict.show // access the 'show' method of a Show<T> dictionary
  * ```
  *
- * @example Inference
+ * ---------------------------------------------------------------------------
+ * What it represents
+ * ---------------------------------------------------------------------------
+ * A `traitMethodTerm` is a projection on a dictionary term.
+ * The dictionary may come from:
+ * - a local dictionary binding inside a trait lambda (`traitLamTerm`)
+ * - a dictionary supplied in a trait application (`traitAppTerm`)
+ * - a global implementation (`traitImplBinding`)
+ *
+ * The typechecker uses the dictionary’s trait and type information to determine
+ * which method is being accessed and what its resulting type is.
+ *
+ * ---------------------------------------------------------------------------
+ * How it is typed
+ * ---------------------------------------------------------------------------
+ * {@link inferTraitMethodType} performs the typing:
+ *
+ * 1. Infer the type of the dictionary expression.
+ * 2. Ensure it is a dictionary type (either a `dictTerm` or a dict binding).
+ * 3. Look up the trait definition (`TraitDef`).
+ * 4. Verify that the requested method exists in the trait.
+ * 5. Substitute the dictionary’s type argument into the method’s type.
+ *
+ * Errors include:
+ * - `unbound` (dictionary variable not found)
+ * - `missing_method` (method not defined by the trait)
+ * - type mismatches inside the dictionary body
+ *
+ * ---------------------------------------------------------------------------
+ * When it is used
+ * ---------------------------------------------------------------------------
+ * - Calling trait methods explicitly
+ * - Implementing typeclass dispatch (dictionary‑passing)
+ * - Building method bodies in user-defined dictionaries
+ * - Typechecking trait‑polymorphic code
+ *
+ * ---------------------------------------------------------------------------
+ * @param dict - A term that evaluates to a trait dictionary
+ * @param method - The method name to extract (e.g. `"eq"`, `"map"`)
+ * @returns A `TraitMethodTerm` node
+ *
+ * @example
  * ```ts
- * import { freshState, addType, addTraitDef, traitImplBinding, dictTerm, inferType, traitMethodTerm, conType, starKind, arrowType, lamTerm, varTerm, conTerm, showType } from "system-f-omega";
+ * const eqInt = dictTerm("Eq", Int, [
+ *   ["eq", lamTerm("x", Int, lamTerm("y", Int, conTerm("true", Bool)))]
+ * ]);
  *
- * let state = freshState();
- * state = addType(state, "Int", starKind).ok;
- * state = addType(state, "Bool", starKind).ok;
- * state = addTraitDef(state, "Eq", "A", starKind, [["eq", arrowType(conType("A"), conType("Bool"))]]).ok;
- * const eqDict = dictTerm("Eq", conType("Int"), [["eq", lamTerm("x", conType("Int"), conTerm("true", conType("Bool")))]]);
- * state.ctx.push(traitImplBinding("Eq", conType("Int"), eqDict));
- *
- * const method = traitMethodTerm(eqDict, "eq");
- * const result = inferType(state, method);
- * console.log("inferred:", showType(result.ok));  // "(Int → Bool)"
+ * traitMethodTerm(eqInt, "eq");
+ * // => eqInt.eq
  * ```
  *
- * @example Checking
+ * @example Using a dictionary variable inside a trait lambda:
  * ```ts
- * import { freshState, addType, addTraitDef, traitImplBinding, dictTerm, checkType, traitMethodTerm, conType, starKind, arrowType, lamTerm, varTerm, conTerm, showType } from "system-f-omega";
- *
- * let state = freshState();
- * state = addType(state, "Int", starKind).ok;
- * state = addType(state, "Bool", starKind).ok;
- * state = addTraitDef(state, "Eq", "A", starKind, [["eq", arrowType(conType("A"), conType("Bool"))]]).ok;
- * const eqDict = dictTerm("Eq", conType("Int"), [["eq", lamTerm("x", conType("Int"), conTerm("true", conType("Bool")))]]);
- * state.ctx.push(traitImplBinding("Eq", conType("Int"), eqDict));
- *
- * const method = traitMethodTerm(eqDict, "eq");
- * const expected = arrowType(conType("Int"), conType("Bool"));
- * const result = checkType(state, method, expected);
- * console.log("checked:", showType(result.ok.type));  // "(Int → Bool)"
+ * // Inside ΛSelf where Eq<Self>. body:
+ * traitMethodTerm(varTerm("d"), "eq");   // d.eq
  * ```
  *
- * @see {@link inferTraitMethodType} Inference rule
- * @see {@link dictTerm} Dictionary values
- * @see {@link inferType} Full inference
+ * @see {@link inferTraitMethodType} Typing rule
+ * @see {@link dictTerm} Dictionary construction
+ * @see {@link traitLamTerm} Dictionary binding introduction
  */
 export const traitMethodTerm = (dict: Term, method: string): Term => ({
   trait_method: { dict, method },
 });
 
 /**
- * Constructs variable pattern `var` (binds whole value).
+ * Constructs a **variable pattern**:
  *
- * **Purpose**: Captures matched value as binding. Wildcard-like for exhaustiveness.
+ *     x
  *
- * @param name - Binding name
- * @returns `{ var: name }`
+ * A variable pattern matches **any value** and binds it to the given name.
  *
- * @example Basic construction
+ * Example in a match expression:
  * ```ts
- * import { varPattern, showPattern } from "system-f-omega";
- *
- * console.log("x:", showPattern(varPattern("x")));  // "x"
+ * match xs {
+ *   x => ...   // x binds the entire scrutinee
+ * }
  * ```
  *
- * @example Pattern checking (binds type)
+ * During pattern checking:
+ * - {@link checkPattern} assigns the **scrutinee’s type** to this variable
+ * - The binding is added to the typing context for the pattern’s body
+ *
+ * Variable patterns are the pattern‑level analogue of term variables
+ * (`varTerm("x")`).
+ *
+ * ---------------------------------------------------------------------------
+ * When to use
+ * ---------------------------------------------------------------------------
+ * - Capture the entire value of a match branch:
+ *   ```ts
+ *   Some(x) => x
+ *   ```
+ *
+ * - As a “catch‑all with binding,” unlike `_` which discards the value
+ *
+ * - Useful in:
+ *   - match expressions
+ *   - tuple patterns
+ *   - record patterns
+ *   - variant patterns
+ *
+ * ---------------------------------------------------------------------------
+ * Type behavior
+ * ---------------------------------------------------------------------------
+ * - Patterns do not determine types themselves.
+ * - The scrutinee type is assigned during `checkPattern`.
+ * - The result is a binding:
+ *   ```ts
+ *   { term: { name: patternName, type: scrutineeType } }
+ *   ```
+ *
+ * ---------------------------------------------------------------------------
+ * @param name - The variable name to bind (e.g. `"x"`)
+ * @returns A `VarPattern` node `{ var: name }`
+ *
+ * ---------------------------------------------------------------------------
+ * @example
  * ```ts
- * import { freshState, addType, checkPattern, varPattern, conType, starKind } from "system-f-omega";
- *
- * let state = freshState();
- * state = addType(state, "Int", starKind).ok;
- *
- * const result = checkPattern(state, varPattern("x"), conType("Int"));
- * console.log("binds:", result.ok.length === 1);  // true
+ * varPattern("x");     // matches anything, binds it to x
  * ```
  *
- * @example Match inference (wildcard-like)
+ * @example In a tuple:
  * ```ts
- * import { freshState, addType, addEnum, inferType, matchTerm, varPattern, conTerm, appType, conType, starKind, showType } from "system-f-omega";
- *
- * let state = freshState();
- * state = addType(state, "Int", starKind).ok;
- * state = addEnum(state, "Option", ["T"], [starKind], [["None", { tuple: [] }], ["Some", conType("T")]]).ok;
- *
- * const scrut = conTerm("opt", appType(conType("Option"), conType("Int")));
- * const match = matchTerm(scrut, [[varPattern("x"), varTerm("x")]]);
- * const result = inferType(state, match);
- * console.log("inferred:", showType(result.ok));  // "Option<Int>"
+ * tuplePattern([varPattern("a"), varPattern("b")])
+ * // matches (a, b)
  * ```
  *
- * @see {@link checkPattern} Binding extraction
- * @see {@link matchTerm} Usage in cases
- * @see {@link wildcardPattern} No-binding alternative
+ * @see {@link checkPattern} Determines the type of the bound variable
+ * @see {@link wildcardPattern} Pattern that ignores the value
  */
 export const varPattern = (name: string): Pattern => ({ var: name });
 
 /**
- * Constructs wildcard pattern `_` (matches anything, no binding).
+ * Constructs a **wildcard pattern**:
  *
- * **Purpose**: Ignore values. Exhaustive for any type.
+ *     _
  *
- * @returns `{ wildcard: null }`
+ * A wildcard pattern matches **any value** but does **not** bind a variable.
  *
- * @example Basic construction
+ * It is useful when:
+ * - You want to ignore part (or all) of a value
+ * - You don’t need the matched value in the branch body
+ * - Serving as a “catch‑all” case in pattern matching
+ *
+ * In a match expression:
  * ```ts
- * import { wildcardPattern, showPattern } from "system-f-omega";
- *
- * console.log("wildcard:", showPattern(wildcardPattern()));  // "_"
+ * match xs {
+ *   _ => 0      // matches everything
+ * }
  * ```
  *
- * @example Pattern checking (no bindings)
+ * ---------------------------------------------------------------------------
+ * Type behavior
+ * ---------------------------------------------------------------------------
+ * - Wildcards never introduce bindings.
+ * - {@link checkPattern} always accepts them.
+ * - They immediately make a match expression **exhaustive** in
+ *   {@link checkExhaustive}, since `_` covers all possible cases.
+ *
+ * ---------------------------------------------------------------------------
+ * @returns A `WildcardPattern` node `{ wildcard: null }`
+ *
+ * @example
  * ```ts
- * import { freshState, addType, checkPattern, wildcardPattern, conType, starKind } from "system-f-omega";
- *
- * let state = freshState();
- * state = addType(state, "Int", starKind).ok;
- *
- * const result = checkPattern(state, wildcardPattern(), conType("Int"));
- * console.log("no bindings:", result.ok.length === 0);  // true
+ * wildcardPattern();  // => _
  * ```
  *
- * @example Match inference (exhaustive)
- * ```ts
- * import { freshState, addType, addEnum, inferType, matchTerm, wildcardPattern, conTerm, appType, conType, starKind, showType } from "system-f-omega";
- *
- * let state = freshState();
- * state = addType(state, "Int", starKind).ok;
- * state = addEnum(state, "Option", ["T"], [starKind], [["None", { tuple: [] }], ["Some", conType("T")]]).ok;
- *
- * const scrut = conTerm("opt", appType(conType("Option"), conType("Int")));
- * const match = matchTerm(scrut, [[wildcardPattern(), conTerm("default", conType("Int"))]]);
- * const result = inferType(state, match);
- * console.log("inferred:", showType(result.ok));  // "Int"
- * ```
- *
- * @see {@link checkPattern} Empty bindings
- * @see {@link checkExhaustive} Always exhaustive
- * @see {@link varPattern} Binding alternative
+ * @see {@link varPattern} Binds a value instead of ignoring it
+ * @see {@link checkPattern} Pattern validation
+ * @see {@link checkExhaustive} Coverage checking (wildcards always exhaustive)
  */
 export const wildcardPattern = (): Pattern => ({ wildcard: null });
 
 /**
- * Constructs constructor pattern `con` (exact constant/tag match).
+ * Constructs a **constructor (constant) pattern**:
  *
- * **Purpose**: Matches literals/enum constructors. No bindings.
+ *     SomeConst
  *
- * @param name - Constructor name (`"None"`, `"true"`)
- * @param type - Expected type
- * @returns `{ con: { name, type } }`
+ * This pattern matches **only one exact constructor or literal value**.
  *
- * @example Basic construction
+ * Examples:
+ * - `true`
+ * - `false`
+ * - `None`
+ * - `"Zero"`
+ *
+ * A constructor pattern contains:
+ * - `name` — the literal or constructor label
+ * - `type` — the expected type of that constructor
+ *
+ * The type annotation is needed so that pattern checking can verify that this
+ * constructor is compatible with the scrutinee’s type.
+ *
+ * ---------------------------------------------------------------------------
+ * How it is used
+ * ---------------------------------------------------------------------------
+ * Constructor patterns are used in:
+ * - variant cases with **no payload**
+ *   (e.g. `None`, `Nil`)
+ * - literal matching
+ *   (e.g. `true`, `"hello"`)
+ * - simple pattern matches that don’t bind variables
+ *
+ * Example:
  * ```ts
- * import { conPattern, conType, showPattern } from "system-f-omega";
- *
- * console.log("None:", showPattern(conPattern("None", conType("Unit"))));  // "None"
+ * match b {
+ *   true  => 1
+ *   false => 0
+ * }
  * ```
  *
- * @example Pattern checking success
+ * ---------------------------------------------------------------------------
+ * Type behavior
+ * ---------------------------------------------------------------------------
+ * {@link checkPattern} verifies:
+ * - the scrutinee type matches the expected type provided here
+ * - the constructor name is valid for that type (e.g., `true : Bool`)
+ *
+ * If the scrutinee type is incompatible, a `type_mismatch` error is produced.
+ *
+ * This pattern **never binds variables**.
+ *
+ * ---------------------------------------------------------------------------
+ * @param name - Constructor or literal name to match
+ * @param type - The expected type of that constructor/literal
+ *
+ * @returns A `ConPattern` node
+ *
+ * @example
  * ```ts
- * import { freshState, addType, checkPattern, conPattern, conType, starKind } from "system-f-omega";
- *
- * let state = freshState();
- * state = addType(state, "Unit", starKind).ok;
- *
- * const result = checkPattern(state, conPattern("true", conType("Bool")), conType("Bool"));
- * console.log("matches:", "ok" in result && result.ok.length === 0);  // true
+ * conPattern("None", appType(conType("Option"), Int));
  * ```
  *
- * @example Pattern checking failure
+ * @example Boolean:
  * ```ts
- * import { freshState, addType, checkPattern, conPattern, conType, starKind } from "system-f-omega";
- *
- * let state = freshState();
- * state = addType(state, "Int", starKind).ok;
- *
- * const result = checkPattern(state, conPattern("true", conType("Bool")), conType("Int"));
- * console.log("mismatch:", "type_mismatch" in result.err);  // true
+ * conPattern("true", conType("Bool"));
  * ```
  *
- * @example Match inference
- * ```ts
- * import { freshState, addType, addEnum, inferType, matchTerm, conPattern, conTerm, appType, conType, starKind, showType } from "system-f-omega";
- *
- * let state = freshState();
- * state = addEnum(state, "Option", ["T"], [starKind], [["None", conType("Unit")]]).ok;
- *
- * const scrut = conTerm("opt", appType(conType("Option"), conType("Bool")));
- * const match = matchTerm(scrut, [[conPattern("None", conType("Unit")), conTerm("default", conType("Bool"))]]);
- * const result = inferType(state, match);
- * console.log("inferred:", showType(result.ok));  // "Bool"
- * ```
- *
- * @see {@link checkPattern} Constant matching
- * @see {@link matchTerm} Case usage
- * @see {@link varPattern} Variable alternative
+ * @see {@link checkPattern} Validates constructor compatibility
+ * @see {@link variantPattern} For constructors with payloads
  */
 export const conPattern = (name: string, type: Type): Pattern => ({
   con: { name, type },
 });
+
 /**
- * Constructs record pattern `{ label: pat, ... }`.
+ * Constructs a **record pattern**:
  *
- * **Purpose**: Destructures records. Binds nested patterns.
+ *     { label₁: p₁, label₂: p₂, ... }
  *
- * @param fields - Field patterns `[[label, pattern], ...]`
- * @returns `{ record: [[string, Pattern]] }`
+ * A record pattern matches a **record value** field‑by‑field.
+ * Each field pairs a **label** with a **subpattern** that must match the
+ * corresponding field in the scrutinee.
  *
- * @example Basic construction
+ * Examples:
  * ```ts
- * import { recordPattern, varPattern, showPattern } from "system-f-omega";
- *
- * const pat = recordPattern([["x", varPattern("a")], ["y", varPattern("b")]]);
- * console.log("record:", showPattern(pat));  // "{x: a, y: b}"
+ * { x: a, y: b }
+ * { point: (x, y) }
  * ```
  *
- * @example Pattern checking success
+ * ---------------------------------------------------------------------------
+ * How it behaves
+ * ---------------------------------------------------------------------------
+ * - The pattern must contain **exactly the same labels** as the scrutinee’s
+ *   record type (order does not matter).
+ * - For each field:
+ *   - {@link checkRecordPattern} validates label presence and type
+ *   - subpatterns are recursively checked with the field’s type
+ * - All variable bindings from subpatterns are collected and returned.
+ *
+ * This is the pattern‑level analogue of destructuring a record.
+ *
+ * ---------------------------------------------------------------------------
+ * When to use
+ * ---------------------------------------------------------------------------
+ * - Matching structured data from records:
+ *   ```ts
+ *   match rec {
+ *     { x: a, y: b } => ...
+ *   }
+ *   ```
+ *
+ * - Nested patterns:
+ *   ```ts
+ *   { pos: (x, y), color: c }
+ *   ```
+ *
+ * - Extracting only certain fields:
+ *   (subpatterns may include `_`)
+ *   ```ts
+ *   { x: x, y: _ }
+ *   ```
+ *
+ * ---------------------------------------------------------------------------
+ * Type behavior
+ * ---------------------------------------------------------------------------
+ * - The scrutinee must be a `RecordType` (`{ label: Type, ... }`).
+ * - Missing or extra labels produce `missing_field` or `type_mismatch`.
+ * - Field types must be well‑kinded (`*`).
+ *
+ * {@link checkPattern} delegates record patterns to
+ * {@link checkRecordPattern}, which:
+ * - verifies label sets match
+ * - recursively checks each corresponding subpattern
+ * - aggregates all variable bindings
+ *
+ * ---------------------------------------------------------------------------
+ * @param fields - An array of `[label, subpattern]` field patterns
+ * @returns A `RecordPattern` node
+ *
+ * @example
  * ```ts
- * import { freshState, addType, checkPattern, recordPattern, varPattern, recordType, conType, starKind } from "system-f-omega";
- *
- * let state = freshState();
- * state = addType(state, "Int", starKind).ok;
- * state = addType(state, "Bool", starKind).ok;
- *
- * const pat = recordPattern([["x", varPattern("a")], ["y", varPattern("b")]]);
- * const ty = recordType([["x", conType("Int")], ["y", conType("Bool")]]);
- * const result = checkPattern(state, pat, ty);
- * console.log("binds:", result.ok.length === 2);  // true
+ * recordPattern([
+ *   ["x", varPattern("a")],
+ *   ["y", varPattern("b")]
+ * ]);
+ * // matches { x = ?, y = ? }
  * ```
  *
- * @example Match inference
+ * @example Nested:
  * ```ts
- * import { freshState, addType, inferType, matchTerm, recordPattern, varPattern, recordTerm, conTerm, recordType, conType, starKind, showType } from "system-f-omega";
- *
- * let state = freshState();
- * state = addType(state, "Int", starKind).ok;
- *
- * const scrut = recordTerm([["x", conTerm("1", conType("Int"))]]);
- * const pat = recordPattern([["x", varPattern("a")]]);
- * const match = matchTerm(scrut, [[pat, varTerm("a")]]);
- * const result = inferType(state, match);
- * console.log("inferred:", showType(result.ok));  // "Int"
+ * recordPattern([
+ *   ["pos", tuplePattern([varPattern("x"), varPattern("y")])]
+ * ]);
  * ```
  *
- * @example Failure: Label mismatch
- * ```ts
- * import { freshState, addType, checkPattern, recordPattern, varPattern, recordType, conType, starKind } from "system-f-omega";
- *
- * let state = freshState();
- * state = addType(state, "Int", starKind).ok;
- *
- * const pat = recordPattern([["y", varPattern("b")]]);  // Wrong label
- * const ty = recordType([["x", conType("Int")]]);
- * const result = checkPattern(state, pat, ty);
- * console.log("missing:", "missing_field" in result.err);  // true
- * ```
- *
- * @see {@link checkPattern} Record validation
- * @see {@link matchTerm} Nested usage
- * @see {@link recordType} Matching type
+ * @see {@link checkRecordPattern} Typechecking rule for record patterns
+ * @see {@link recordType} Type-level record
+ * @see {@link checkPattern} Dispatcher for all patterns
  */
 export const recordPattern = (fields: [string, Pattern][]): Pattern => ({
   record: fields,
 });
 
 /**
- * Constructs variant pattern `label(pat)` (tagged destructuring).
+ * Constructs a **variant pattern**:
  *
- * **Purpose**: Matches enum/variant cases. Recurses on payload.
+ *     Label(p)
  *
- * @param label - Variant label (`"Cons"`, `"Some"`)
- * @param pattern - Payload pattern
- * @returns `{ variant: { label, pattern } }`
+ * This pattern matches a specific **constructor case** of a variant or enum,
+ * and then recursively matches its **payload** using the inner pattern.
  *
- * @example Basic construction
+ * Examples:
  * ```ts
- * import { variantPattern, varPattern, showPattern } from "system-f-omega";
- *
- * const pat = variantPattern("Cons", varPattern("x"));
- * console.log("variant:", showPattern(pat));  // "Cons(x)"
+ * Some(x)
+ * Left(v)
+ * Cons(hd, tl)
  * ```
  *
- * @example Pattern checking success
+ * ---------------------------------------------------------------------------
+ * Structure
+ * ---------------------------------------------------------------------------
+ * - `label`   — variant constructor name (`"Some"`, `"None"`, `"Cons"`, …)
+ * - `pattern` — a subpattern for the constructor’s payload
+ *
+ * For zero‑payload constructors (e.g. `None`, `Nil`), the payload pattern is
+ * usually a `tuplePattern([])` or a wildcard/variable.
+ *
+ * ---------------------------------------------------------------------------
+ * Type behavior
+ * ---------------------------------------------------------------------------
+ * {@link checkPattern} handles variant patterns with several cases:
+ *
+ * 1. **Scrutinee is a `μ`‑type**
+ *    Unfold one layer, then retry.
+ *
+ * 2. **Scrutinee is a meta‑variable (`?N`)**
+ *    Infer the enum/variant type by searching for a definition containing
+ *    the specified label, unify `?N` with that enum, then retry.
+ *
+ * 3. **Scrutinee is a structural variant (`variantType`)**
+ *    Ensure the label exists; recursively check its payload type.
+ *
+ * 4. **Scrutinee is a nominal enum (`conType` or applied enum)**
+ *    Look up the enum definition, check arity, substitute type parameters,
+ *    locate the labeled case, and recursively check the payload.
+ *
+ * Errors include:
+ * - `invalid_variant_label` (label not found)
+ * - `not_a_variant` (scrutinee is not a variant/enum)
+ * - `kind_mismatch` (incorrect number of type arguments for the enum)
+ *
+ * ---------------------------------------------------------------------------
+ * When to use
+ * ---------------------------------------------------------------------------
+ * - Pattern matching on ADTs and enum cases
+ * - Matching structural variants
+ * - Deconstructing recursive types such as lists or trees
+ *
+ * ---------------------------------------------------------------------------
+ * @param label - Constructor name to match
+ * @param pattern - Pattern for the constructor’s payload
+ * @returns A `VariantPattern` node
+ *
+ * ---------------------------------------------------------------------------
+ * @example
  * ```ts
- * import { freshState, addType, addEnum, checkPattern, variantPattern, varPattern, appType, conType, starKind } from "system-f-omega";
- * import { tupleType } from "system-f-omega";
- *
- * let state = freshState();
- * state = addType(state, "Int", starKind).ok;
- * state = addEnum(state, "List", ["T"], [starKind], [
- *   ["Nil", tupleType([])],
- *   ["Cons", tupleType([conType("T"), appType(conType("List"), conType("T"))])]
- * ]).ok;
- *
- * const result = checkPattern(state, variantPattern("Cons", varPattern("x")), appType(conType("List"), conType("Int")));
- * console.log("binds:", result.ok.length === 1);  // true
+ * variantPattern("Some", varPattern("x"));
+ * // matches Some(x)
  * ```
  *
- * @example Match inference
+ * @example Recursive:
  * ```ts
- * import { freshState, addType, addEnum, inferType, matchTerm, variantPattern, varPattern, conTerm, appType, conType, starKind, showType } from "system-f-omega";
- * import { tupleType } from "system-f-omega";
- *
- * let state = freshState();
- * state = addType(state, "Int", starKind).ok;
- * state = addEnum(state, "Option", ["T"], [starKind], [
- *   ["None", tupleType([])],
- *   ["Some", conType("T")]
- * ]).ok;
- *
- * const scrut = conTerm("opt", appType(conType("Option"), conType("Int")));
- * const match = matchTerm(scrut, [
- *   [variantPattern("Some", varPattern("x")), varTerm("x")]
- * ]);
- * const result = inferType(state, match);
- * console.log("inferred:", showType(result.ok));  // "Int"
+ * variantPattern("Cons",
+ *   tuplePattern([varPattern("hd"), varPattern("tl")])
+ * );
  * ```
  *
- * @example Failure: Invalid label
- * ```ts
- * import { freshState, addEnum, checkPattern, variantPattern, varPattern, appType, conType, starKind } from "system-f-omega";
- *
- * let state = freshState();
- * state = addEnum(state, "Option", ["T"], [starKind], [["None", { tuple: [] }]]).ok;
- *
- * const result = checkPattern(state, variantPattern("Some", varPattern("x")), appType(conType("Option"), conType("Int")));
- * console.log("invalid:", "invalid_variant_label" in result.err);  // true
- * ```
- *
- * @see {@link checkPattern} Variant case lookup
- * @see {@link matchTerm} Case usage
- * @see {@link injectTerm} Matching injection
+ * @see {@link checkPattern} Full pattern checking logic
+ * @see {@link variantType} Structural variant representation
+ * @see {@link normalizeType} Enum expansion
  */
 export const variantPattern = (label: string, pattern: Pattern): Pattern => ({
   variant: { label, pattern },
 });
 
 /**
- * Constructs tuple pattern `(pat₁, pat₂, ...)` (unlabeled destructuring).
+ * Constructs a **tuple pattern**:
  *
- * **Purpose**: Matches tuples. Binds nested patterns.
+ *     (p₁, p₂, ..., pₙ)
  *
- * @param elements - Pattern elements
- * @returns `{ tuple: Pattern[] }`
+ * A tuple pattern matches a **tuple value** of the same arity.
+ * Each element pattern is matched position‑by‑position against the corresponding
+ * element of the scrutinee.
  *
- * @example Basic construction
+ * Examples:
  * ```ts
- * import { tuplePattern, varPattern, showPattern } from "system-f-omega";
- *
- * const pat = tuplePattern([varPattern("a"), varPattern("b")]);
- * console.log("tuple:", showPattern(pat));  // "(a, b)"
+ * (x, y)
+ * (hd, tl)
+ * (a, (b, c))
+ * ()
  * ```
  *
- * @example Pattern checking success
+ * ---------------------------------------------------------------------------
+ * Type behavior
+ * ---------------------------------------------------------------------------
+ * {@link checkTuplePattern} performs the typechecking:
+ *
+ * - The scrutinee must have a tuple type (`TupleType`).
+ * - The number of elements must match exactly (arity check).
+ * - Each subpattern is checked recursively against the corresponding element type.
+ * - All variable bindings from subpatterns are collected.
+ *
+ * Errors include:
+ * - `not_a_tuple` when the scrutinee isn’t a tuple type
+ * - `type_mismatch` for arity mismatches
+ * - errors from recursive pattern checks (invalid labels, wrong type, etc.)
+ *
+ * ---------------------------------------------------------------------------
+ * When to use
+ * ---------------------------------------------------------------------------
+ * - Pattern matching on tuple‑encoded data
+ * - Deconstructing multi‑argument constructor payloads
+ * - Matching recursive ADTs where payloads are tuples (e.g., list cons cells)
+ *
+ * ---------------------------------------------------------------------------
+ * @param elements - A list of subpatterns corresponding to tuple positions
+ * @returns A `TuplePattern` node
+ *
+ * ---------------------------------------------------------------------------
+ * @example
  * ```ts
- * import { freshState, addType, checkPattern, tuplePattern, varPattern, tupleType, conType, starKind } from "system-f-omega";
- *
- * let state = freshState();
- * state = addType(state, "Int", starKind).ok;
- * state = addType(state, "Bool", starKind).ok;
- *
- * const pat = tuplePattern([varPattern("a"), varPattern("b")]);
- * const ty = tupleType([conType("Int"), conType("Bool")]);
- * const result = checkPattern(state, pat, ty);
- * console.log("binds:", result.ok.length === 2);  // true
+ * tuplePattern([varPattern("x"), varPattern("y")]);
+ * // matches (x, y)
  * ```
  *
- * @example Match inference
+ * @example Empty tuple (unit):
  * ```ts
- * import { freshState, addType, inferType, matchTerm, tuplePattern, varPattern, tupleTerm, conTerm, tupleType, conType, starKind, showType } from "system-f-omega";
- *
- * let state = freshState();
- * state = addType(state, "Int", starKind).ok;
- *
- * const scrut = tupleTerm([conTerm("1", conType("Int"))]);
- * const pat = tuplePattern([varPattern("x")]);
- * const match = matchTerm(scrut, [[pat, varTerm("x")]]);
- * const result = inferType(state, match);
- * console.log("inferred:", showType(result.ok));  // "Int"
+ * tuplePattern([]);
+ * // matches ()
  * ```
  *
- * @example Failure: Length mismatch
- * ```ts
- * import { freshState, addType, checkPattern, tuplePattern, varPattern, tupleType, conType, starKind } from "system-f-omega";
- *
- * let state = freshState();
- * state = addType(state, "Int", starKind).ok;
- *
- * const pat = tuplePattern([varPattern("x"), varPattern("y")]);  // 2 elems
- * const ty = tupleType([conType("Int")]);  // 1 elem
- * const result = checkPattern(state, pat, ty);
- * console.log("mismatch:", "type_mismatch" in result.err);  // true
- * ```
- *
- * @see {@link checkPattern} Tuple validation
- * @see {@link matchTerm} Case usage
- * @see {@link tupleType} Matching type
+ * @see {@link checkTuplePattern} Typechecking rule
+ * @see {@link tupleType} Tuple type constructor
+ * @see {@link checkPattern} Pattern dispatcher
  */
 export const tuplePattern = (elements: Pattern[]): Pattern => ({
   tuple: elements,
 });
 
 /**
- * Unit type `()` (zero-arity tuple, inhabited by one value).
+ * The **unit type**:
  *
- * **Purpose**: Terminal object. Used in empty variants (`None`), enums.
+ *     ()
  *
- * @example Pretty-print
+ * Represented internally as an empty tuple (`{ tuple: [] }`), this type has
+ * exactly **one value**, also written `()`.
+ * It is the tuple type of arity zero.
+ *
+ * The unit type is useful for:
+ * - constructors with no payload (e.g., `None`, `Nil`)
+ * - functions that conceptually return “no meaningful value”
+ * - representing zero-field records
+ * - pattern matching where “nothing” is expected
+ *
+ * Kind:
+ * - Always has kind `*`
+ *
+ * Used in:
+ * - tuple patterns (`tuplePattern([])`)
+ * - variant payloads (zero-argument cases)
+ * - fold/unfold of recursive types that use unit
+ *
+ * @example
  * ```ts
- * import { unitType, showType } from "system-f-omega";
- *
- * console.log("unit:", showType(unitType));  // "()"
+ * unitType;        // ()
+ * tupleType([]);   // same representation
  * ```
- *
- * @example Enum None case
- * ```ts
- * import { freshState, addEnum, normalizeType, appType, conType, unitType, starKind, showType } from "system-f-omega";
- *
- * let state = freshState();
- * state = addEnum(state, "Option", ["T"], [starKind], [["None", unitType]]).ok;
- *
- * const optBool = appType(conType("Option"), conType("Bool"));
- * const expanded = normalizeType(state, optBool);
- * console.log("None:", showType(expanded));  // "<None: ⊥ | ...>"
- * ```
- *
- * @example Tuple extension
- * ```ts
- * import { tupleType, unitType, conType, showType } from "system-f-omega";
- *
- * const extended = tupleType([conType("Int"), unitType]);
- * console.log("extended:", showType(extended));  // "(Int, ())"
- * ```
- *
- * @see {@link unitValue} Unit value
- * @see {@link tupleType} General tuples
  */
 export const unitType: Type = { tuple: [] };
 
 /**
- * Unit value `{}` (empty tuple, sole inhabitant of `unitType`).
+ * The **unit value**:
  *
- * **Purpose**: Terminal value. Used in empty injections (`None = {}`).
+ *     ()
  *
- * @example Pretty-print
+ * Represented as an empty tuple term (`{ tuple: [] }`), this is the *only*
+ * value inhabiting the unit type {@link unitType}.
+ *
+ * The unit value is useful for:
+ * - variant constructors with no payload (e.g., `<None=()>`)
+ * - record or tuple destructuring when no information is carried
+ * - serving as a placeholder in recursive or structural types
+ * - representing “no meaningful value” in functional code
+ *
+ * Type inference:
+ * - {@link inferTupleType} infers its type as `unitType`
+ *
+ * @example
  * ```ts
- * import { unitValue, showTerm } from "system-f-omega";
- *
- * console.log("unit val:", showTerm(unitValue));  // "()"
+ * unitValue;        // ()
+ * tupleTerm([]);    // same representation
  * ```
- *
- * @example Inference
- * ```ts
- * import { freshState, inferType, unitValue, showType } from "system-f-omega";
- *
- * const state = freshState();
- * const result = inferType(state, unitValue);
- * console.log("inferred:", showType(result.ok));  // "()"
- * ```
- *
- * @example Enum injection
- * ```ts
- * import { freshState, addEnum, inferType, injectTerm, unitValue, appType, conType, starKind, showType } from "system-f-omega";
- *
- * let state = freshState();
- * state = addEnum(state, "Option", ["T"], [starKind], [["None", { tuple: [] }]]).ok;
- *
- * const noneBool = injectTerm("None", unitValue, appType(conType("Option"), conType("Bool")));
- * const result = inferType(state, noneBool);
- * console.log("None:", showType(result.ok));  // "Option<Bool>"
- * ```
- *
- * @see {@link unitType} Unit type
- * @see {@link injectTerm} Empty variant payload
  */
 export const unitValue: Term = { tuple: [] };
 
 /**
- * Constructs term binding `{ term: { name, type } }`.
+ * Constructs a **term binding** for the typing context (`Γ`):
  *
- * **Purpose**: Binds value names to types in context.
+ *     name : type
  *
- * @param name - Term name (`"x"`)
- * @param type - Type
- * @returns Binding
+ * A `termBinding` represents a variable in scope with an associated type.
+ * These bindings are stored in the context and used during type inference
+ * whenever a variable (`varTerm`) is looked up.
  *
- * @example Basic construction
+ * Examples of where term bindings are introduced:
+ * - lambda parameters (`λx:τ. body` adds `x : τ`)
+ * - let‑bindings (`let x = value in body` adds `x : type(value)`)
+ * - global or top‑level definitions
+ * - dictionary variables introduced by trait lambdas
+ *
+ * `inferVarType` uses these bindings to determine the type of a variable term.
+ *
+ * ---------------------------------------------------------------------------
+ * @param name - The variable name being added to the context
+ * @param type - The type assigned to that variable
+ *
+ * @returns A `TermBinding` node suitable for insertion into `state.ctx`
+ *
+ * @example
  * ```ts
- * import { termBinding, conType, showBinding } from "system-f-omega";
- *
- * const bind = termBinding("x", conType("Int"));
- * console.log(showBinding(bind));  // "Term: x = Int"
+ * termBinding("x", conType("Int"));
+ * // => { term: { name: "x", type: Int } }
  * ```
  *
- * @example Context usage
- * ```ts
- * import { freshState, termBinding, conType, showContext } from "system-f-omega";
- *
- * const state = freshState();
- * const ctx = state.ctx.concat([termBinding("x", conType("Int"))]);
- * console.log(showContext(ctx));  // "Term: x = Int"
- * ```
- *
- * @example addTerm equivalent
- * ```ts
- * import { freshState, addType, addTerm, conTerm, conType, starKind, showContext } from "system-f-omega";
- *
- * let state = freshState();
- * state = addType(state, "Int", starKind).ok;
- * state = addTerm(state, "x", conTerm("42", conType("Int"))).ok;
- * console.log(showContext(state.ctx));  // "...\nTerm: x = Int"
- * ```
- *
- * @see {@link addTerm} Stateful adder
- * @see {@link typeBinding} Type counterpart
+ * @see {@link inferVarType} Looks up term bindings
+ * @see {@link checkPattern} Introduces bindings from patterns
+ * @see {@link letTerm} Local variable introduction
+ * @see {@link TraitLamTerm} Introduces dictionary term bindings
  */
 export const termBinding = (name: string, type: Type) => ({
   term: { name, type },
 });
 
 /**
- * Constructs type binding `{ type: { name, kind } }`.
+ * Constructs a **type binding** for the typing context (`Γ`):
  *
- * **Purpose**: Binds type constructors/kind vars in context.
+ *     name :: kind
  *
- * @param name - Type name (`"Int"`)
- * @param kind - Kind (`*`, `*→*`)
- * @returns Binding
+ * A `typeBinding` records the kind of a **type constructor** or
+ * **type variable** currently in scope.
+ * These bindings appear in the context and are used during kind checking.
  *
- * @example Basic construction
+ * Type bindings are introduced when:
+ * - declaring built‑in or user‑defined types (`addType`)
+ * - introducing type variables in polymorphic types (`∀A::κ. ...`)
+ * - introducing parameters in type‑level lambdas (`λA::κ. ...`)
+ * - handling bounded foralls in trait lambdas (`ΛSelf::* where ...`)
+ *
+ * Kind checking (`checkKind`) uses type bindings to ensure:
+ * - constructors receive the correct number of type arguments
+ * - type applications (`F<T>`) are well‑kinded
+ * - type variables have valid kinds
+ *
+ * ---------------------------------------------------------------------------
+ * @param name - The type constructor or type variable name
+ * @param kind - Its kind (`*`, `* → *`, `(* → *) → *`, ...)
+ *
+ * @returns A `TypeBinding` node suitable for insertion into `state.ctx`
+ *
+ * ---------------------------------------------------------------------------
+ * @example Declaring a type constructor:
  * ```ts
- * import { typeBinding, starKind, showBinding } from "system-f-omega";
- *
- * const bind = typeBinding("Int", starKind);
- * console.log(showBinding(bind));  // "Type: Int = *"
+ * typeBinding("List", arrowKind(starKind, starKind));
+ * // => List :: * → *
  * ```
  *
- * @example Context usage
+ * @example Binding a polymorphic type variable:
  * ```ts
- * import { freshState, typeBinding, starKind, showContext } from "system-f-omega";
- *
- * const state = freshState();
- * const ctx = state.ctx.concat([typeBinding("Int", starKind)]);
- * console.log(showContext(ctx));  // "Type: Int = *"
+ * typeBinding("A", starKind);
+ * // => A :: *
  * ```
  *
- * @example addType equivalent
- * ```ts
- * import { freshState, addType, typeBinding, starKind, showContext } from "system-f-omega";
- *
- * let state = freshState();
- * state = addType(state, "Int", starKind).ok;
- * console.log(showContext(state.ctx));  // "Type: Int = *"
- * ```
- *
- * @see {@link addType} Stateful adder
- * @see {@link termBinding} Term counterpart
+ * @see {@link checkKind} Kind inference and validation
+ * @see {@link addType} Adds type constructors to the context
+ * @see {@link lamType} Type-level lambdas introduce type bindings
+ * @see {@link forallType} Universal quantifiers introduce type bindings
  */
 export const typeBinding = (name: string, kind: Kind) => ({
   type: { name, kind },
 });
 
 /**
- * Constructs type alias binding for context.
+ * Constructs a **type alias binding** for the typing context (`Γ`):
  *
- * **Purpose**: Parametric aliases: `Id<A> = A`. Used in `addTypeAlias`.
+ *     type Name<A₁::K₁, A₂::K₂, ...> = Body
  *
- * @param name - Alias name (`"Id"`)
- * @param params - Param names `["A"]`
- * @param kinds - Param kinds `[starKind]`
- * @param body - Right-hand side
- * @returns Alias binding
+ * A type alias gives a *name* to a type expression.
+ * It is **purely syntactic** — it does **not** introduce a new nominal type.
+ * Instead, aliases are expanded during normalization (`normalizeType`).
  *
- * @example Basic alias
+ * Example:
  * ```ts
- * import { typeAliasBinding, varType, starKind, showBinding } from "system-f-omega";
- *
- * const idAlias = typeAliasBinding("Id", ["A"], [starKind], varType("A"));
- * console.log(showBinding(idAlias));  // "Type Alias: Id<A::*> = A"
+ * type Pair<A,B> = (A, B)
  * ```
  *
- * @example Context + expansion
+ * ---------------------------------------------------------------------------
+ * Structure
+ * ---------------------------------------------------------------------------
+ * - `name`   — the alias name (e.g., `"Id"`, `"Pair"`)
+ * - `params` — type parameter names (`["A"]`, `["A","B"]`, …)
+ * - `kinds`  — the corresponding parameter kinds (`*`, `*→*`, …)
+ * - `body`   — the type expression defining the alias
+ *
+ * A `typeAliasBinding` is stored in the context, allowing:
+ * - kind checking to validate alias usage (`checkConKind`)
+ * - alias expansion when the alias name appears at the head of a type application
+ *
+ * ---------------------------------------------------------------------------
+ * How aliases behave
+ * ---------------------------------------------------------------------------
+ * Given:
  * ```ts
- * import { freshState, addTypeAlias, normalizeType, appType, conType, typeAliasBinding, varType, starKind, showType } from "system-f-omega";
- *
- * let state = freshState();
- * state = addTypeAlias(state, "Id", ["A"], [starKind], varType("A")).ok;
- *
- * const idInt = appType({ con: "Id" }, conType("Int"));
- * const expanded = normalizeType(state, idInt);
- * console.log("expanded:", showType(expanded));  // "Int"
+ * type Id<A> = A
  * ```
  *
- * @example Multi-param
+ * The type:
  * ```ts
- * import { typeAliasBinding, tupleType, varType, starKind, showBinding } from "system-f-omega";
- *
- * const pairAlias = typeAliasBinding("Pair", ["A", "B"], [starKind, starKind], tupleType([varType("A"), varType("B")]));
- * console.log(showBinding(pairAlias));  // "Type Alias: Pair<A::*,B::*> = (A, B)"
+ * Id<Int>
+ * ```
+ * expands to:
+ * ```ts
+ * Int
  * ```
  *
- * @see {@link addTypeAlias} Stateful adder
+ * Expansion occurs in {@link normalizeType}, *not* immediately.
+ *
+ * Aliases support higher‑kinded parameters as well:
+ * ```ts
+ * type Const<F::(* → *), X> = F<Int>
+ * ```
+ *
+ * ---------------------------------------------------------------------------
+ * Kind behavior
+ * ---------------------------------------------------------------------------
+ * Aliases have kinds derived from their parameters:
+ *
+ * ```ts
+ * type Id<A::*> = A
+ * // Id :: * → *
+ * ```
+ *
+ * Kind checking:
+ * - validates that parameters are used correctly inside `body`
+ * - verifies that alias applications supply the correct number of arguments
+ *
+ * ---------------------------------------------------------------------------
+ * @param name - The alias name
+ * @param params - Names of type parameters
+ * @param kinds - Kinds corresponding to each parameter
+ * @param body - The type expression defining the alias
+ *
+ * @returns A `TypeAliasBinding` node for insertion into `state.ctx`
+ *
+ * ---------------------------------------------------------------------------
+ * @example Simple alias:
+ * ```ts
+ * typeAliasBinding("Id", ["A"], [starKind], varType("A"));
+ * // type Id<A> = A
+ * ```
+ *
+ * @example Multi‑parameter alias:
+ * ```ts
+ * typeAliasBinding(
+ *   "Pair",
+ *   ["A", "B"],
+ *   [starKind, starKind],
+ *   tupleType([varType("A"), varType("B")])
+ * );
+ * // type Pair<A,B> = (A, B)
+ * ```
+ *
  * @see {@link normalizeType} Expands aliases
- * @see {@link appType} Alias application
+ * @see {@link checkConKind} Kind checking for constructors and aliases
+ * @see {@link typeBinding} Non‑alias type bindings
  */
 export const typeAliasBinding = (
   name: string,
@@ -9150,67 +10776,78 @@ export const typeAliasBinding = (
 });
 
 /**
- * Constructs trait definition binding for context.
+ * Constructs a **trait definition binding** for the typing context (`Γ`).
  *
- * **Purpose**: Defines interfaces: `trait Eq<A::*>: eq : A → Bool`.
- * Used in `addTraitDef`.
-
- * @param name - Trait name (`"Eq"`)
- * @param type_param - Type param (`"A"`)
- * @param kind - Param kind
- * @param methods - Signatures `[[name, type], ...]`
- * @returns TraitDef binding
+ * A trait definition describes:
+ * - the **trait name** (e.g. `"Eq"`, `"Show"`)
+ * - the **type parameter** it abstracts over (e.g. `"Self"`, `"A"`)
+ * - the **kind** of that type parameter (`*`, `* → *`, …)
+ * - the list of **method signatures** required by the trait
  *
- * @example Basic trait
+ * For example, the trait:
  * ```ts
- * import { traitDefBinding, starKind, arrowType, varType, showBinding } from "system-f-omega";
- *
- * const eqDef = traitDefBinding("Eq", "A", starKind, [
- *   ["eq", arrowType(varType("A"), varType("Bool"))]
+ * trait Eq<Self :: *> {
+ *   eq : Self → Self → Bool
+ * }
+ * ```
+ * is represented as:
+ * ```ts
+ * traitDefBinding("Eq", "Self", starKind, [
+ *   ["eq", arrowType(Self, arrowType(Self, Bool))]
  * ]);
- * console.log(showBinding({ trait_def: eqDef }));
- * // "Trait: Eq = TraitDef (Eq A = *\n  eq : (A → Bool))"
  * ```
  *
- * @example Context usage (addTraitDef equivalent)
+ * ---------------------------------------------------------------------------
+ * Why this binding exists
+ * ---------------------------------------------------------------------------
+ * When added to the context, a `TraitDefBinding`:
+ * - declares a **new trait**
+ * - provides method signatures used by:
+ *   - {@link inferTraitMethodType} (dictionary method lookup)
+ *   - {@link inferDictType} (dictionary validation)
+ *   - {@link checkTraitImplementation} (instance resolution)
+ *   - {@link traitLamTerm} and {@link traitAppTerm}
+ * - serves as the authoritative specification for all dictionaries implementing
+ *   the trait
+ *
+ * ---------------------------------------------------------------------------
+ * Structure
+ * ---------------------------------------------------------------------------
+ * - `name`       — The name of the trait (`"Eq"`)
+ * - `type_param` — The trait’s type parameter (`"Self"`)
+ * - `kind`       — Kind of the parameter (`*`, `* → *`, …)
+ * - `methods`    — List of `[methodName, methodType]` pairs
+ *
+ * The method types may reference the trait’s type parameter.
+ *
+ * ---------------------------------------------------------------------------
+ * @param name - Trait name
+ * @param type_param - Name of the trait’s type parameter
+ * @param kind - Kind of the type parameter
+ * @param methods - List of method signatures `[string, Type]`
+ *
+ * @returns A `TraitDefBinding` node for insertion into `state.ctx`
+ *
+ * ---------------------------------------------------------------------------
+ * @example Defining the `Eq` trait:
  * ```ts
- * import { freshState, addType, addTraitDef, showContext, starKind, arrowType, varType } from "system-f-omega";
- *
- * let state = freshState();
- * state = addType(state, "Bool", starKind).ok;
- * state = addTraitDef(state, "Eq", "A", starKind, [
- *   ["eq", arrowType(varType("A"), varType("Bool"))]
- * ]).ok;
- * console.log(showContext(state.ctx));
- * // "...\nTrait: Eq = TraitDef (Eq A = *\n  eq : (A → Bool))"
- * ```
- *
- * @example HKT trait
- * ```ts
- * import { traitDefBinding, arrowKind, starKind, arrowType, varType, showBinding } from "system-f-omega";
- *
- * const functorDef = traitDefBinding("Functor", "F", arrowKind(starKind, starKind), [
- *   ["map", arrowType(varType("F"), varType("F"))]
+ * traitDefBinding("Eq", "A", starKind, [
+ *   ["eq", arrowType(varType("A"), arrowType(varType("A"), conType("Bool")))]
  * ]);
- * console.log(showBinding({ trait_def: functorDef }));
- * // "Trait: Functor = TraitDef (Functor F = (* → *)\n  map : (F → F))"
  * ```
  *
- * @example Multi-method
+ * @example Higher‑kinded trait:
  * ```ts
- * import { traitDefBinding, starKind, arrowType, varType, showBinding } from "system-f-omega";
- *
- * const ordDef = traitDefBinding("Ord", "A", starKind, [
- *   ["eq", arrowType(varType("A"), varType("Bool"))],
- *   ["lt", arrowType(varType("A"), varType("Bool"))]
- * ]);
- * console.log(showBinding({ trait_def: ordDef }));
- * // "Trait: Ord = TraitDef (Ord A = *\n  eq : (A → Bool)\n  lt : (A → Bool))"
+ * traitDefBinding("Functor", "F",
+ *   arrowKind(starKind, starKind),
+ *   [["map", ...]]
+ * );
  * ```
  *
- * @see {@link addTraitDef} Stateful adder
- * @see {@link showTraitDef} Pretty-printer
- * @see {@link traitImplBinding} Implementations
+ * @see {@link checkTraitImplementation} Resolving trait instances
+ * @see {@link dictTerm} Concrete dictionary construction
+ * @see {@link traitMethodTerm} Using trait methods
+ * @see {@link inferDictType} Dictionary validation
  */
 export const traitDefBinding = (
   name: string,
@@ -9227,180 +10864,293 @@ export const traitDefBinding = (
 });
 
 /**
- * Constructs trait impl binding for context.
+ * Constructs a **trait implementation binding** for the typing context (`Γ`):
  *
- * **Purpose**: Registers `trait` impl for `type` with `dict`. Used in `addTraitImpl`.
+ *     impl Trait for Type = dict
  *
- * @param trait - Trait name (`"Eq"`)
- * @param type - Impl type (`Int`)
- * @param dict - Dictionary term
- * @returns Impl binding
+ * This declares that a specific **type** implements a specific **trait**, and
+ * provides the corresponding **dictionary** (`dict`) containing all method
+ * implementations for that trait and type.
  *
- * @example Basic construction
+ * Example:
  * ```ts
- * import { traitImplBinding, dictTerm, conType, showBinding } from "system-f-omega";
- *
- * const impl = traitImplBinding("Eq", conType("Int"), dictTerm("Eq", conType("Int"), []));
- * console.log(showBinding(impl));  // "Impl: Eq = dict Eq<Int> { }: Int"
+ * traitImplBinding("Eq", conType("Int"), eqIntDict);
+ * // Represents: impl Eq<Int> = dict Eq<Int> { eq = ... }
  * ```
  *
- * @example Context usage (addTraitImpl equivalent)
- * ```ts
- * import { freshState, addType, addTraitDef, traitImplBinding, dictTerm, conType, starKind, arrowType, lamTerm, varTerm, conTerm, showContext } from "system-f-omega";
+ * ---------------------------------------------------------------------------
+ * What this binding means
+ * ---------------------------------------------------------------------------
+ * A `trait_impl` binding registers a **global instance** of a trait:
  *
- * let state = freshState();
- * state = addType(state, "Int", starKind).ok;
- * state = addType(state, "Bool", starKind).ok;
- * state = addTraitDef(state, "Eq", "A", starKind, [["eq", arrowType(conType("A"), conType("Bool"))]]).ok;
- * const dict = dictTerm("Eq", conType("Int"), [["eq", lamTerm("x", conType("Int"), conTerm("true", conType("Bool")))]]);
- * const impl = traitImplBinding("Eq", conType("Int"), dict);
- * state.ctx.push(impl);
- * console.log(showContext(state.ctx));
- * // "...\nImpl: Eq = dict Eq<Int> { eq = λx:Int.true }: Int"
+ * - `trait` — the trait name (e.g., `"Eq"`)
+ * - `type`  — the type for which the trait is implemented
+ * - `dict`  — a concrete dictionary giving method implementations
+ *
+ * These bindings are consulted whenever the typechecker needs **trait evidence**
+ * during:
+ * - trait application (`traitAppTerm`)
+ * - bounded polymorphism instantiation (`instantiateWithTraits`)
+ * - dictionary lookup (`checkTraitImplementation`)
+ *
+ * In effect, this is the typeclass instance table for the language.
+ *
+ * ---------------------------------------------------------------------------
+ * How it is used
+ * ---------------------------------------------------------------------------
+ *
+ * 1. **Trait constraint solving**
+ *    {@link checkTraitImplementation} scans the context for `trait_impl`
+ *    bindings to resolve constraints:
+ *
+ *    ```
+ *    Eq<Int>  →  find impl Eq for Int
+ *    ```
+ *
+ * 2. **Polymorphic trait implementations**
+ *    A trait implementation may itself involve `forall` or type‑lambdas,
+ *    enabling:
+ *
+ *    ```ts
+ *    impl Functor<List> { ... }
+ *    impl Eq<List<T>>   { ... }
+ *    ```
+ *
+ *    The unification logic determines whether a polymorphic implementation
+ *    matches the required constraint.
+ *
+ * 3. **Dictionary method access**
+ *    {@link traitMethodTerm} extracts method implementations from the dictionary
+ *    stored here.
+ *
+ * ---------------------------------------------------------------------------
+ * Errors avoided by this binding
+ * ---------------------------------------------------------------------------
+ * - Prevents duplicate trait instances (checked elsewhere during `addTraitImpl`)
+ * - Allows precise error reporting when a required trait has **no**
+ *   implementation (`missing_trait_impl`)
+ *
+ * ---------------------------------------------------------------------------
+ * @param trait - The trait name implemented (e.g. `"Eq"`)
+ * @param type - The type for which the instance is defined
+ * @param dict - The dictionary term providing method implementations
+ *
+ * @returns A `TraitImplBinding` suitable for insertion into `state.ctx`
+ *
+ * ---------------------------------------------------------------------------
+ * @example Registering an implementation:
+ * ```ts
+ * const eqInt = dictTerm("Eq", conType("Int"), [
+ *   ["eq", lamTerm("x", Int, lamTerm("y", Int, conTerm("true", Bool)))]
+ * ]);
+ *
+ * traitImplBinding("Eq", conType("Int"), eqInt);
  * ```
  *
- * @example Resolution usage
- * ```ts
- * import { freshState, addType, addTraitDef, traitImplBinding, dictTerm, checkTraitImplementation, conType, starKind, arrowType, lamTerm, varTerm, conTerm, showType } from "system-f-omega";
- *
- * let state = freshState();
- * state = addType(state, "Int", starKind).ok;
- * state = addTraitDef(state, "Eq", "A", starKind, [["eq", arrowType(conType("A"), conType("Bool"))]]).ok;
- * const dict = dictTerm("Eq", conType("Int"), [["eq", lamTerm("x", conType("Int"), conTerm("true", conType("Bool")))]]);
- * state.ctx.push(traitImplBinding("Eq", conType("Int"), dict));
- *
- * const result = checkTraitImplementation(state, "Eq", conType("Int"));
- * console.log("resolved:", "ok" in result);  // true
- * ```
- *
- * @see {@link addTraitImpl} Stateful adder
- * @see {@link checkTraitImplementation} Uses impls
+ * @see {@link traitDefBinding} Declares traits
  * @see {@link dictTerm} Dictionary construction
+ * @see {@link checkTraitImplementation} Resolves trait instances
+ * @see {@link instantiateWithTraits} Instantiates bounded foralls
  */
 export const traitImplBinding = (trait: string, type: Type, dict: Term) => ({
   trait_impl: { trait, type, dict },
 });
 
 /**
- * Constructs dictionary binding `{ dict: { name, trait, type } }`.
+ * Constructs a **dictionary binding** for the typing context (`Γ`).
  *
- * **Purpose**: Binds dict var to trait+type in context (trait_lam env).
- * Used in `addDict`.
-
- * @param name - Dict var (`"eqInt"`)
- * @param trait - Trait name (`"Eq"`)
- * @param type - Type param (`Int`)
- * @returns Dict binding
+ * A dictionary binding introduces a **local dictionary variable** that provides
+ * evidence that a particular type implements a particular trait:
  *
- * @example Basic construction
+ *     name : Dict<trait, type>
+ *
+ * These bindings occur in *local scopes*, such as:
+ * - inside a `traitLamTerm` (trait lambda)
+ * - inside explicit trait applications
+ * - when passing dictionaries manually
+ *
+ * They are **not** global trait instances — those are stored using
+ * {@link traitImplBinding}. Instead, a `dictBinding` behaves like a
+ * term‑level variable that carries trait evidence.
+ *
+ * ---------------------------------------------------------------------------
+ * Why this exists
+ * ---------------------------------------------------------------------------
+ * When typechecking trait‑bounded functions:
+ *
  * ```ts
- * import { dictBinding, conType, showBinding } from "system-f-omega";
- *
- * const dictBind = dictBinding("eqInt", "Eq", conType("Int"));
- * console.log(showBinding(dictBind));  // "Dict: eqInt = Trait Eq : Int"
+ * ΛSelf where Eq<Self>. body
  * ```
  *
- * @example Context usage (addDict equivalent)
- * ```ts
- * import { freshState, addType, addDict, dictTerm, conTerm, conType, starKind, showContext } from "system-f-omega";
- * import { arrowType, lamTerm, varTerm } from "system-f-omega";
+ * the typechecker introduces a binding:
  *
- * let state = freshState();
- * state = addType(state, "Int", starKind).ok;
- * state = addType(state, "Bool", starKind).ok;
- * const dt = dictTerm("Eq", conType("Int"), [["eq", lamTerm("x", conType("Int"), conTerm("true", conType("Bool")))]]);
- * state = addDict(state, "eqInt", dt).ok;
- * console.log(showContext(state.ctx));
- * // "...\nDict: eqInt = Trait Eq : Int"
+ *     dictVar : Dict<Eq, Self>
+ *
+ * inside the body’s context. This allows:
+ * - accessing trait methods via {@link traitMethodTerm} (e.g. `d.eq`)
+ * - passing the dictionary to nested trait‑polymorphic calls
+ *
+ * Likewise, explicit dictionary arguments in `traitAppTerm` also introduce
+ * these bindings when checking branch bodies.
+ *
+ * ---------------------------------------------------------------------------
+ * Structure
+ * ---------------------------------------------------------------------------
+ * - `name`  — local dictionary variable name (e.g. `"d"`, `"eqSelf"`)
+ * - `trait` — the trait this dictionary provides evidence for
+ * - `type`  — the type for which the evidence applies
+ *
+ * During typechecking, the dictionary’s *actual* implementation is carried by
+ * the term itself (usually as a `dictTerm`).
+ * This binding only records the *type of the dictionary*.
+ *
+ * ---------------------------------------------------------------------------
+ * @param name - The name of the dictionary variable
+ * @param trait - The trait being implemented
+ * @param type - The concrete type the trait applies to
+ *
+ * @returns A `DictBinding` node added to the context
+ *
+ * ---------------------------------------------------------------------------
+ * @example Inside a trait lambda:
+ * ```ts
+ * // ΛSelf where Eq<Self>. body
+ * dictBinding("d", "Eq", varType("Self"));
+ * // => d : Dict<Eq, Self>
  * ```
  *
- * @example Trait method lookup
+ * @example Used with trait application:
  * ```ts
- * import { freshState, addType, addTraitDef, dictBinding, inferType, traitMethodTerm, conType, starKind, arrowType, varType, showType } from "system-f-omega";
- *
- * let state = freshState();
- * state = addType(state, "Int", starKind).ok;
- * state = addType(state, "Bool", starKind).ok;
- * state = addTraitDef(state, "Eq", "A", starKind, [["eq", arrowType(conType("A"), conType("Bool"))]]).ok;
- * state.ctx.push(dictBinding("eqInt", "Eq", conType("Int")));
- *
- * const method = traitMethodTerm({ var: "eqInt" }, "eq");
- * const result = inferType(state, method);
- * console.log("method:", showType(result.ok));  // "(Int → Bool)"
+ * const app = traitAppTerm(f, Int, [eqIntDict]);
+ * // internally introduces: eqInt : Dict<Eq, Int>
  * ```
  *
- * @see {@link addDict} Stateful adder
- * @see {@link traitMethodTerm} Uses dict bindings
- * @see {@link inferTraitMethodType} Lookup
+ * @see {@link traitLamTerm} Introduces dictionary bindings implicitly
+ * @see {@link traitMethodTerm} Accessing trait methods from a dict variable
+ * @see {@link traitImplBinding} Global (non-local) trait implementations
  */
 export const dictBinding = (name: string, trait: string, type: Type) => ({
   dict: { name, trait, type },
 });
 
 /**
- * Constructs enum definition binding for context.
+ * Constructs an **enum (algebraic data type) definition binding** for the
+ * typing context (`Γ`).
  *
- * **Purpose**: Defines ADTs: `enum Option<T::*>: None | Some(T)`.
- * Used in `addEnum`.
-
- * @param name - Enum name (`"Option"`)
- * @param kind - Enum kind (`* → *`)
- * @param params - Param names `["T"]`
- * @param variants - Cases `[[label, scheme], ...]`
- * @param recursive - Recursive? (defaults `false`)
- * @returns Enum binding
+ * An enum definition introduces a **nominal sum type** with:
+ * - a name         (`"Option"`, `"Either"`, `"List"`)
+ * - a kind         (`* → *`, `* → (* → *)`, …)
+ * - type parameters (`["T"]`, `["A","B"]`)
+ * - a list of **variants** (constructors), each with a payload type scheme
+ * - an optional `recursive` flag for mutually or self‑referential definitions
  *
- * @example Basic non-recursive
+ * Example:
  * ```ts
- * import { enumDefBinding, tupleType, conType, starKind, showBinding } from "system-f-omega";
+ * enum Option<T :: *> {
+ *   None : ()
+ *   Some : T
+ * }
  *
- * const optionDef = enumDefBinding("Option", arrowKind(starKind, starKind), ["T"], [
- *   ["None", tupleType([])],
- *   ["Some", conType("T")]
- * ]);
- * console.log(showBinding({ enum: optionDef }));
- * // "Enum: Option = { name: 'Option', kind: (* → *), params: ['T'], ... }"
+ * // Binding:
+ * enumDefBinding(
+ *   "Option",
+ *   arrowKind(starKind, starKind),
+ *   ["T"],
+ *   [
+ *     ["None", tupleType([])],
+ *     ["Some", varType("T")]
+ *   ],
+ *   false
+ * )
  * ```
  *
- * @example Recursive list
- * ```ts
- * import { enumDefBinding, tupleType, appType, conType, varType, starKind, showBinding } from "system-f-omega";
- * import { arrowKind } from "system-f-omega";
+ * ---------------------------------------------------------------------------
+ * Role of enum bindings
+ * ---------------------------------------------------------------------------
+ * Enum definitions are used by:
+ * - **Normalization** (`normalizeType`)
+ *   to expand nominal enums into structural variants:
+ *   ```
+ *   Option<Int>  ⇒  <None: () | Some: Int>
+ *   ```
  *
- * const listDef = enumDefBinding("List", arrowKind(starKind, starKind), ["T"], [
- *   ["Nil", tupleType([])],
- *   ["Cons", tupleType([conType("T"), appType(conType("List"), varType("T"))])]
- * ], true);
- * console.log("recursive:", listDef.recursive);  // true
+ * - **Pattern checking** (`checkPattern`)
+ *   to validate variant labels during:
+ *   ```
+ *   Some(x)
+ *   ```
+ *
+ * - **Exhaustiveness checking** (`checkExhaustive`)
+ *   to determine which constructors exist.
+ *
+ * - **Variant injection** (`inferInjectType`)
+ *   to verify payload types for constructors.
+ *
+ * - **Trait implementations**
+ *   to unify polymorphic instance heads against enum applications.
+ *
+ * ---------------------------------------------------------------------------
+ * Parameters
+ * ---------------------------------------------------------------------------
+ * - `name` — name of the enum (e.g. `"Option"`)
+ * - `kind` — the kind of the type constructor (e.g. `* → *`)
+ * - `params` — list of type parameter names
+ * - `variants` — list of `[label, FieldScheme]` pairs describing constructors:
+ *     ```
+ *     ["Some", varType("T")]
+ *     ["Cons", tupleType([T, List<T>])]
+ *     ```
+ * - `recursive` — whether the enum may reference itself (affects normalization)
+ *
+ * ---------------------------------------------------------------------------
+ * Recursive enums
+ * ---------------------------------------------------------------------------
+ * If `recursive = true`, normalization produces a `μ`‑type:
+ *
+ * ```ts
+ * List<T> =
+ *   Nil  : ()
+ *   Cons : (T, List<T>)
+ *
+ * normalize(List<Int>)
+ *   ⇒ μX. <Nil: () | Cons: (Int, X)>
  * ```
  *
- * @example Context usage (addEnum equivalent)
- * ```ts
- * import { freshState, addType, addEnum, showContext, starKind } from "system-f-omega";
+ * ---------------------------------------------------------------------------
+ * @returns An `EnumDefBinding` node placed in the context
  *
- * let state = freshState();
- * state = addType(state, "Int", starKind).ok;
- * state = addEnum(state, "Color", [], [], [["Red", { tuple: [] }]]).ok;
- * console.log(showContext(state.ctx));
- * // "...\nEnum: Color = { name: 'Color', ... }"
+ * ---------------------------------------------------------------------------
+ * @example Simple enum:
+ * ```ts
+ * enumDefBinding(
+ *   "Bool",
+ *   starKind,
+ *   [],
+ *   [
+ *     ["true",  tupleType([])],
+ *     ["false", tupleType([])]
+ *   ]
+ * );
  * ```
  *
- * @example Normalization after enum
+ * @example Recursive enum:
  * ```ts
- * import { freshState, addType, addEnum, normalizeType, appType, conType, starKind, showType } from "system-f-omega";
- *
- * let state = freshState();
- * state = addType(state, "Int", starKind).ok;
- * state = addEnum(state, "Option", ["T"], [starKind], [["None", { tuple: [] }], ["Some", conType("T")]]).ok;
- *
- * const optInt = appType(conType("Option"), conType("Int"));
- * const expanded = normalizeType(state, optInt);
- * console.log("expanded:", showType(expanded));  // "<None: ⊥ | Some: Int>"
+ * enumDefBinding(
+ *   "List",
+ *   arrowKind(starKind, starKind),
+ *   ["T"],
+ *   [
+ *     ["Nil",  tupleType([])],
+ *     ["Cons", tupleType([varType("T"), appType(conType("List"), varType("T"))])]
+ *   ],
+ *   true
+ * );
  * ```
  *
- * @see {@link addEnum} Stateful adder
- * @see {@link normalizeType} Expands enums
- * @see {@link variantType} Structural form
+ * @see {@link normalizeType} Expands enums to structural variants
+ * @see {@link checkPattern} Validates variant labels
+ * @see {@link checkExhaustive} Exhaustiveness analysis
+ * @see {@link inferInjectType} Variant injection typing
  */
 export const enumDefBinding = (
   name: string,
@@ -9413,68 +11163,110 @@ export const enumDefBinding = (
 });
 
 /**
- * Renames free vars/cons/labels/traits via `ren` map (binder-safe).
+ * Renames **type‑level identifiers** inside a type according to a provided
+ * rename map.
  *
- * **Purpose**: Module import renaming, alpha-conversion. Skips bound vars.
- * Renames: vars/cons/labels/traits. Structural recurse.
+ * This is used during **module imports**, **aliasing**, and **name rewriting**
+ * to avoid collisions and apply import‑side renaming rules.
  *
- * Used in module system (`importModule`).
+ * The renaming map `ren` can include:
+ * - type constructor names   (`List → MyList`)
+ * - type variable names      (`A → X`)
+ * - variant / record labels  (`Left → L`, `x → xCoord`)
+ *   (labels are handled by callers; this function renames only type-level names)
  *
- * @param state - Checker state (unused)
- * @param ty - Input type
- * @param ren - Rename map `Map<old, new>`
- * @param bound - Bound vars set (defaults empty)
- * @returns Renamed type
+ * ---------------------------------------------------------------------------
+ * What gets renamed?
+ * ---------------------------------------------------------------------------
+ * - **Type constructors** (`ConType`)
+ * - **Free type variables** (`VarType`) that are *not* bound by a quantifier
+ * - Names inside:
+ *   - type applications
+ *   - records
+ *   - variants
+ *   - tuples
+ *   - `forall`, `bounded_forall`, `lam`, and `mu` *bodies* (but not their binders)
  *
- * @example Basic var rename
+ * ---------------------------------------------------------------------------
+ * Binder safety
+ * ---------------------------------------------------------------------------
+ * The `bound` set tracks **type variables introduced by binders**:
+ * - `∀A::κ. ...`
+ * - `λA::κ. ...`
+ * - `μA. ...`
+ *
+ * These should **not** be renamed, because renaming them would break scoping
+ * or change the meaning of the type.
+ *
+ * For example:
  * ```ts
- * import { renameType, varType, arrowType, showType } from "system-f-omega";
- *
- * const ren = new Map([["a", "X"]]);
- * const ty = arrowType(varType("a"), varType("b"));
- * const renamed = renameType({ ctx: [], meta: { counter: 0, kinds: new Map(), solutions: new Map() } }, ty, ren);
- * console.log(showType(renamed));  // "(X → b)"
+ * // renaming A → X
+ * ∀A. A → B
+ * // A is bound → remains A
+ * // B may be renamed
  * ```
  *
- * @example Skip bound binder
- * ```ts
- * import { renameType, forallType, arrowType, varType, starKind, showType } from "system-f-omega";
+ * ---------------------------------------------------------------------------
+ * Why this function exists
+ * ---------------------------------------------------------------------------
+ * Module imports often allow renaming:
+ * - type constructors (`MyModule.List → MList`)
+ * - parameters of aliases
+ * - type names referenced inside terms and patterns
  *
- * const ren = new Map([["a", "X"]]);
- * const bound = new Set(["a"]);
- * const poly = forallType("a", starKind, arrowType(varType("a"), varType("b")));
- * const renamed = renameType({ ctx: [], meta: { counter: 0, kinds: new Map(), solutions: new Map() } }, poly, ren, bound);
- * console.log(showType(renamed));  // "∀a::*. (a → b)"
+ * `renameType` ensures types remain consistent and binder‑safe while applying
+ * such renamings.
+ *
+ * It is used by:
+ * - `renameBinding`
+ * - `renameTerm`
+ * - `renamePattern`
+ * - `importModule`
+ *
+ * ---------------------------------------------------------------------------
+ * Algorithm overview
+ * ---------------------------------------------------------------------------
+ * 1. Recursively walk the structure of `ty`
+ * 2. When encountering a *free* type variable or constructor:
+ *    - If it appears in `ren`, rename it
+ * 3. When encountering a binder (`∀`, `λ`, `μ`):
+ *    - Add its variable to `bound`
+ *    - Recurse into its body without renaming the binder
+ *
+ * ---------------------------------------------------------------------------
+ * @param state - Current typechecker state (used for normalization context)
+ * @param ty - The type to rename
+ * @param ren - A map of `oldName → newName` renamings
+ * @param bound - Set of type variables currently bound (internal use)
+ *
+ * @returns A new type with all eligible names renamed, respecting binders
+ *
+ * ---------------------------------------------------------------------------
+ * @example Rename a type constructor:
+ * ```ts
+ * renameType(state, conType("List"), new Map([["List", "Vec"]]));
+ * // => Vec
  * ```
  *
- * @example Record/variant labels
+ * @example Rename free vars but not bound ones:
  * ```ts
- * import { renameType, recordType, variantType, showType } from "system-f-omega";
- * import { conType } from "system-f-omega";
- *
- * const ren = new Map([["x", "field"], ["Left", "L"]]);
- * const rec = recordType([["x", conType("Int")], ["y", conType("Bool")]]);
- * const renamedRec = renameType({ ctx: [], meta: { counter: 0, kinds: new Map(), solutions: new Map() } }, rec, ren);
- * console.log(showType(renamedRec));  // "{field: Int, y: Bool}"
- *
- * const varn = variantType([["Left", conType("Int")], ["Right", conType("Bool")]]);
- * const renamedVarn = renameType({ ctx: [], meta: { counter: 0, kinds: new Map(), solutions: new Map() } }, varn, ren);
- * console.log(showType(renamedVarn));  // "<L: Int | Right: Bool>"
+ * renameType(
+ *   state,
+ *   forallType("A", starKind, arrowType(varType("A"), varType("B"))),
+ *   new Map([["A", "X"], ["B", "Y"]])
+ * );
+ * // => ∀A::*. (A → Y)
+ * // (A is bound; B is renamed)
  * ```
  *
- * @example Bounded forall traits
+ * @example Rename inside applications and structural types:
  * ```ts
- * import { renameType, boundedForallType, showType } from "system-f-omega";
- * import { varType, starKind } from "system-f-omega";
- *
- * const ren = new Map([["Eq", "PartialEq"]]);
- * const bounded = boundedForallType("a", starKind, [{ trait: "Eq", type: varType("a") }], varType("a"));
- * const renamed = renameType({ ctx: [], meta: { counter: 0, kinds: new Map(), solutions: new Map() } }, bounded, ren);
- * console.log(showType(renamed));  // "∀a::* where PartialEq<a>. a"
+ * renameType(state,
+ *   appType(conType("Either"), varType("x")),
+ *   new Map([["Either", "Result"], ["x", "X"]])
+ * );
+ * // => Result<X>
  * ```
- *
- * @see {@link importModule} Module renaming
- * @see {@link renameTerm} Term counterpart
  */
 export function renameType(
   state: TypeCheckerState,
@@ -9597,72 +11389,117 @@ export function renameType(
 }
 
 /**
- * Renames free vars/cons/labels/traits in term (binder-safe).
+ * Recursively renames **term‑level identifiers** (variables, dictionary names,
+ * labels, etc.) inside a term according to a provided rename map.
  *
- * **Purpose**: Module imports, alpha-conversion. Skips bound vars.
- * Renames: vars/cons/labels/traits/methods. Calls `renameType`.
+ * This is used during **module imports**, **aliasing**, and **qualified name
+ * rewriting** to avoid naming collisions and ensure imported code uses the
+ * caller’s naming conventions.
  *
- * Used with `renameType` in `importModule`.
+ * Like all renamers, `renameTerm` is **binder‑aware**:
+ * it will rename *free* variables but will **not** rename variables that are
+ * introduced (bound) inside the term.
  *
- * @param state - Checker state (`renameType`)
- * @param term - Input term
- * @param ren - Rename map `Map<old,new>`
- * @param bound - Bound vars set (defaults empty)
- * @returns Renamed term
+ * ---------------------------------------------------------------------------
+ * What gets renamed?
+ * ---------------------------------------------------------------------------
+ * - Free **term variables** (`VarTerm`)
+ * - Bound dictionary variables used by trait method access (`traitMethodTerm`)
+ * - Labels inside records, variants, and patterns (delegated to callers)
+ * - Anything in the term structure referencing a name mapped by `ren`
  *
- * @example Basic var rename
+ * What does *not* get renamed?
+ * - Variables **introduced by the term itself**, such as:
+ *   - lambda parameters (`λx. ...`)
+ *   - let‑bound variables (`let x = ...`)
+ *   - type‑level binders inside `tylamTerm`, `traitLamTerm`
+ *   - dictionary binders inside trait lambdas
+ *
+ * These names are added to the `bound` set so they won’t be renamed.
+ *
+ * ---------------------------------------------------------------------------
+ * Why renaming is needed
+ * ---------------------------------------------------------------------------
+ * During `importModule`, the importer may specify renaming rules such as:
+ *
  * ```ts
- * import { renameTerm, varTerm, arrowType, showTerm, freshState } from "system-f-omega";
- *
- * const state = freshState();
- * const ren = new Map([["x", "y"]]);
- * const app = { app: { callee: varTerm("f"), arg: varTerm("x") } };
- * const renamed = renameTerm(state, app, ren);
- * console.log(showTerm(renamed));  // "(f y)"
+ * aliases = { terms: { oldName: "newName" }, labels: {...}, types: {...} }
  * ```
  *
- * @example Skip bound lambda
- * ```ts
- * import { freshState, renameTerm, lamTerm, varTerm, conType, showTerm } from "system-f-omega";
+ * `renameTerm` applies the `terms` map to all *use sites* in a term, ensuring:
+ * - no name collisions occur when merging modules
+ * - imported code refers to the correct bindings in the new context
+ * - local scoping and binding structure remain intact
  *
- * const state = freshState();
- * const ren = new Map([["x", "y"]]);
- * const id = lamTerm("x", conType("Int"), varTerm("x"));
- * const renamed = renameTerm(state, id, ren);
- * console.log(showTerm(renamed));  // "λx:Int.x" (skipped!)
+ * It is the term‑level counterpart to:
+ * - {@link renameType}
+ * - {@link renamePattern}
+ *
+ * ---------------------------------------------------------------------------
+ * Binder safety
+ * ---------------------------------------------------------------------------
+ * The `bound` set tracks variable names introduced inside the term.
+ *
+ * For example:
+ *
+ * ```ts
+ * lamTerm("x", Int, varTerm("x"))
  * ```
  *
- * @example Record/trait labels
+ * Even if the rename map contains `"x" → "y"`, the *inner* `x` is bound and
+ * must **not** be renamed or it would change the semantics:
+ *
+ *     λx. x    ↛   λy. x     (incorrect)
+ *
+ * Instead:
+ * - binder is added to `bound`
+ * - all occurrences of that binder within its scope are left unchanged
+ *
+ * ---------------------------------------------------------------------------
+ * High‑level algorithm
+ * ---------------------------------------------------------------------------
+ * 1. If the term is a variable and not bound:
+ *        rename if `ren` contains the name
+ * 2. If the term introduces a binder:
+ *        add binder name to `bound` and recurse inside with updated `bound`
+ * 3. For composite expressions:
+ *        recursively rename all subterms and embedded types
+ * 4. Preserve all binder structure and semantics
+ *
+ * ---------------------------------------------------------------------------
+ * @param state - The typechecker state (used for type renaming and normalization)
+ * @param term - The term whose identifiers should be renamed
+ * @param ren - A map of `oldName → newName` renamings
+ * @param bound - The set of names currently bound (internal use)
+ *
+ * @returns A new term with free identifiers renamed according to `ren`
+ *
+ * ---------------------------------------------------------------------------
+ * @example Renaming free variables:
  * ```ts
- * import { renameTerm, recordTerm, dictTerm, showTerm } from "system-f-omega";
- * import { conTerm, conType, freshState } from "system-f-omega";
- *
- * const state = freshState();
- * const ren = new Map([["x", "field"], ["eq", "equals"]]);
- * const rec = recordTerm([["x", conTerm("1", conType("Int"))]]);
- * const renamedRec = renameTerm(state, rec, ren);
- * console.log(showTerm(renamedRec));  // "{field = 1}"
- *
- * const dict = dictTerm("Eq", conType("Int"), [["eq", conTerm("impl", conType("Bool"))]]);
- * const renamedDict = renameTerm(state, dict, ren);
- * console.log(showTerm(renamedDict));  // "dict Eq<Int> { equals = impl }"
+ * renameTerm(state, varTerm("x"), new Map([["x", "y"]]));
+ * // => y
  * ```
  *
- * @example Trait lambda (bounds)
+ * @example Bound variables are not renamed:
  * ```ts
- * import { renameTerm, traitLamTerm, showTerm } from "system-f-omega";
- * import { freshState, starKind } from "system-f-omega";
- *
- * const state = freshState();
- * const ren = new Map([["Eq", "PartialEq"]]);
- * const traitLam = traitLamTerm("d", "Eq", "Self", starKind, [{ trait: "Eq", type: { var: "Self" } }], { var: "body" });
- * const renamed = renameTerm(state, traitLam, ren);
- * console.log(showTerm(renamed));  // "ΛSelf::* where PartialEq<Self>. body"
+ * const t = lamTerm("x", Int, varTerm("x"));
+ * renameTerm(state, t, new Map([["x", "y"]]));
+ * // => λx:Int. x    (unchanged)
  * ```
  *
- * @see {@link renameType} Type counterpart
- * @see {@link importModule} Module renaming
- * @see {@link renamePattern} Pattern counterpart
+ * @example Renaming inside nested terms:
+ * ```ts
+ * renameTerm(state,
+ *   appTerm(varTerm("f"), varTerm("x")),
+ *   new Map([["f", "foo"], ["x", "arg"]])
+ * );
+ * // => (foo arg)
+ * ```
+ *
+ * @see {@link renameType} Renames in types
+ * @see {@link renamePattern} Renames inside patterns
+ * @see {@link importModule} Applies renaming when importing modules
  */
 export function renameTerm(
   state: TypeCheckerState,
@@ -9859,75 +11696,130 @@ export function renameTerm(
 }
 
 /**
- * Renames free vars/cons/labels in pattern (binder-safe).
+ * Renames identifiers **inside a pattern** according to a rename map,
+ * while respecting **binding structure**.
  *
- * **Purpose**: Module imports. Skips wildcards, binds vars.
+ * This is the pattern‑level analogue of {@link renameTerm} and
+ * {@link renameType}. It is used primarily during **module import renaming**
+ * to avoid name collisions and rewrite field/constructor names consistently.
  *
- * @param state - Checker state (`renameType`)
- * @param pat - Input pattern
- * @param ren - Rename map `Map<old,new>`
- * @param bound - Bound vars set
- * @returns Renamed pattern
+ * ---------------------------------------------------------------------------
+ * What gets renamed?
+ * ---------------------------------------------------------------------------
+ * - **Variable patterns** (`x`)
+ *   Renamed unless the variable is already in the `bound` set.
  *
- * @example Var rename
+ * - **Record labels** (`{ x: p }`)
+ *   Labels are renamed if present in the `ren` map (usually via `aliases.labels`)
+ *
+ * - **Variant constructor labels** (`Some(x)`)
+ *   The `Some` is renamed if mapped in `ren`.
+ *
+ * - **Subpatterns**
+ *   Recursively renamed using the same renaming map.
+ *
+ * ---------------------------------------------------------------------------
+ * What does *not* get renamed?
+ * ---------------------------------------------------------------------------
+ * Pattern binders introduce new *bound variables* which should not be renamed
+ * inside their scope:
+ *
  * ```ts
- * import { renamePattern, varPattern, showPattern } from "system-f-omega";
- * import { freshState } from "./helpers.js";
- *
- * const state = freshState();
- * const ren = new Map([["x", "y"]]);
- * const bound = new Set();
- * const renamed = renamePattern(state, varPattern("x"), ren, bound);
- * console.log(showPattern(renamed));  // "y"
+ * variantPattern("Some", varPattern("x"))
+ * // 'x' is a binder — recursive renaming should NOT rename occurrences of 'x'
  * ```
  *
- * @example Con/record labels
+ * These binder names are added to the `bound` set so renaming rules will not
+ * accidentally overwrite them.
+ *
+ * The `bound` set is updated similarly to how `renameTerm` handles
+ * `lamTerm`/`letTerm` binders.
+ *
+ * ---------------------------------------------------------------------------
+ * Why this function exists
+ * ---------------------------------------------------------------------------
+ * During module import, users may specify renaming rules such as:
+ *
  * ```ts
- * import { renamePattern, conPattern, recordPattern, showPattern } from "system-f-omega";
- * import { freshState, conType } from "./helpers.js";
- *
- * const state = freshState();
- * const ren = new Map([["None", "Empty"], ["x", "field"]]);
- * const bound = new Set();
- *
- * const conRen = renamePattern(state, conPattern("None", conType("Unit")), ren, bound);
- * console.log(showPattern(conRen));  // "Empty"
- *
- * const recRen = renamePattern(state, recordPattern([["x", varPattern("a")]]), ren, bound);
- * console.log(showPattern(recRen));  // "{field: a}"
+ * aliases = {
+ *   labels: { Left: "L", right: "r" },
+ *   terms: { hd: "head" },
+ *   types: { Option: "Maybe" },
+ * };
  * ```
  *
- * @example Variant/tuple nested
+ * `renamePattern` is responsible for rewriting **label** and **variable**
+ * occurrences inside patterns so they correctly reference imported names.
+ *
+ * It is crucial for:
+ * - avoiding pattern label collisions
+ * - keeping patterns aligned with renamed variant/record definitions
+ * - ensuring the match cases use the correct labels after import
+ *
+ * ---------------------------------------------------------------------------
+ * Binder‑aware behavior
+ * ---------------------------------------------------------------------------
+ * The `bound` set tracks pattern variables **introduced** by:
+ * - `varPattern("x")`
+ * - nested variable bindings in record/tuple/variant patterns
+ *
+ * Variables in `bound` are *never* renamed:
+ *
  * ```ts
- * import { renamePattern, variantPattern, tuplePattern, showPattern } from "system-f-omega";
- * import { freshState } from "./helpers.js";
+ * renamePattern(state,
+ *   recordPattern([["x", varPattern("y")]]),
+ *   ren = Map([["y", "z"]]),
+ *   bound = new Set()
+ * );
  *
- * const state = freshState();
- * const ren = new Map([["Cons", "Node"], ["hd", "head"]]);
- * const bound = new Set();
- *
- * const varRen = renamePattern(state, variantPattern("Cons", varPattern("hd")), ren, bound);
- * console.log(showPattern(varRen));  // "Node(head)"
- *
- * const tupRen = renamePattern(state, tuplePattern([varPattern("hd"), varPattern("tl")]), ren, bound);
- * console.log(showPattern(tupRen));  // "(head, tl)"
+ * // result: { x: y }   (y is bound; left unchanged)
  * ```
  *
- * @example Wildcard no-op
- * ```ts
- * import { renamePattern, wildcardPattern, showPattern } from "system-f-omega";
- * import { freshState } from "./helpers.js";
+ * ---------------------------------------------------------------------------
+ * @param state - Typechecker state (passed for consistency; not always needed)
+ * @param pat - The pattern to rename
+ * @param ren - A map of identifier renamings (`oldName → newName`)
+ * @param bound - Set of currently bound pattern variables (internal)
  *
- * const state = freshState();
- * const ren = new Map([["x", "y"]]);
- * const bound = new Set();
- * const renamed = renamePattern(state, wildcardPattern(), ren, bound);
- * console.log(showPattern(renamed));  // "_"
+ * @returns A new pattern with free names renamed according to `ren`
+ *
+ * ---------------------------------------------------------------------------
+ * @example Renaming a constructor label:
+ * ```ts
+ * renamePattern(
+ *   state,
+ *   variantPattern("Some", varPattern("x")),
+ *   new Map([["Some", "Just"]]),
+ *   new Set()
+ * );
+ * // => Just(x)
  * ```
  *
- * @see {@link renameType} Type counterpart
- * @see {@link renameTerm} Term counterpart
- * @see {@link importModule} Module usage
+ * @example Renaming variable patterns:
+ * ```ts
+ * renamePattern(
+ *   state,
+ *   varPattern("x"),
+ *   new Map([["x", "y"]]),
+ *   new Set()
+ * );
+ * // => y
+ * ```
+ *
+ * @example Bound variables not renamed:
+ * ```ts
+ * renamePattern(
+ *   state,
+ *   recordPattern([["x", varPattern("a")]]),
+ *   new Map([["a", "b"]]),
+ *   new Set(["a"])
+ * );
+ * // => { x: a }   // 'a' is bound, so not renamed
+ * ```
+ *
+ * @see {@link renameTerm} Term‑level renaming
+ * @see {@link renameType} Type‑level renaming
+ * @see {@link importModule} Applies renaming to imported definitions
  */
 export function renamePattern(
   state: TypeCheckerState,
@@ -9978,69 +11870,118 @@ export function renamePattern(
 }
 
 /**
- * Renames binding identifiers for module imports (all variants).
+ * Renames the identifier(s) inside a **context binding** according to a rename map.
  *
- * **Purpose**: Applies `ren` map to bindings in `importModule`.
- * Renames: names/params/traits/methods/types. Calls `renameType/Term`.
-
- * @param state - Checker state (`renameType`)
- * @param b - Input binding
- * @param ren - Rename map `Map<old,new>`
- * @returns Renamed binding
+ * This is part of the module‑import renaming system.
+ * When importing a module, users may supply alias maps to rename:
+ * - type constructors
+ * - term variables
+ * - trait names
+ * - enum constructors
+ * - dictionary variables
  *
- * @example Term/type bindings
+ * `renameBinding` applies these renaming rules to a single binding in the
+ * typing context (`Γ`), producing a new binding with updated names.
+ *
+ * ---------------------------------------------------------------------------
+ * What this function renames
+ * ---------------------------------------------------------------------------
+ * Depending on the kind of binding (`Binding` is a tagged union), the rename map
+ * may apply to:
+ *
+ * 1. **TermBinding**
+ *    Renames the term variable name and renames inside its type via {@link renameType}.
+ *
+ * 2. **TypeBinding**
+ *    Renames the type constructor or type variable name using `ren`.
+ *
+ * 3. **TraitDefBinding**
+ *    Renames the **trait name**, and renames types in all method signatures.
+ *
+ * 4. **TraitImplBinding**
+ *    Renames:
+ *    - the trait name
+ *    - the implemented type (via `renameType`)
+ *    - all method implementations inside the dictionary term (via {@link renameTerm})
+ *
+ * 5. **DictBinding**
+ *    Renames:
+ *    - the dictionary variable name
+ *    - the trait name
+ *    - the associated type (via `renameType`)
+ *
+ * 6. **EnumDefBinding**
+ *    Renames:
+ *    - enum name
+ *    - variant labels
+ *      (labels renamed using the caller's label alias map)
+ *    - type parameters (only if free, not bound)
+ *    - variant payload types (via `renameType`)
+ *
+ * 7. **TypeAliasBinding**
+ *    Renames:
+ *    - alias name
+ *    - free parameter names (only if not shadowed)
+ *    - the alias body (via `renameType`)
+ *
+ * ---------------------------------------------------------------------------
+ * What *doesn't* get renamed?
+ * ---------------------------------------------------------------------------
+ * - Bound type variables (e.g. alias parameters or `∀A` binders)
+ * - Internal dictionary variable names bound by a trait lambda
+ * - Labels inside patterns or terms (those are handled by callers)
+ *
+ * This function focuses solely on **context entries**, not full terms or patterns.
+ *
+ * ---------------------------------------------------------------------------
+ * Why this exists
+ * ---------------------------------------------------------------------------
+ * During module imports, users can write:
+ *
  * ```ts
- * import { renameBinding, termBinding, typeBinding, showBinding } from "system-f-omega";
- * import { conType, starKind } from "system-f-omega";
- * import { freshState } from "./helpers.js";
- *
- * const state = freshState();
- * const ren = new Map([["x", "y"], ["Int", "Number"]]);
- *
- * const termB = renameBinding(state, termBinding("x", conType("Int")), ren);
- * console.log(showBinding(termB));  // "Term: y = Number"
- *
- * const typeB = renameBinding(state, typeBinding("Int", starKind), ren);
- * console.log(showBinding(typeB));  // "Type: Number = *"
+ * import Foo as Bar (
+ *   types = { List: "Vec" },
+ *   terms = { head: "first" },
+ *   traits = { Show: "Printable" },
+ *   labels = { Cons: "Node", Nil: "Empty" }
+ * )
  * ```
  *
- * @example TraitDef/impl
+ * These renaming rules must apply *everywhere*:
+ * - in binding names
+ * - in types stored inside bindings
+ * - inside dictionaries and trait definitions
+ *
+ * `renameBinding` ensures each binding is correctly rewritten before merging
+ * contexts.
+ *
+ * ---------------------------------------------------------------------------
+ * @param state - Typechecker state (used by type and term renamers)
+ * @param b - The binding to rename
+ * @param ren - A map of `oldName → newName` renamings
+ *
+ * @returns A new binding with identifiers appropriately renamed
+ *
+ * ---------------------------------------------------------------------------
+ * @example Rename a type binding:
  * ```ts
- * import { renameBinding, traitDefBinding, traitImplBinding, showBinding } from "system-f-omega";
- * import { starKind, arrowType, varType, dictTerm, conType, freshState } from "./helpers.js";
- *
- * const state = freshState();
- * const ren = new Map([["Eq", "PartialEq"], ["eq", "equals"]]);
- *
- * const traitD = renameBinding(state, traitDefBinding("Eq", "A", starKind, [["eq", arrowType(varType("A"), varType("Bool"))]]), ren);
- * console.log(showBinding({ trait_def: traitD }));
- * // "Trait: PartialEq = TraitDef (PartialEq A = *\n  equals : (A → Bool))"
- *
- * const impl = renameBinding(state, traitImplBinding("Eq", conType("Int"), dictTerm("Eq", conType("Int"), [])), ren);
- * console.log(showBinding(impl));  // "Impl: PartialEq = dict Eq<Int> { }: Int"
+ * renameBinding(state,
+ *   typeBinding("List", arrowKind(starKind, starKind)),
+ *   new Map([["List", "Vec"]])
+ * );
+ * // => type Vec :: * → *
  * ```
  *
- * @example Dict/enum/alias
+ * @example Rename dictionary bindings:
  * ```ts
- * import { renameBinding, dictBinding, enumDefBinding, typeAliasBinding, showBinding } from "system-f-omega";
- * import { starKind, tupleType, conType, freshState } from "./helpers.js";
- *
- * const state = freshState();
- * const ren = new Map([["eqInt", "equalsInt"], ["Color", "Colour"], ["RGB", "Id"]]);
- *
- * const dictB = renameBinding(state, dictBinding("eqInt", "Eq", conType("Int")), ren);
- * console.log(showBinding(dictB));  // "Dict: equalsInt = Trait Eq : Int"
- *
- * const enumB = renameBinding(state, enumDefBinding("Color", starKind, [], [["Red", tupleType([])]]), ren);
- * console.log("enum renamed:", enumB.enum!.name);  // "Colour"
- *
- * const aliasB = renameBinding(state, typeAliasBinding("RGB", ["A"], [starKind], conType("A")), ren);
- * console.log(showBinding(aliasB));  // "Type Alias: Id<A::*> = A"
+ * dictBinding("eqInt", "Eq", Int)
+ * // rename Eq → Equal
  * ```
  *
- * @see {@link importModule} Module importer
- * @see {@link renameType} Type renamer
- * @see {@link renameTerm} Term renamer
+ * @see {@link renameType} Renaming inside types
+ * @see {@link renameTerm} Renaming inside terms
+ * @see {@link renamePattern} Renaming inside patterns
+ * @see {@link importModule} Applies renaming to imported contexts
  */
 export function renameBinding(
   state: TypeCheckerState,
@@ -10111,53 +12052,128 @@ export function renameBinding(
 }
 
 /**
- * Computes free names in `type` (binder-respecting).
+ * Computes all **free names** that appear inside a type.
  *
- * **Purpose**: Dependency analysis for imports/renaming.
- * Collects: typeVars/cons/traits/labels. Skips bound ∀/λ/μ.
+ * This includes:
+ * - free **type variables**
+ * - referenced **type constructors**
+ * - trait names inside **bounded foralls**
+ * - record / variant **labels**
  *
- * @param _state - Unused
- * @param ty - Input type
- * @param bound - Bound vars (defaults empty)
- * @returns `{ typeVars/traits/typeCons/labels: Set<string> }`
+ * The result is a {@link FreeTypeNames} structure with four sets:
+ * - `typeVars`
+ * - `typeCons`
+ * - `traits`
+ * - `labels`
  *
- * @example Basic vars/cons
+ * Only **free** names are collected:
+ * - Bound type variables introduced by `∀`, `λ`, or `μ` are tracked in the
+ *   `bound` set and *not* added to the result.
+ *
+ * ---------------------------------------------------------------------------
+ * Why this function exists
+ * ---------------------------------------------------------------------------
+ * `computeFreeTypes` is used mainly for:
+ *
+ * **1. Module dependency analysis**
+ *   The importer must determine which types, constructors, traits, and labels
+ *   are referenced so it can decide what to import.
+ *
+ * **2. Renaming**
+ *   Tools like `renameType` and `renameBinding` must know which names appear
+ *   free inside types to avoid renaming bound variables.
+ *
+ * **3. Cycle detection**
+ *   Used by the module system to detect type alias/enumeration dependency loops.
+ *
+ * ---------------------------------------------------------------------------
+ * What it collects
+ * ---------------------------------------------------------------------------
+ * - **Type constructors**
+ *   e.g., `List`, `Either`, `Option`
+ *
+ * - **Free type variables**
+ *   Variables not introduced by a binder:
+ *   ```
+ *   ∀A. B → A     => free var: B
+ *   ```
+ *
+ * - **Trait names** inside bounded foralls
+ *   ```
+ *   ∀Self where Eq<Self>. ...
+ *   => traits = {"Eq"}
+ *   ```
+ *
+ * - **Labels** of variants and records
+ *   ```
+ *   <Left: A | Right: B> => labels = {"Left", "Right"}
+ *   { x: Int, y: Bool }   => labels = {"x", "y"}
+ *   ```
+ *
+ * ---------------------------------------------------------------------------
+ * Binder‑aware behavior
+ * ---------------------------------------------------------------------------
+ * Whenever a type binder appears:
+ * - `∀A::K. body`
+ * - `λA::K. body`
+ * - `μA. body`
+ *
+ * the type variable `A` is added to `bound` and **not** considered free
+ * within its body.
+ *
+ * ---------------------------------------------------------------------------
+ * Summary of recursion
+ * ---------------------------------------------------------------------------
+ * `computeFreeTypes` recursively walks:
+ * - applications (`F<T>`)
+ * - arrows
+ * - tuples
+ * - records
+ * - variants
+ * - polymorphic types (`forall`, `bounded_forall`)
+ * - lambda and µ‑types
+ *
+ * Each node contributes the appropriate names to the result.
+ *
+ * ---------------------------------------------------------------------------
+ * @param _state - Typechecker state (present for API symmetry; not used here)
+ * @param ty - The type to analyze
+ * @param bound - Set of type variable names currently bound (internal use)
+ * @returns A {@link FreeTypeNames} record containing sets of free names
+ *
+ * ---------------------------------------------------------------------------
+ * @example
  * ```ts
- * import { computeFreeTypes, arrowType, varType, conType } from "system-f-omega";
+ * const ty = appType(
+ *   conType("Either"),
+ *   arrowType(varType("A"), conType("Int"))
+ * );
  *
- * const ty = arrowType(varType("a"), appType(conType("List"), varType("b")));
- * const free = computeFreeTypes({ ctx: [], meta: { counter: 0, kinds: new Map(), solutions: new Map() } }, ty);
- * console.log("vars:", Array.from(free.typeVars));  // ["a", "b"]
- * console.log("cons:", Array.from(free.typeCons));  // ["List"]
+ * computeFreeTypes(state, ty);
+ * // => {
+ * //   typeVars: Set(["A"]),
+ * //   typeCons: Set(["Either", "Int"]),
+ * //   traits:   Set([]),
+ * //   labels:   Set([])
+ * // }
  * ```
  *
- * @example Bound forall (skips binder)
+ * @example With bounded forall:
  * ```ts
- * import { computeFreeTypes, forallType, arrowType, varType, starKind } from "system-f-omega";
+ * const ty = boundedForallType(
+ *   "Self", starKind,
+ *   [{ trait: "Eq", type: varType("Self") }],
+ *   varType("Self")
+ * );
  *
- * const poly = forallType("a", starKind, arrowType(varType("a"), varType("b")));
- * const free = computeFreeTypes({ ctx: [], meta: { counter: 0, kinds: new Map(), solutions: new Map() } }, poly);
- * console.log("free vars:", Array.from(free.typeVars));  // ["b"] (a bound)
+ * computeFreeTypes(state, ty);
+ * // => {
+ * //   typeVars: Set([]),   // Self is bound
+ * //   typeCons: Set([]),
+ * //   traits:   Set(["Eq"]),
+ * //   labels:   Set([])
+ * // }
  * ```
- *
- * @example Data + traits
- * ```ts
- * import { computeFreeTypes, recordType, variantType, boundedForallType } from "system-f-omega";
- * import { varType, conType, starKind } from "system-f-omega";
- *
- * const rec = recordType([["x", varType("a")], ["y", conType("Int")]]);
- * const freeRec = computeFreeTypes({ ctx: [], meta: { counter: 0, kinds: new Map(), solutions: new Map() } }, rec);
- * console.log("labels:", Array.from(freeRec.labels));  // ["x", "y"]
- * console.log("vars:", Array.from(freeRec.typeVars));  // ["a"]
- *
- * const bounded = boundedForallType("a", starKind, [{ trait: "Eq", type: varType("a") }], varType("b"));
- * const freeBound = computeFreeTypes({ ctx: [], meta: { counter: 0, kinds: new Map(), solutions: new Map() } }, bounded);
- * console.log("traits:", Array.from(freeBound.traits));  // ["Eq"]
- * ```
- *
- * @internal Dependency analysis
- * @see {@link importModule} Uses for deps
- * @see {@link collectTypeVars} Vars only
  */
 export function computeFreeTypes(
   _state: TypeCheckerState,
@@ -10257,53 +12273,83 @@ export function computeFreeTypes(
 }
 
 /**
- * Computes free names in `pat`: vars/constructors/labels.
+ * Extracts all **free names** that appear inside a pattern.
  *
- * **Purpose**: Pattern dependency analysis for imports.
- * No binders (collects all vars).
+ * Unlike type or term free‑variable analysis, pattern extraction is simpler:
+ * patterns are *syntactic matchers*, not expressions with scoping rules.
+ * Therefore **all identifiers in a pattern are considered free**, because
+ * patterns do not introduce nested scopes the way terms do.
  *
- * @param _state - Unused
- * @param pat - Input pattern
- * @returns `{ vars/constructors/labels: Set<string> }`
+ * The result is a {@link FreePatternNames} object containing three sets:
+ * - `vars`          — variable names bound by the pattern (`x`, `hd`, `rest`)
+ * - `constructors`  — literal/constructor names (`"None"`, `"true"`)
+ * - `labels`        — record field labels or variant labels (`x`, `"Left"`)
  *
- * @example Basic vars/cons
+ * ---------------------------------------------------------------------------
+ * Why this exists
+ * ---------------------------------------------------------------------------
+ * Pattern free‑name extraction is used by:
+ *
+ * **1. Renaming during module import**
+ *   The importer needs to know which labels/constructors occur in patterns so
+ *   it can apply alias maps correctly.
+ *
+ * **2. Dependency analysis**
+ *   For example, matching `Some(x)` depends on the variant label `"Some"` and
+ *   therefore on the enum that defines it.
+ *
+ * **3. Pretty‑printing and linting**
+ *   Tools may need to inspect patterns for referenced names.
+ *
+ * ---------------------------------------------------------------------------
+ * What it collects
+ * ---------------------------------------------------------------------------
+ * Pattern form              | Collected names
+ * --------------------------|-------------------------------
+ * `varPattern("x")`         | vars = { "x" }
+ * `wildcardPattern()`       | none
+ * `conPattern("None")`      | constructors = { "None" }
+ * `variantPattern("Some", p)` | labels = { "Some" } ∪ free names of `p`
+ * `recordPattern([["x", p]])` | labels = { "x" } ∪ free names of `p`
+ * `tuplePattern([p1, p2])` | union of free names of elements
+ *
+ * Note: Pattern variables are *collected*, but they are not “bound” in the
+ * sense of shadowing—they are all treated as free metadata for renaming.
+ *
+ * ---------------------------------------------------------------------------
+ * @param _state - Typechecker state (present for API symmetry; not used here)
+ * @param pat - The pattern to analyze
+ * @returns A {@link FreePatternNames} object with sets of free identifiers
+ *
+ * ---------------------------------------------------------------------------
+ * @example
  * ```ts
- * import { computeFreePatterns, varPattern, conPattern } from "system-f-omega";
- *
- * const vars = computeFreePatterns({ ctx: [], meta: { counter: 0, kinds: new Map(), solutions: new Map() } }, varPattern("x"));
- * console.log("vars:", Array.from(vars.vars));  // ["x"]
- *
- * const cons = computeFreePatterns({ ctx: [], meta: { counter: 0, kinds: new Map(), solutions: new Map() } }, conPattern("None", { con: "Unit" }));
- * console.log("cons:", Array.from(cons.constructors));  // ["None"]
+ * computeFreePatterns(state,
+ *   variantPattern("Some", varPattern("x"))
+ * );
+ * // => {
+ * //      vars: Set(["x"]),
+ * //      constructors: Set([]),
+ * //      labels: Set(["Some"])
+ * //    }
  * ```
  *
- * @example Nested record/variant
+ * @example Record + tuple:
  * ```ts
- * import { computeFreePatterns, recordPattern, variantPattern, varPattern } from "system-f-omega";
- *
- * const rec = computeFreePatterns({ ctx: [], meta: { counter: 0, kinds: new Map(), solutions: new Map() } }, recordPattern([["x", varPattern("a")]]));
- * console.log("labels:", Array.from(rec.labels));  // ["x"]
- * console.log("vars:", Array.from(rec.vars));      // ["a"]
- *
- * const varn = computeFreePatterns({ ctx: [], meta: { counter: 0, kinds: new Map(), solutions: new Map() } }, variantPattern("Cons", varPattern("hd")));
- * console.log("labels:", Array.from(varn.labels));  // ["Cons"]
- * console.log("vars:", Array.from(varn.vars));      // ["hd"]
+ * computeFreePatterns(state,
+ *   recordPattern([
+ *     ["pt", tuplePattern([varPattern("a"), varPattern("b")])]
+ *   ])
+ * );
+ * // vars: ["a", "b"]
+ * // labels: ["pt"]
+ * // constructors: []
  * ```
  *
- * @example Tuple/wildcard empty
- * ```ts
- * import { computeFreePatterns, tuplePattern, varPattern, wildcardPattern } from "system-f-omega";
- *
- * const tup = computeFreePatterns({ ctx: [], meta: { counter: 0, kinds: new Map(), solutions: new Map() } }, tuplePattern([varPattern("a"), varPattern("b")]));
- * console.log("tuple vars:", Array.from(tup.vars));  // ["a", "b"]
- *
- * const wc = computeFreePatterns({ ctx: [], meta: { counter: 0, kinds: new Map(), solutions: new Map() } }, wildcardPattern());
- * console.log("wildcard empty:", wc.vars.size === 0);  // true
- * ```
- *
- * @internal Pattern dependency analysis
- * @see {@link computeFreeTypes} Type counterpart
- * @see {@link importModule} Uses for deps
+ * @see {@link FreePatternNames} Output shape
+ * @see {@link renamePattern} Renaming patterns using this information
+ * @see {@link computeFreeTypes} Free names in types
+ * @see {@link computeFreeTerms} Free names in full terms
  */
 export function computeFreePatterns(
   _state: TypeCheckerState,
@@ -10353,81 +12399,127 @@ export function computeFreePatterns(
 }
 
 /**
- * Computes free names in `term` (binder-respecting).
+ * Computes all **free names** that appear anywhere inside a term.
  *
- * **Purpose**: Dependency analysis for imports/renaming.
- * Collects: terms/cons/traits/dicts/labels + type vars/cons.
- * Calls `computeFreeTypes`/`computeFreePatterns`.
+ * This includes names coming from:
+ * - term variables
+ * - type constructors inside embedded types
+ * - trait names referenced by dictionaries or constraints
+ * - dictionary variable names
+ * - variant / record / tuple labels
+ * - constructors used in patterns or values
  *
- * @param state - Checker state (`computeFreeTypes`)
- * @param term - Input term
- * @param bound - Bound term vars (defaults empty)
- * @returns `{ terms/cons/traits/dicts/labels/typeVars/typeCons: Set }`
+ * The result is a {@link FreeTermNames} object with seven sets:
+ * - `terms`        — free term variable names
+ * - `constructors` — constructor/literal names (from `conTerm`)
+ * - `traits`       — trait names appearing in dictionaries, trait lambdas, etc.
+ * - `dicts`        — dictionary variable names (from `dictBinding`)
+ * - `labels`       — record/variant labels appearing in the term
+ * - `typeVars`     — free type variable names inside embedded types
+ * - `typeCons`     — type constructor names inside embedded types
  *
- * @example Basic terms/cons
+ * Term variables bound by constructs such as lambdas or lets are added to
+ * the `bound` set and **not** counted as free.
+ *
+ * ---------------------------------------------------------------------------
+ * Why this analysis exists
+ * ---------------------------------------------------------------------------
+ *
+ * Free‑name extraction over terms is required by the module system for:
+ *
+ * **1. Import dependency analysis**
+ *   Determine which types, traits, or constructors from another module are
+ *   needed to support the term.
+ *
+ * **2. Renaming**
+ *   {@link renameTerm}, {@link renameType}, and {@link renamePattern} use
+ *   this information to safely rewrite terms without renaming bound variables.
+ *
+ * **3. Pattern‑embedded free names**
+ *   Match expressions contain patterns, so this integrates:
+ *   - {@link computeFreePatterns} for pattern names
+ *   - {@link computeFreeTypes} for type annotations
+ *
+ * **4. Detecting use of dictionary variables**
+ *   Needed for traits, since dictionary variables behave like term bindings.
+ *
+ * ---------------------------------------------------------------------------
+ * What is considered “free”?
+ * ---------------------------------------------------------------------------
+ *
+ * **Free:**
+ * - variables used in the term but not introduced locally
+ *   (`x` in an outer scope, imported definitions, etc.)
+ * - dictionary variables (`d` in `d.eq`)
+ * - constructor names from `conTerm`
+ * - labels in variant injections and record terms
+ * - type names from embedded types (`List`, `Either`, etc.)
+ * - trait names (e.g. `"Eq"` in `dict Eq<Int> {...}`)
+ *
+ * **Not free (i.e., bound):**
+ * - lambda parameters: `λx:τ. ...`
+ * - let‑bindings: `let x = e in ...`
+ * - dictionary variables introduced by `traitLamTerm`
+ * - type variables bound by `tylamTerm`, `traitLamTerm`, or type quantifiers
+ *
+ * ---------------------------------------------------------------------------
+ * Bound‑variable handling
+ * ---------------------------------------------------------------------------
+ * The `bound` set tracks term variables that should **not** be reported as free.
+ * For example:
+ *
  * ```ts
- * import { computeFreeTerms, varTerm, conTerm } from "system-f-omega";
- * import { freshState } from "./helpers.js";
- *
- * const state = freshState();
- * const app = { app: { callee: varTerm("f"), arg: conTerm("42", { con: "Int" }) } };
- * const free = computeFreeTerms(state, app);
- * console.log("terms:", Array.from(free.terms));     // ["f"]
- * console.log("cons:", Array.from(free.constructors));  // ["42"]
+ * lamTerm("x", Int, varTerm("x"))
  * ```
  *
- * @example Binder skip (lam/let)
+ * Free‑term collection should report no free term names, because `x` is bound.
+ *
+ * ---------------------------------------------------------------------------
+ * Breakdown of what is collected
+ * ---------------------------------------------------------------------------
+ * - **Term variables:** from `varTerm`
+ * - **Constructors:** from `conTerm`
+ * - **Labels:** from `recordTerm`, `variantPattern`, `injectTerm`
+ * - **Traits:** from `dictTerm`, `traitLamTerm`, `traitMethodTerm`
+ * - **Dictionary variables:** from `traitLamTerm`, `dictBinding`, `traitAppTerm`
+ * - **Type-level names:** delegated to {@link computeFreeTypes}
+ * - **Pattern names:** delegated to {@link computeFreePatterns}
+ *
+ * ---------------------------------------------------------------------------
+ * @param state - The typechecker state (used for type‑level free names)
+ * @param term - The term to analyze
+ * @param bound - Names of term variables currently bound (internal)
+ *
+ * @returns A {@link FreeTermNames} structure describing all free names
+ *
+ * ---------------------------------------------------------------------------
+ * @example Simple application:
  * ```ts
- * import { computeFreeTerms, lamTerm, letTerm, varTerm, conTerm } from "system-f-omega";
- * import { freshState, conType } from "./helpers.js";
- *
- * const state = freshState();
- * const lam = lamTerm("x", conType("Int"), varTerm("y"));
- * const freeLam = computeFreeTerms(state, lam);
- * console.log("lam terms:", Array.from(freeLam.terms));  // ["y"] (x bound)
- *
- * const letE = letTerm("x", conTerm("1", conType("Int")), varTerm("x"));
- * const freeLet = computeFreeTerms(state, letE);
- * console.log("let terms:", Array.from(freeLet.terms));  // [] (x bound)
+ * computeFreeTerms(state, appTerm(varTerm("f"), varTerm("x")));
+ * // => terms = {"f", "x"}
  * ```
  *
- * @example Traits/dicts/labels
+ * @example With patterns:
  * ```ts
- * import { computeFreeTerms, dictTerm, traitMethodTerm, recordTerm } from "system-f-omega";
- * import { freshState, conType } from "./helpers.js";
- *
- * const state = freshState();
- * const dict = dictTerm("Eq", conType("Int"), [["eq", { var: "impl" }]]);
- * const freeDict = computeFreeTerms(state, dict);
- * console.log("traits:", Array.from(freeDict.traits));  // ["Eq"]
- * console.log("labels:", Array.from(freeDict.labels));  // ["eq"]
- *
- * const method = traitMethodTerm(dict, "lt");
- * const freeMethod = computeFreeTerms(state, method);
- * console.log("method labels:", Array.from(freeMethod.labels));  // ["lt"]
+ * matchTerm(
+ *   scrutinee,
+ *   [[variantPattern("Some", varPattern("x")), varTerm("x")]]
+ * );
+ * // free labels = {"Some"}
+ * // free variables = {"scrutinee"}
  * ```
  *
- * @example Match patterns
+ * @example With dictionaries:
  * ```ts
- * import { computeFreeTerms, matchTerm, recordPattern, varPattern } from "system-f-omega";
- * import { freshState } from "./helpers.js";
- *
- * const state = freshState();
- * const match = {
- *   match: {
- *     scrutinee: { var: "rec" },
- *     cases: [[recordPattern([["x", varPattern("a")]]), { var: "a" }]]
- *   }
- * };
- * const freeMatch = computeFreeTerms(state, match);
- * console.log("match terms:", Array.from(freeMatch.terms));  // ["rec"]
- * console.log("pat vars:", Array.from(freeMatch.labels));    // ["x"]
+ * traitMethodTerm(varTerm("d"), "eq");
+ * // free dicts = {"d"}
+ * // free traits = {"Eq"}  (via dictionary type)
  * ```
  *
- * @internal Dependency analysis
- * @see {@link computeFreeTypes} Type names
- * @see {@link computeFreePatterns} Pat names
- * @see {@link importModule} Uses for deps
+ * @see {@link computeFreeTypes} Free names inside types
+ * @see {@link computeFreePatterns} Free names inside patterns
+ * @see {@link renameTerm} Applies renaming to term ASTs
+ * @see {@link importModule} Uses this to gather dependencies
  */
 export function computeFreeTerms(
   state: TypeCheckerState,
@@ -10598,108 +12690,138 @@ export function computeFreeTerms(
 }
 
 /**
- * Imports module `from` into `into` (deps + renaming + topo-sort).
+ * Imports selected bindings from one module (`from`) into another (`into`),
+ * performing **dependency analysis**, **renaming**, **conflict detection**, and
+ * **topological ordering** to ensure a well‑formed merged context.
  *
- * **Purpose**: Module system:
- * 1. Collect deps (`roots` + transitive).
- * 2. Check root conflicts.
- * 3. Auto-rename deps (`allowOverrides` or fresh names).
- * 4. Topo-sort → rename → append/merge.
+ * This is the heart of the module import system.
  *
- * Errors: `circular_import`, `duplicate_binding`.
+ * ---------------------------------------------------------------------------
+ * High‑level overview
+ * ---------------------------------------------------------------------------
+ * Given:
+ *   - a source module (`from`)
+ *   - a target module (`into`)
+ *   - a list of **root names** to import (`roots`)
+ *   - optional **rename rules** (`aliases`)
+ *   - optional **overwrite permission** (`allowOverrides`)
  *
- * @param args.from - Source state
- * @param args.into - Target state
- * @param args.roots - Root names
- * @param args.aliases - User renames (optional)
- * @param args.allowOverrides - Replace conflicts (optional)
- * @returns New state or error
+ * The algorithm:
  *
- * @example Success: Simple import
+ * 1. Build user‑provided rename map (`aliases`)
+ * 2. Collect all **transitive dependencies** of the requested roots
+ *    using {@link collectDependencies}
+ * 3. Check for **direct name conflicts** in the target module
+ * 4. Build a **final rename map**:
+ *      - apply user renames
+ *      - auto‑rename only non‑root dependencies that would conflict
+ * 5. **Topologically sort** all dependency bindings
+ * 6. Rename each binding with {@link renameBinding}
+ * 7. Insert renamed bindings into the target context, respecting
+ *    the `allowOverrides` setting
+ *
+ * Returns a new `TypeCheckerState` whose context includes the imported
+ * (and possibly renamed) bindings.
+ *
+ * ---------------------------------------------------------------------------
+ * Why so many steps?
+ * ---------------------------------------------------------------------------
+ * Module import is tricky because:
+ * - bindings can depend on each other (aliases, enums, traits, etc.)
+ * - names from one module can collide with names in another
+ * - renaming must be **systematic** and **binder‑safe**
+ * - only the explicitly imported roots should keep their names
+ * - dependencies must be imported **in order**, so type aliases and enums
+ *   appear before things that depend on them
+ *
+ * This function ensures all of that.
+ *
+ * ---------------------------------------------------------------------------
+ * Renaming rules
+ * ---------------------------------------------------------------------------
+ * 1. **User renaming (`aliases`) overrides everything.**
+ *    If the user renames `List → Vec`, that applies globally to all imported
+ *    references.
+ *
+ * 2. **Roots keep the user name or their original name.**
+ *    They are never auto‑renamed.
+ *
+ * 3. **Dependencies may be auto‑renamed** *only if* they would collide with
+ *    an existing binding in `into`.
+ *
+ * 4. All renaming is applied through:
+ *    - {@link renameBinding}
+ *    - which uses {@link renameType}, {@link renameTerm}, {@link renamePattern}
+ *
+ * ---------------------------------------------------------------------------
+ * Conflict handling
+ * ---------------------------------------------------------------------------
+ * - If a root binding conflicts with the target context and
+ *   `allowOverrides = false`, the import fails with a `duplicate_binding` error.
+ *
+ * - If a dependency conflicts:
+ *     → it is auto‑renamed to a fresh, unique name via `freshName`.
+ *
+ * - If `allowOverrides = true`:
+ *     → existing bindings in `into` are replaced.
+ *
+ * ---------------------------------------------------------------------------
+ * Topological ordering
+ * ---------------------------------------------------------------------------
+ * Bindings must be imported **in dependency order**, e.g.:
+ *
+ *     type alias A uses B → B must be imported before A
+ *     enum Option depends on its type params → bring parameters first
+ *     trait implementations depend on trait definitions
+ *
+ * This is handled by {@link topoSortBindings}.
+ *
+ * ---------------------------------------------------------------------------
+ * Example usage
+ * ---------------------------------------------------------------------------
  * ```ts
- * import { freshState, addType, addTerm, importModule, starKind, conType, showContext } from "system-f-omega";
- *
- * let from = freshState();
- * from = addType(from, "Int", starKind).ok;
- * from = addTerm(from, "x", { con: { name: "42", type: conType("Int") } }).ok;
- *
- * let into = freshState();
- * into = addType(into, "Bool", starKind).ok;
- *
- * const result = importModule({ from, into, roots: ["Int", "x"] });
- * console.log("imported:", "ok" in result);
- * console.log(showContext(result.ok.ctx));
- * // "...Type: Bool = *\nType: Int = *\nTerm: x = Int"
- * ```
- *
- * @example User aliases
- * ```ts
- * import { freshState, addType, importModule, starKind, conType, showContext } from "system-f-omega";
- *
- * let from = freshState();
- * from = addType(from, "Int32", starKind).ok;
- *
- * let into = freshState();
- * const result = importModule({
- *   from,
- *   into,
- *   roots: ["Int32"],
- *   aliases: { types: { "Int32": "Int" } }
+ * importModule({
+ *   from: libState,
+ *   into: currentState,
+ *   roots: ["List", "map"],
+ *   aliases: {
+ *     types: { List: "Vec" },
+ *     terms: { map: "fmap" }
+ *   }
  * });
- * console.log("aliased:", "ok" in result);
- * console.log(showContext(result.ok.ctx));
- * // "Type: Int = *"
  * ```
  *
- * @example Auto-rename conflict (deps)
- * ```ts
- * import { freshState, addType, importModule, starKind, showContext } from "system-f-omega";
+ * - imports `List` as `Vec`
+ * - imports `map` as `fmap`
+ * - automatically renames any conflicting helper types from the `List` module
+ * - inserts renamed dependencies in the correct order
  *
- * let from = freshState();
- * from = addType(from, "Int", starKind).ok;  // Dep
- * from.ctx.push({ type: { name: "Conflict", kind: starKind } });  // Root + dep
+ * ---------------------------------------------------------------------------
+ * Parameters
+ * ---------------------------------------------------------------------------
+ * @param from - The source module’s typechecker state
+ * @param into - The target module’s typechecker state
+ * @param roots - Names of bindings to import (user‑requested)
+ * @param aliases - Optional renaming rules for traits, types, terms, labels
+ * @param allowOverrides - Whether existing names in `into` may be overwritten
  *
- * let into = freshState();
- * into = addType(into, "Conflict", starKind).ok;  // Conflicts dep
+ * @returns A new state with imported bindings, or a {@link TypingError}
  *
- * const result = importModule({ from, into, roots: ["Conflict"] });
- * console.log("renamed:", "ok" in result);
- * console.log("new Int:", result.ok.ctx.find(b => b.type?.name === "Int"));  // Exists
- * console.log("dep Int:", result.ok.ctx.find(b => b.type?.name === "Int_1"));  // Renamed
- * ```
+ * ---------------------------------------------------------------------------
+ * Errors produced
+ * ---------------------------------------------------------------------------
+ * - `duplicate_binding` — name conflict for a root binding
+ * - `circular_import` — via {@link collectDependencies}
+ * - `unbound` / various others — from rename functions or normalization
  *
- * @example Duplicate root error
- * ```ts
- * import { freshState, addType, importModule, starKind } from "system-f-omega";
- *
- * let from = freshState();
- * from = addType(from, "Int", starKind).ok;
- *
- * let into = freshState();
- * into = addType(into, "Int", starKind).ok;  // Duplicate
- *
- * const result = importModule({ from, into, roots: ["Int"] });
- * console.log("duplicate err:", "duplicate_binding" in result.err);  // true
- * ```
- *
- * @example allowOverrides merges
- * ```ts
- * import { freshState, addType, importModule, starKind, showContext } from "system-f-omega";
- *
- * let from = freshState();
- * from = addType(from, "Int", starKind).ok;  // Override target
- *
- * let into = freshState();
- * into = addType(into, "Int", starKind).ok;
- *
- * const result = importModule({ from, into, roots: ["Int"], allowOverrides: true });
- * console.log("overridden:", "ok" in result);
- * console.log(showContext(result.ok.ctx));  // Single Int
- * ```
- *
- * @see {@link collectDependencies} Dep collection
- * @see {@link renameBinding} Applies renames
- * @see {@link topoSortBindings} Ordering
+ * ---------------------------------------------------------------------------
+ * See also
+ * ---------------------------------------------------------------------------
+ * - {@link collectDependencies}
+ * - {@link renameBinding}
+ * - {@link renameType}, {@link renameTerm}, {@link renamePattern}
+ * - {@link topoSortBindings}
+ * - {@link ImportAliases}
  */
 export function importModule(args: {
   from: TypeCheckerState;
@@ -10793,54 +12915,134 @@ export function importModule(args: {
 }
 
 /**
- * Collects transitive dependencies from `roots` (DFS + cycle detection).
+ * Collects **all transitive dependencies** of the given root bindings
+ * in a module’s context.
  *
- * **Purpose**: Module deps: `roots` → all referenced names.
- * Detects cycles via visiting stack.
+ * This is the first major step of the module import process.
+ * It answers:
  *
- * @param state - Source state
- * @param roots - Root binding names
- * @returns Dep set or `circular_import`
+ *     “Which bindings must be imported in order for these names to work?”
  *
- * @example Success: Transitive chain
+ * For each root name in `roots`, this function recursively discovers:
+ * - types referenced inside its type annotations
+ * - traits referenced inside its definitions
+ * - constructors, labels, and patterns referenced by enums or dicts
+ * - any other bindings indirectly referenced by the above
+ *
+ * The result is a `Set<string>` containing **all binding names** (including
+ * the roots themselves) required for a correct import.
+ *
+ * ---------------------------------------------------------------------------
+ * What counts as a dependency?
+ * ---------------------------------------------------------------------------
+ * For each binding `b`:
+ *
+ * • **TermBinding**
+ *   Dependencies come from free names in its type.
+ *
+ * • **TypeBinding**
+ *   No direct dependencies (just the kind).
+ *
+ * • **TypeAliasBinding**
+ *   Dependencies come from types referenced in its body and parameter kinds.
+ *
+ * • **TraitDefBinding**
+ *   Dependencies come from types used in method signatures.
+ *
+ * • **TraitImplBinding**
+ *   Dependencies come from:
+ *   - the implemented type
+ *   - method implementation terms
+ *   - referenced traits and types used in dictionary definitions
+ *
+ * • **DictBinding**
+ *   Depends on:
+ *   - the trait name
+ *   - the type the dictionary applies to
+ *
+ * • **EnumDefBinding**
+ *   Depends on:
+ *   - payload types of each variant
+ *   - type parameter kinds
+ *   - labels associated with variants
+ *
+ * Dependencies are discovered using:
+ * - {@link computeFreeTerms}
+ * - {@link computeFreeTypes}
+ * - {@link computeFreePatterns}
+ * - plus binding‑specific scanning logic
+ *
+ * ---------------------------------------------------------------------------
+ * Cycle detection
+ * ---------------------------------------------------------------------------
+ * If enums, type aliases, or other bindings form a **dependency cycle**:
+ *
+ *     A depends on B
+ *     B depends on C
+ *     C depends on A
+ *
+ * then `collectDependencies` returns a `circular_import` error.
+ *
+ * Cycles are tracked through DFS (depth‑first search) using:
+ * - a `visited` set
+ * - an `active` stack for detecting back‑edges
+ *
+ * ---------------------------------------------------------------------------
+ * Algorithm summary
+ * ---------------------------------------------------------------------------
+ * 1. Initialize a dependency set with the root names.
+ * 2. For each root:
+ *      - find the corresponding binding
+ *      - extract its free names (dependents)
+ *      - recursively process each dependent name
+ * 3. Track visited nodes to avoid duplication
+ * 4. Track an active recursion stack to detect cycles
+ * 5. Return all collected names
+ *
+ * The output ordering is *not* topological — ordering is handled later by
+ * {@link topoSortBindings}. This function only discovers *which* items
+ * are required.
+ *
+ * ---------------------------------------------------------------------------
+ * @param state - The module's typechecker state to analyze
+ * @param roots - The names explicitly requested for import
+ *
+ * @returns
+ * - `ok(Set<string>)` containing all dependencies, or
+ * - `err({ circular_import: ... })` if a cycle is found
+ *
+ * ---------------------------------------------------------------------------
+ * Examples
+ * ---------------------------------------------------------------------------
+ *
+ * **Simple case:**
  * ```ts
- * import { freshState, addType, addTypeAlias, collectDependencies, starKind, varType, conType } from "system-f-omega";
- *
- * let state = freshState();
- * state = addType(state, "A", starKind).ok;  // Root
- * state = addType(state, "B", starKind).ok;  // A deps B
- * state = addType(state, "C", starKind).ok;  // B deps C
- * state.ctx.push({ type_alias: { name: "AliasA", params: [], kinds: [], body: conType("B") } });  // A → AliasA → B
- * state.ctx.push({ type_alias: "AliasB", params: [], kinds: [], body: conType("C") });
- *
- * const result = collectDependencies(state, ["A"]);
- * console.log("deps:", Array.from(result.ok));  // ["A", "AliasA", "B", "AliasB", "C"]
+ * // Importing "List"
+ * // collectDependencies finds: ["List", "Int"]
  * ```
  *
- * @example Cycle error
+ * **Alias chain:**
  * ```ts
- * import { freshState, addType, addTypeAlias, collectDependencies, starKind, conType } from "system-f-omega";
- *
- * let state = freshState();
- * state = addType(state, "A", starKind).ok;
- * state.ctx.push({ type_alias: { name: "AliasA", params: [], kinds: [], body: conType("A") } });  // A → AliasA → A (cycle)
- *
- * const result = collectDependencies(state, ["A"]);
- * console.log("cycle:", "circular_import" in result.err);  // true
+ * type A = B
+ * type B = C
+ * type C = Int
+ * collectDependencies(["A"]) => { "A", "B", "C", "Int" }
  * ```
  *
- * @example Missing binding (silent)
+ * **Cycle:**
  * ```ts
- * import { freshState, collectDependencies } from "system-f-omega";
- *
- * const state = freshState();
- * const result = collectDependencies(state, ["Missing"]);
- * console.log("missing ok:", "ok" in result && result.ok.size === 0);  // true
+ * type A = B
+ * type B = A
+ * collectDependencies(["A"])
+ * // => err({ circular_import: { name: "A", cycle: ["A", "B", "A"] }})
  * ```
  *
- * @internal Module dep collector
- * @see {@link importModule} Uses deps
- * @see {@link bindingDependencies} Single binding deps
+ * ---------------------------------------------------------------------------
+ * @see {@link importModule} Uses this to find everything that must be imported
+ * @see {@link computeFreeTerms} Extracts free term-level names
+ * @see {@link computeFreeTypes} Extracts free type-level names
+ * @see {@link computeFreePatterns} For pattern references
+ * @see {@link topoSortBindings} For dependency ordering
  */
 export function collectDependencies(
   state: TypeCheckerState,
@@ -11016,53 +13218,52 @@ function addBinding(
 }
 
 /**
- * Adds term binding after inferring its type.
+ * Adds a **new term binding** to a typechecker state.
  *
- * **Purpose**: REPL-style: `let x = term` → infer + bind.
- * Errors from `inferType`/`addBinding`.
-
- * @param state - Checker state
- * @param name - Binding name
- * @param term - Term to bind
- * @returns New state or error
+ * This is used for:
+ * - defining global terms in a module
+ * - adding local bindings in a REPL or top‑level environment
+ * - programmatically extending a context with a value definition
  *
- * @example Success: Constant
+ * The steps performed:
+ *
+ * 1. **Infer the type** of the provided term (`inferType`).
+ * 2. On success, build a {@link TermBinding}:
+ *        name : inferredType
+ * 3. Insert the binding into the context using {@link addBinding}.
+ *
+ * If the term fails to typecheck, the error is returned unchanged.
+ *
+ * ---------------------------------------------------------------------------
+ * Error cases
+ * ---------------------------------------------------------------------------
+ * - Any error produced by {@link inferType}
+ * - `duplicate_binding` (raised inside `addBinding` if the name already exists
+ *   in the context, unless overrides are permitted)
+ *
+ * ---------------------------------------------------------------------------
+ * @param state - Current typechecker state (context + meta environment)
+ * @param name - The term variable name to bind
+ * @param term - The term whose type should be inferred and added
+ *
+ * @returns An updated `TypeCheckerState` or a {@link TypingError}
+ *
+ * ---------------------------------------------------------------------------
+ * @example Add a simple value:
  * ```ts
- * import { freshState, addType, addTerm, conTerm, conType, starKind, showContext, inferType, varTerm, showType } from "system-f-omega";
- *
- * let state = freshState();
- * state = addType(state, "Int", starKind).ok;
- * state = addTerm(state, "fortyTwo", conTerm("42", conType("Int"))).ok;
- *
- * const result = inferType(state, varTerm("fortyTwo"));
- * console.log("added:", "ok" in result);  // true
- * console.log("type:", showType(result.ok));  // "Int"
- * console.log("ctx:", showContext(state.ctx));  // "Term: fortyTwo = Int"
+ * addTerm(state, "x", conTerm("42", conType("Int")));
+ * // adds: x : Int
  * ```
  *
- * @example Success: Lambda
+ * @example Add a function:
  * ```ts
- * import { freshState, addType, addTerm, lamTerm, varTerm, conType, starKind, showContext, inferType, showType } from "system-f-omega";
- *
- * let state = freshState();
- * state = addType(state, "Int", starKind).ok;
- * state = addTerm(state, "id", lamTerm("x", conType("Int"), varTerm("x"))).ok;
- *
- * console.log("ctx:", showContext(state.ctx));  // "Term: id = (Int → Int)"
+ * addTerm(state, "id", lamTerm("x", Int, varTerm("x")));
+ * // adds: id : Int → Int
  * ```
  *
- * @example Failure: Unbound var
- * ```ts
- * import { freshState, addTerm, varTerm, showError } from "system-f-omega";
- *
- * const state = freshState();
- * const result = addTerm(state, "bad", varTerm("missing"));
- * console.log("error:", showError(result.err));  // "Unbound identifier: missing"
- * ```
- *
- * @see {@link inferType} Infers type
- * @see {@link termBinding} Creates binding
- * @see {@link addBinding} Adds to ctx
+ * @see {@link inferType} Determines the term’s type
+ * @see {@link termBinding} Constructs the context binding
+ * @see {@link addBinding} Inserts the binding into the context
  */
 export function addTerm(
   state: TypeCheckerState,
@@ -11077,57 +13278,71 @@ export function addTerm(
 }
 
 /**
- * Adds type constructor binding (no kind inference).
+ * Adds a **new type constructor** to the typing context (`Γ`):
  *
- * **Purpose**: Binds type names to kinds: `Int :: *`, `List :: * → *`.
- * Errors only on duplicates.
-
- * @param state - Checker state
- * @param name - Type name (`"Int"`)
- * @param kind - Kind (`*`, `*→*`)
- * @returns New state or error
+ *     name :: kind
  *
- * @example Success: Primitive type
+ * This function is used when declaring:
+ * - primitive types (`Int`, `Bool`, `String`)
+ * - user‑defined types
+ * - higher‑kinded type constructors (`List :: * → *`)
+ * - phantom or marker types
+ *
+ * The type constructor is recorded as a {@link TypeBinding} and inserted into
+ * the context using {@link addBinding}.
+ *
+ * ---------------------------------------------------------------------------
+ * What this does
+ * ---------------------------------------------------------------------------
+ * 1. Creates a `TypeBinding(name, kind)`
+ * 2. Calls {@link addBinding} to insert it into the context
+ *    - If the name already exists and overrides are not allowed:
+ *      → returns a `duplicate_binding` error
+ *    - Otherwise adds or replaces the existing binding
+ *
+ * Unlike `addTypeAlias` or `addEnum`, this function registers **only a name and
+ * a kind**, without a structural definition.
+ *
+ * The “meaning” of the type is defined elsewhere (via normalization, enums,
+ * or user code); this binding simply declares that the name is a valid type
+ * constructor with arity determined by its kind.
+ *
+ * ---------------------------------------------------------------------------
+ * When to use
+ * ---------------------------------------------------------------------------
+ * - defining primitive types in the initial environment
+ * - registering user‑defined type constructors before using them
+ * - adding higher‑kinded constructors needed by polymorphic code
+ *
+ * ---------------------------------------------------------------------------
+ * Error cases
+ * ---------------------------------------------------------------------------
+ * - `duplicate_binding` (if the name already exists and overrides are not allowed)
+ *
+ * ---------------------------------------------------------------------------
+ * @param state - The current typechecker state (context + meta environment)
+ * @param name - The type constructor name
+ * @param kind - The kind of the type constructor (e.g. `*`, `* → *`)
+ *
+ * @returns An updated `TypeCheckerState` or a `TypingError`
+ *
+ * ---------------------------------------------------------------------------
+ * @example Add simple types:
  * ```ts
- * import { freshState, addType, starKind, showContext } from "system-f-omega";
- *
- * let state = freshState();
- * state = addType(state, "Int", starKind).ok;
- * console.log(showContext(state.ctx));  // "Type: Int = *"
+ * addType(state, "Int", starKind);   // Int :: *
+ * addType(state, "Bool", starKind);  // Bool :: *
  * ```
  *
- * @example Success: HKT constructor
+ * @example Higher‑kinded type:
  * ```ts
- * import { freshState, addType, starKind, arrowKind, showContext } from "system-f-omega";
- *
- * let state = freshState();
- * state = addType(state, "List", arrowKind(starKind, starKind)).ok;
- * console.log(showContext(state.ctx));  // "Type: List = (* → *)"
+ * addType(state, "List", arrowKind(starKind, starKind));
+ * // List :: * → *
  * ```
  *
- * @example Failure: Duplicate
- * ```ts
- * import { freshState, addType, starKind, showError } from "system-f-omega";
- *
- * let state = freshState();
- * state = addType(state, "Int", starKind).ok;
- * const result = addType(state, "Int", starKind);
- * console.log("duplicate:", showError(result.err));  // "Duplicate binding for 'Int'..."
- * ```
- *
- * @example Usage: Type in inference
- * ```ts
- * import { freshState, addType, inferType, conTerm, starKind, showType } from "system-f-omega";
- *
- * let state = freshState();
- * state = addType(state, "Int", starKind).ok;
- * const result = inferType(state, conTerm("42", { con: "Int" }));
- * console.log("inferred:", showType(result.ok));  // "Int"
- * ```
- *
- * @see {@link typeBinding} Creates binding
- * @see {@link addBinding} Adds to ctx
- * @see {@link checkKind} Uses bindings
+ * @see {@link TypeBinding} Context binding format
+ * @see {@link addBinding} Generic binding insertion
+ * @see {@link addTypeAlias} Declares type aliases
+ * @see {@link addEnum} Declares enums (nominal sum types)
  */
 export function addType(
   state: TypeCheckerState,
@@ -11140,64 +13355,97 @@ export function addType(
 }
 
 /**
- * Adds parametric type alias after kind-checking body.
+ * Adds a **parametric type alias** to the typing context (`Γ`):
  *
- * **Purpose**: Defines aliases: `type Id<A> = A`. Recursive ctx includes self.
- * Errors: unbound/kind mismatch in body.
+ *     type Name<A₁::K₁, A₂::K₂, ...> = Body
  *
- * @param state - Checker state
- * @param name - Alias name (`"Id"`)
- * @param params - Param names `["A"]`
- * @param kinds - Param kinds `[starKind]`
- * @param body - RHS type
- * @returns New state or error
+ * A type alias introduces a *syntactic abbreviation* for a type expression.
+ * It does **not** create a new nominal type; aliases are expanded during
+ * normalization by {@link normalizeType}.
  *
- * @example Success: Basic alias
+ * This function:
+ * 1. Validates that the kinds of all parameters are well‑formed.
+ * 2. Ensures no conflicting binding exists (unless overrides are allowed).
+ * 3. Creates a {@link TypeAliasBinding}.
+ * 4. Inserts it into the context via {@link addBinding}.
+ *
+ * ---------------------------------------------------------------------------
+ * Kind and well‑formedness rules
+ * ---------------------------------------------------------------------------
+ * Each parameter `Aᵢ` is assigned a kind `Kᵢ`. The alias body is checked for
+ * kind correctness **inside a context extended with those bindings**.
+ *
+ * Example:
  * ```ts
- * import { freshState, addType, addTypeAlias, starKind, varType, showContext } from "system-f-omega";
- *
- * let state = freshState();
- * state = addType(state, "Int", starKind).ok;
- * state = addTypeAlias(state, "Id", ["A"], [starKind], varType("A")).ok;
- * console.log(showContext(state.ctx));
- * // "...\nType Alias: Id<A::*> = A"
+ * type Id<A :: *> = A
+ * // Body A must have kind *, consistent with A :: *
  * ```
  *
- * @example Success: Recursive alias
- * ```ts
- * import { freshState, addType, addTypeAlias, starKind, muType, tupleType, varType, appType, conType, showContext } from "system-f-omega";
+ * If the body is ill‑kinded, a `kind_mismatch` error is returned.
  *
- * let state = freshState();
- * state = addType(state, "Int", starKind).ok;
- * state = addTypeAlias(state, "Stream", ["A"], [starKind],
- *   muType("self", tupleType([varType("A"), appType(conType("Stream"), varType("A"))]))
- * ).ok;
- * console.log("recursive ok:", "ok" in state);  // true
+ * ---------------------------------------------------------------------------
+ * Purpose of aliases
+ * ---------------------------------------------------------------------------
+ * Type aliases are used to:
+ * - simplify large or complex type expressions
+ * - define type‑level synonyms (e.g., `type Pair<A,B> = (A, B)`)
+ * - reduce repetition in signatures and ADT payloads
+ *
+ * They are expanded transparently during:
+ * - type equality (`typesEqual`)
+ * - unification (`unifyTypes`)
+ * - normalization (`normalizeType`)
+ *
+ * ---------------------------------------------------------------------------
+ * Error cases
+ * ---------------------------------------------------------------------------
+ * - `duplicate_binding` — alias name already defined
+ * - `kind_mismatch` — alias body has the wrong kind under parameter bindings
+ * - `unbound` errors in the alias body
+ *
+ * ---------------------------------------------------------------------------
+ * @param state - Current typechecker state
+ * @param name - Alias name
+ * @param params - Type parameter names
+ * @param kinds - Kinds for each parameter
+ * @param body - The type expression defining the alias
+ *
+ * @returns An updated `TypeCheckerState` or a {@link TypingError}
+ *
+ * ---------------------------------------------------------------------------
+ * @example Simple identity alias:
+ * ```ts
+ * addTypeAlias(state, "Id", ["A"], [starKind], varType("A"));
+ * // type Id<A> = A
  * ```
  *
- * @example Failure: Unbound var
+ * @example Multi‑parameter alias:
  * ```ts
- * import { freshState, addTypeAlias, starKind, varType, showError } from "system-f-omega";
- *
- * const state = freshState();
- * const result = addTypeAlias(state, "Bad", ["A"], [starKind], varType("B"));
- * console.log("unbound:", showError(result.err));  // "Unbound identifier: B"
- * ```
- *
- * @example Failure: Wrong body kind
- * ```ts
- * import { freshState, addTypeAlias, starKind, lamType, varType, showError } from "system-f-omega";
- *
- * const state = freshState();
- * const result = addTypeAlias(state, "Bad", ["A"], [starKind],
- *   lamType("X", starKind, varType("X"))  // * → * (not *)
+ * addTypeAlias(
+ *   state,
+ *   "Pair",
+ *   ["A", "B"],
+ *   [starKind, starKind],
+ *   tupleType([varType("A"), varType("B")])
  * );
- * console.log("kind err:", showError(result.err));  // "Kind mismatch..."
+ * // type Pair<A,B> = (A, B)
  * ```
  *
- * @see {@link typeAliasBinding} Creates binding
- * @see {@link normalizeType} Expands aliases
- * @see {@link checkKind} Validates body
+ * @example Higher‑kinded alias:
+ * ```ts
+ * addTypeAlias(
+ *   state,
+ *   "Const",
+ *   ["F", "X"],
+ *   [arrowKind(starKind, starKind), starKind],
+ *   appType(varType("F"), conType("Int"))
+ * );
+ * ```
+ *
+ * @see {@link typeAliasBinding} The binding inserted by this function
+ * @see {@link addBinding} Context insertion logic
+ * @see {@link normalizeType} Alias expansion
+ * @see {@link addType} Declares concrete type constructors
  */
 export function addTypeAlias(
   state: TypeCheckerState,
@@ -11224,83 +13472,109 @@ export function addTypeAlias(
 }
 
 /**
- * Adds enum definition after kind-checking variants (recursive-aware).
+ * Adds a **nominal enum (algebraic data type)** definition to the typing
+ * context (`Γ`).
  *
- * **Purpose**: Defines ADTs: `enum Option<T>: None | Some(T)`.
- * - Computes kind (`params → *`).
- * - Validates fields `:: *` (self ctx).
- * - Detects self-refs → `recursive`.
- * Errors: kind/unbound/dup.
-
- * @param state - Checker state
- * @param name - Enum name
- * @param params - Param names/kinds
- * @param variants - Cases `[[label, scheme], ...]`
- * @param recursive - Assume recursive (defaults `true`)
- * @returns New state or error
+ * This declares a named sum type with variants, similar to:
  *
- * @example Success: Non-recursive enum
  * ```ts
- * import { freshState, addType, addEnum, starKind, showContext } from "system-f-omega";
- * import { tupleType } from "system-f-omega";
- *
- * let state = freshState();
- * state = addType(state, "Unit", starKind).ok;
- * state = addEnum(state, "Color", [], [], [
- *   ["Red", tupleType([])],
- *   ["Blue", tupleType([])]
- * ]).ok;
- * console.log("added:", showContext(state.ctx));  // "Enum: Color = ..."
+ * enum Option<T :: *> {
+ *   None : ()
+ *   Some : T
+ * }
  * ```
  *
- * @example Success: Recursive list
- * ```ts
- * import { freshState, addType, addEnum, starKind, varType, appType, conType, showContext } from "system-f-omega";
- * import { tupleType } from "system-f-omega";
+ * The definition records:
+ * - the enum **name**
+ * - its **kind** (derived from the parameter kinds)
+ * - its **type parameters**
+ * - its **variants**, each with a payload type scheme
+ * - whether the enum is **recursive**
  *
- * let state = freshState();
- * state = addType(state, "Int", starKind).ok;
- * state = addEnum(state, "List", ["T"], [starKind], [
- *   ["Nil", tupleType([])],
- *   ["Cons", tupleType([conType("T"), appType(conType("List"), varType("T"))])]
- * ], true).ok;
- * console.log("recursive:", state.ctx.find(b => b.enum?.recursive));  // true
+ * The resulting binding is stored as an {@link EnumDefBinding}.
+ *
+ * ---------------------------------------------------------------------------
+ * How enums are used in the typechecker
+ * ---------------------------------------------------------------------------
+ *
+ * **1. Normalization**
+ * During {@link normalizeType}, nominal enums are expanded into structural
+ * variant types, e.g.:
+ *
+ * ```
+ * Option<Int>  ⇒  <None: (), Some: Int>
  * ```
  *
- * @example Failure: Wrong variant kind
- * ```ts
- * import { freshState, addEnum, starKind, showError } from "system-f-omega";
- * import { lamType, varType } from "system-f-omega";
+ * If `recursive = true`, the expansion forms a recursive `μ`‑type:
  *
- * const state = freshState();
- * const result = addEnum(state, "Bad", ["T"], [starKind], [
- *   ["Case", lamType("X", starKind, varType("X"))]  // * → * (not *)
+ * ```
+ * List<Int> ⇒ μX. <Nil: (), Cons: (Int, X)>
+ * ```
+ *
+ * **2. Pattern matching**
+ * {@link checkPattern} uses enum definitions to:
+ * - validate constructor labels
+ * - substitute type parameters into variant payloads
+ *
+ * **3. Exhaustiveness checking**
+ * {@link checkExhaustive} uses the enum’s variant labels to determine whether
+ * match expressions cover all cases.
+ *
+ * **4. Variant injection typing**
+ * {@link inferInjectType} uses enum metadata to typecheck
+ * `<Label = value> as Enum<Args>`.
+ *
+ * ---------------------------------------------------------------------------
+ * Kind and arity checking
+ * ---------------------------------------------------------------------------
+ * - Each parameter must be assigned a kind (`params[i] :: kinds[i]`).
+ * - The enum’s overall kind is constructed as:
+ *
+ *     kinds[0] → kinds[1] → ... → *
+ *
+ * - Each variant payload (a `FieldScheme`) is checked to ensure all contained
+ *   types have kind `*`.
+ *
+ * ---------------------------------------------------------------------------
+ * Error cases
+ * ---------------------------------------------------------------------------
+ * - `duplicate_binding` if the enum name already exists
+ * - `kind_mismatch` if a parameter or payload has an invalid kind
+ * - invalid type expressions in the variant payloads
+ *
+ * ---------------------------------------------------------------------------
+ * @param state - The current typechecker state
+ * @param name - The enum name (e.g. `"Option"`)
+ * @param params - Type parameter names (e.g. `["T"]`)
+ * @param kinds - Kinds of each parameter (e.g. `[starKind]`)
+ * @param variants - List of `[label, FieldScheme]` variant definitions
+ * @param recursive - Whether the ADT may recursively reference itself
+ *                    (defaults to `true`)
+ *
+ * @returns A new `TypeCheckerState` or a {@link TypingError}
+ *
+ * ---------------------------------------------------------------------------
+ * @example Simple ADT:
+ * ```ts
+ * addEnum(state, "Option", ["T"], [starKind], [
+ *   ["None", tupleType([])],
+ *   ["Some", varType("T")]
  * ]);
- * console.log("kind err:", showError(result.err));  // "Kind mismatch... in enum Bad variant Case"
  * ```
  *
- * @example Failure: Unbound in variant
+ * @example Recursive list:
  * ```ts
- * import { freshState, addEnum, starKind, varType, showError } from "system-f-omega";
- *
- * const state = freshState();
- * const result = addEnum(state, "Bad", ["T"], [starKind], [["Case", varType("Missing")]]);
- * console.log("unbound:", showError(result.err));  // "Unbound identifier: Missing"
+ * addEnum(state, "List", ["T"], [starKind], [
+ *   ["Nil", tupleType([])],
+ *   ["Cons", tupleType([varType("T"), appType(conType("List"), varType("T"))])]
+ * ], true);
  * ```
  *
- * @example Failure: Duplicate enum
- * ```ts
- * import { freshState, addEnum, starKind, tupleType, showError } from "system-f-omega";
- *
- * let state = freshState();
- * state = addEnum(state, "Color", [], [], [["Red", tupleType([])]]).ok;
- * const result = addEnum(state, "Color", [], [], [["Blue", tupleType([])]]);
- * console.log("duplicate:", showError(result.err));  // "Duplicate binding for 'Color'..."
- * ```
- *
- * @see {@link enumDefBinding} Creates binding
- * @see {@link normalizeType} Expands enums
- * @see {@link checkKind} Validates fields
+ * @see {@link enumDefBinding} Binding structure stored in the context
+ * @see {@link normalizeType} Expands enums into structural variants
+ * @see {@link inferInjectType} Variant‑injection typing rule
+ * @see {@link checkPattern} Variant pattern checking
+ * @see {@link checkExhaustive} Match coverage analysis
  */
 export function addEnum(
   state: TypeCheckerState,
@@ -11365,75 +13639,105 @@ export function addEnum(
 }
 
 /**
- * Adds trait definition after kind-checking methods `:: *`.
+ * Adds a **trait definition** to the typing context (`Γ`).
  *
- * **Purpose**: Defines interfaces: `trait Eq<A>: eq : A → Bool`.
- * Validates methods in extended ctx (`typeParam` bound).
- * Errors: unbound/kind/dup.
-
- * @param state - Checker state
- * @param name - Trait name (`"Eq"`)
- * @param typeParam - Param (`"A"`)
- * @param kind - Param kind
- * @param methods - Signatures `[[name, type], ...]`
- * @returns New state or error
+ * A trait definition introduces a *typeclass‑like interface* with:
+ * - a **trait name** (e.g. `"Eq"`, `"Show"`, `"Ord"`)
+ * - a **type parameter** the trait abstracts over (e.g. `"Self"`, `"A"`)
+ * - the **kind** of that parameter (`*`, `* → *`, etc.)
+ * - a list of **method signatures**, where each method has a type possibly
+ *   referencing the trait’s type parameter
  *
- * @example Success: Basic trait
+ * Example:
  * ```ts
- * import { freshState, addType, addTraitDef, starKind, arrowType, varType, showContext } from "system-f-omega";
- *
- * let state = freshState();
- * state = addType(state, "Bool", starKind).ok;
- * state = addTraitDef(state, "Eq", "A", starKind, [
- *   ["eq", arrowType(varType("A"), varType("Bool"))]
- * ]).ok;
- * console.log(showContext(state.ctx));
- * // "...\nTrait: Eq = TraitDef (Eq A = *\n  eq : (A → Bool))"
+ * trait Eq<Self :: *> {
+ *   eq : Self → Self → Bool
+ * }
  * ```
  *
- * @example Success: HKT trait
- * ```ts
- * import { freshState, addType, addTraitDef, starKind, arrowKind, arrowType, varType, showContext } from "system-f-omega";
+ * ---------------------------------------------------------------------------
+ * What this function does
+ * ---------------------------------------------------------------------------
+ * 1. Constructs a trait definition binding via {@link traitDefBinding}.
+ * 2. Checks for:
+ *    - **duplicate names** (trait already defined)
+ *    - **kind correctness** of all method types
+ * 3. Inserts the trait definition into the context using {@link addBinding}.
  *
- * let state = freshState();
- * state = addTraitDef(state, "Functor", "F", arrowKind(starKind, starKind), [
- *   ["map", arrowType(varType("F"), varType("F"))]
- * ]).ok;
- * console.log(showContext(state.ctx));
- * // "...\nTrait: Functor = TraitDef (Functor F = (* → *)\n  map : (F → F))"
+ * After insertion, the trait becomes available for:
+ * - dictionary validation (`inferDictType`)
+ * - method access typing (`inferTraitMethodType`)
+ * - trait‑bounded polymorphism (`traitLamTerm`, `boundedForallType`)
+ * - instance resolution (`checkTraitImplementation`)
+ *
+ * ---------------------------------------------------------------------------
+ * Method signature rules
+ * ---------------------------------------------------------------------------
+ * Each method type may reference the trait’s type parameter.
+ * For example:
+ * ```ts
+ * ["eq", arrowType(varType("Self"), arrowType(varType("Self"), Bool))]
  * ```
  *
- * @example Failure: Wrong method kind
- * ```ts
- * import { freshState, addTraitDef, starKind, varType, showError } from "system-f-omega";
+ * The body of every method type must have kind `*`, and any type constructor
+ * usage inside its signature must be well‑kinded.
  *
- * const state = freshState();
- * const result = addTraitDef(state, "Bad", "A", starKind, [["m", varType("A")]]);
- * console.log("kind err:", showError(result.err));  // "Kind mismatch..."
+ * ---------------------------------------------------------------------------
+ * Error cases
+ * ---------------------------------------------------------------------------
+ * - `duplicate_binding` if a trait with the same name already exists
+ * - `kind_mismatch` if a method’s type has the wrong kind
+ * - `unbound` if a method refers to unknown type constructors
+ *
+ * ---------------------------------------------------------------------------
+ * @param state - Current typechecker state (context + meta environment)
+ * @param name - Trait name (e.g. `"Eq"`)
+ * @param typeParam - The type parameter name (`"Self"`, `"A"`)
+ * @param kind - The kind of the type parameter (`*`, `* → *`, ...)
+ * @param methods - Method signatures `[methodName, methodType]`
+ *
+ * @returns A new `TypeCheckerState` with the trait added, or a {@link TypingError}
+ *
+ * ---------------------------------------------------------------------------
+ * @example Adding a simple trait:
+ * ```ts
+ * addTraitDef(
+ *   state,
+ *   "Eq",
+ *   "A",
+ *   starKind,
+ *   [
+ *     ["eq", arrowType(varType("A"), arrowType(varType("A"), conType("Bool")))]
+ *   ]
+ * );
  * ```
  *
- * @example Failure: Unbound in method
+ * @example Higher‑kinded trait:
  * ```ts
- * import { freshState, addTraitDef, starKind, varType, showError } from "system-f-omega";
- *
- * const state = freshState();
- * const result = addTraitDef(state, "Bad", "A", starKind, [["m", varType("Missing")]]);
- * console.log("unbound:", showError(result.err));  // "Unbound identifier: Missing"
+ * addTraitDef(
+ *   state,
+ *   "Functor",
+ *   "F",
+ *   arrowKind(starKind, starKind),
+ *   [
+ *     ["map",
+ *       arrowType(
+ *         arrowType(varType("A"), varType("B")),
+ *         arrowType(
+ *           appType(varType("F"), varType("A")),
+ *           appType(varType("F"), varType("B"))
+ *         )
+ *       )
+ *     ]
+ *   ]
+ * );
  * ```
  *
- * @example Failure: Duplicate trait
- * ```ts
- * import { freshState, addTraitDef, starKind, arrowType, varType, showError } from "system-f-omega";
- *
- * let state = freshState();
- * state = addTraitDef(state, "Eq", "A", starKind, [["eq", arrowType(varType("A"), varType("Bool"))]]).ok;
- * const result = addTraitDef(state, "Eq", "A", starKind, [["eq", varType("Bool")]]);
- * console.log("duplicate:", showError(result.err));  // "Duplicate binding for 'Eq'..."
- * ```
- *
- * @see {@link traitDefBinding} Creates binding
- * @see {@link checkKind} Validates methods
- * @see {@link addBinding} Adds to ctx
+ * @see {@link traitDefBinding} Creates the binding object
+ * @see {@link traitImplBinding} Declares trait implementations
+ * @see {@link dictTerm} Method implementation storage
+ * @see {@link inferTraitMethodType} Method projection typing
+ * @see {@link inferDictType} Validates dictionaries
  */
 export function addTraitDef(
   state: TypeCheckerState,
@@ -11458,59 +13762,83 @@ export function addTraitDef(
 }
 
 /**
- * Adds trait impl after validating dictionary.
+ * Adds a **trait implementation** (typeclass instance) to the typing context.
  *
- * **Purpose**: Registers `trait` impl for `type` via `dict`.
- * Calls `inferDictType` → `traitImplBinding` → `addBinding`.
- * Errors: dict validation, dup.
-
- * @param state - Checker state
- * @param trait - Trait name (`"Eq"`)
- * @param type - Impl type (`Int`)
- * @param dict - Dictionary term
- * @returns New state or error
+ * Conceptually:
+ *     impl Trait for Type = dict
  *
- * @example Success: Valid impl
+ * This declares that a specific **type** implements a specific **trait**, using
+ * the given **dictionary** (`dict`) as evidence.
+ *
+ * For example:
  * ```ts
- * import { freshState, addType, addTraitDef, addTraitImpl, dictTerm, conType, lamTerm, varTerm, conTerm, starKind, arrowType, showContext } from "system-f-omega";
- *
- * let state = freshState();
- * state = addType(state, "Int", starKind).ok;
- * state = addType(state, "Bool", starKind).ok;
- * state = addTraitDef(state, "Eq", "A", starKind, [["eq", arrowType(conType("A"), conType("Bool"))]]).ok;
- * const dict = dictTerm("Eq", conType("Int"), [["eq", lamTerm("x", conType("Int"), conTerm("true", conType("Bool")))]]);
- * state = addTraitImpl(state, "Eq", conType("Int"), dict).ok;
- * console.log(showContext(state.ctx));
- * // "...\nImpl: Eq = dict Eq<Int> { eq = λx:Int.true }: Int"
+ * addTraitImpl(state, "Eq", conType("Int"), eqIntDict);
  * ```
  *
- * @example Failure: Missing method
- * ```ts
- * import { freshState, addType, addTraitDef, addTraitImpl, dictTerm, conType, starKind, showError } from "system-f-omega";
+ * ---------------------------------------------------------------------------
+ * What this function does
+ * ---------------------------------------------------------------------------
+ * 1. Validates that the dictionary term is well‑typed using {@link inferDictType}.
+ * 2. Checks that an implementation for `(trait, type)` does not already exist
+ *    (unless overriding is permitted elsewhere).
+ * 3. Constructs a `TraitImplBinding` via {@link traitImplBinding}.
+ * 4. Inserts the binding into the context through `state.ctx.push(...)`.
  *
- * let state = freshState();
- * state = addType(state, "Int", starKind).ok;
- * state = addTraitDef(state, "Eq", "A", starKind, [["eq", conType("Bool")], ["lt", conType("Bool")]]).ok;
- * const badDict = dictTerm("Eq", conType("Int"), [["eq", conType("Int")]]);
- * const result = addTraitImpl(state, "Eq", conType("Int"), badDict);
- * console.log("missing:", showError(result.err));  // "Missing method 'lt'..."
+ * After insertion, this instance becomes available for:
+ * - trait constraint solving (`checkTraitImplementation`)
+ * - bounded polymorphism instantiation (`instantiateWithTraits`)
+ * - trait‑application typing (`inferTraitAppType`)
+ * - dictionary‑based method lookup (`traitMethodTerm`)
+ *
+ * ---------------------------------------------------------------------------
+ * Dictionary validation
+ * ---------------------------------------------------------------------------
+ * Before adding the implementation, the dictionary is typechecked:
+ * - all required methods must be present
+ * - each method must match the trait’s signature (after substitution)
+ * - the trait must exist in the current context
+ * - the implemented type must have the correct kind
+ *
+ * Any failure here results in a `TypingError`.
+ *
+ * ---------------------------------------------------------------------------
+ * Duplicate implementation rules
+ * ---------------------------------------------------------------------------
+ * A type may not implement the same trait more than once.
+ *
+ * If `state.ctx` already contains:
+ *     trait_impl: { trait: "Eq", type: Int }
+ *
+ * then attempts to add a second implementation yield a
+ * `duplicate_binding` error (unless the hosting environment allows overrides).
+ *
+ * ---------------------------------------------------------------------------
+ * @param state - Current typechecker state
+ * @param trait - Trait name being implemented
+ * @param type - Type for which the trait is implemented
+ * @param dict - Dictionary term providing method implementations
+ *
+ * @returns A new state with the implementation added, or a {@link TypingError}
+ *
+ * ---------------------------------------------------------------------------
+ * @example Adding a simple implementation:
+ * ```ts
+ * const eqIntDict = dictTerm("Eq", Int, [
+ *   ["eq", lamTerm("x", Int, lamTerm("y", Int, conTerm("true", Bool)))]
+ * ]);
+ * addTraitImpl(state, "Eq", Int, eqIntDict);
  * ```
  *
- * @example Failure: Wrong dict trait/type
+ * @example Used for bounded polymorphism:
  * ```ts
- * import { freshState, addType, addTraitDef, addTraitImpl, dictTerm, conType, starKind, showError } from "system-f-omega";
- *
- * let state = freshState();
- * state = addType(state, "Int", starKind).ok;
- * state = addTraitDef(state, "Eq", "A", starKind, [["eq", conType("Bool")]]).ok;
- * const wrongDict = dictTerm("WrongTrait", conType("String"), [["eq", conType("Bool")]]);
- * const result = addTraitImpl(state, "Eq", conType("Int"), wrongDict);
- * console.log("wrong dict:", showError(result.err));  // Dict validation error
+ * // Trait-bound: ∀Self where Eq<Self>. Self → Bool
+ * // addTraitImpl allows resolving Eq<Int> or Eq<MyType> constraints.
  * ```
  *
- * @see {@link inferDictType} Validates dict
- * @see {@link traitImplBinding} Creates binding
- * @see {@link addBinding} Adds to ctx
+ * @see {@link traitImplBinding} Context representation of trait implementations
+ * @see {@link inferDictType} Validates dictionary correctness
+ * @see {@link checkTraitImplementation} Resolves trait constraints
+ * @see {@link instantiateWithTraits} Instantiates bounded foralls
  */
 export function addTraitImpl(
   state: TypeCheckerState,
@@ -11528,62 +13856,93 @@ export function addTraitImpl(
 }
 
 /**
- * Adds dictionary binding after inferring dict type.
+ * Adds a **dictionary value** to the typing context (`Γ`) under a given name.
  *
- * **Purpose**: Binds dict var: `let eqInt = dict Eq<Int> { ... }`.
- * Calls `inferType(dict)` → `dictBinding`.
- * Errors from inference/dup.
-
- * @param state - Checker state
- * @param name - Dict var (`"eqInt"`)
- * @param dict - DictTerm
- * @returns New state or error
+ * A dictionary is a term of the form:
  *
- * @example Success: Basic dict
+ *     dict Trait<Type> { method₁ = impl₁, ... }
+ *
+ * and represents **explicit evidence** that a type implements a trait.
+ *
+ * Unlike {@link addTraitImpl}, which registers a *global* trait instance,
+ * `addDict` introduces a **local dictionary variable**, similar to:
+ *
+ *     d : Dict<Eq, Int>
+ *
+ * This is useful in:
+ * - REPL environments
+ * - manual dictionary passing
+ * - intermediate testing
+ * - debugging trait logic
+ *
+ * ---------------------------------------------------------------------------
+ * What this function does
+ * ---------------------------------------------------------------------------
+ * 1. Infers the type of the dictionary using {@link inferDictType}.
+ *    This ensures:
+ *    - the trait exists
+ *    - all required methods are present
+ *    - method implementations are correctly typed
+ *    - the dictionary type is well‑formed
+ *
+ * 2. Creates a {@link DictBinding}:
+ *
+ *        name : Dict<trait, type>
+ *
+ * 3. Inserts this binding into the context using {@link addBinding}.
+ *
+ * The full dictionary term itself remains available in `state.ctx` under
+ * the `dict` property of the binding.
+ *
+ * ---------------------------------------------------------------------------
+ * When to use
+ * ---------------------------------------------------------------------------
+ * - When the user explicitly writes a dictionary value they want to name:
+ *   ```ts
+ *   let eqInt = dict Eq<Int> { eq = ... }
+ *   ```
+ *
+ * - When testing trait implementations manually:
+ *   ```ts
+ *   addDict(state, "eqInt", eqIntDict);
+ *   ```
+ *
+ * - When manually passing dictionaries during trait applications
+ *   (without relying on auto‑instantiation).
+ *
+ * ---------------------------------------------------------------------------
+ * Error cases
+ * ---------------------------------------------------------------------------
+ * - Any error produced by {@link inferDictType}
+ * - `duplicate_binding` if the dictionary name already exists
+ *
+ * ---------------------------------------------------------------------------
+ * @param state - Current typechecker state
+ * @param name - Variable name for the dictionary (e.g., `"eqInt"`)
+ * @param dict - The dictionary term to bind
+ *
+ * @returns Updated state or a {@link TypingError}
+ *
+ * ---------------------------------------------------------------------------
+ * @example Adding a dictionary:
  * ```ts
- * import { freshState, addType, addTraitDef, addDict, dictTerm, conType, lamTerm, varTerm, conTerm, starKind, arrowType, showContext } from "system-f-omega";
+ * const dict = dictTerm("Eq", Int, [
+ *   ["eq", lamTerm("x", Int, lamTerm("y", Int, conTerm("true", Bool)))]
+ * ]);
  *
- * let state = freshState();
- * state = addType(state, "Int", starKind).ok;
- * state = addType(state, "Bool", starKind).ok;
- * state = addTraitDef(state, "Eq", "A", starKind, [["eq", arrowType(conType("A"), conType("Bool"))]]).ok;
- * const dt = dictTerm("Eq", conType("Int"), [["eq", lamTerm("x", conType("Int"), conTerm("true", conType("Bool")))]]);
- * state = addDict(state, "eqInt", dt).ok;
- * console.log(showContext(state.ctx));
- * // "...\nDict: eqInt = Trait Eq : Int"
+ * addDict(state, "eqInt", dict);
+ * // => adds eqInt : Dict<Eq, Int>
  * ```
  *
- * @example Inference after add
+ * @example Using the dictionary:
  * ```ts
- * import { freshState, addType, addTraitDef, addDict, dictTerm, inferType, traitMethodTerm, conType, starKind, arrowType, lamTerm, varTerm, conTerm, showType } from "system-f-omega";
- *
- * let state = freshState();
- * state = addType(state, "Int", starKind).ok;
- * state = addType(state, "Bool", starKind).ok;
- * state = addTraitDef(state, "Eq", "A", starKind, [["eq", arrowType(conType("A"), conType("Bool"))]]).ok;
- * const dt = dictTerm("Eq", conType("Int"), [["eq", lamTerm("x", conType("Int"), conTerm("true", conType("Bool")))]]);
- * state = addDict(state, "eqInt", dt).ok;
- *
- * const method = traitMethodTerm({ var: "eqInt" }, "eq");
- * const result = inferType(state, method);
- * console.log("method:", showType(result.ok));  // "(Int → Bool)"
+ * traitMethodTerm(varTerm("eqInt"), "eq");
+ * // accesses the eq method inside eqInt
  * ```
  *
- * @example Failure: Missing method
- * ```ts
- * import { freshState, addType, addTraitDef, addDict, dictTerm, conType, starKind, showError } from "system-f-omega";
- *
- * let state = freshState();
- * state = addType(state, "Int", starKind).ok;
- * state = addTraitDef(state, "Eq", "A", starKind, [["eq", conType("Bool")], ["lt", conType("Bool")]]).ok;
- * const badDict = dictTerm("Eq", conType("Int"), [["eq", conType("Int")]]);
- * const result = addDict(state, "bad", badDict);
- * console.log("missing:", showError(result.err));  // "Missing method 'lt'..."
- * ```
- *
- * @see {@link inferType} Infers dict
- * @see {@link dictBinding} Creates binding
- * @see {@link addBinding} Adds to ctx
+ * @see {@link inferDictType} Validates the dictionary
+ * @see {@link dictBinding} Context storage of dictionary variables
+ * @see {@link traitMethodTerm} Accessing dictionary methods
  */
 export function addDict(
   state: TypeCheckerState,
