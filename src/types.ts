@@ -5959,396 +5959,643 @@ export type ExtraCaseTypeError = { extra_case: { label: string } };
 export type NotATupleTypeError = { not_a_tuple: Type };
 
 /**
- * Tuple index out-of-bounds error (invalid projection index).
+ * An error raised when projecting a tuple index that is **out of bounds**.
  *
- * **Purpose**: Bounds check failure:
- * - **Inference** (`inferTupleProjectType`): `index < 0` or `≥ tuple.length`.
- * Reports tuple type + index (post-normalization).
+ * **What it represents**
+ * `TupleIndexOutofBoundsTypeError` occurs when the typechecker encounters a
+ * tuple projection:
  *
- * @typedef {Object} TupleIndexOutofBoundsTypeError
- * @property {Object} tuple_index_out_of_bounds
- * @property {Type} tuple_index_out_of_bounds.tuple - Tuple type
- * @property {number} tuple_index_out_of_bounds.index - Invalid index
- *
- * @example Construction
- * ```ts
- * import { TupleIndexOutofBoundsTypeError, tupleType, conType } from "system-f-omega";
- *
- * const err: TupleIndexOutofBoundsTypeError = {
- *   tuple_index_out_of_bounds: { tuple: tupleType([conType("Int")]), index: 1 }
- * };
- * console.log(JSON.stringify(err));
+ * ```
+ * e.i
  * ```
  *
- * @example Projection out-of-bounds
+ * but the index `i` is not valid for the tuple’s arity.
+ *
+ * Examples:
+ * - `(1, 2).3`     → tuple has length 2, but index 3 was requested
+ * - `().0`         → the unit tuple has length 0
+ * - `(x).1`        → a single‑element tuple has only index 0
+ *
+ * The error includes:
+ * - `tuple` — the actual tuple type found
+ * - `index` — the invalid index used
+ *
+ * **Why it's useful**
+ * This error helps identify:
+ * - Typos in tuple indexing
+ * - Incorrect assumptions about tuple size
+ * - Mismatches between pattern shape and actual data
+ *
+ * It is raised *only when the callee is a tuple*, so it is distinct from
+ * {@link NotATupleTypeError}.
+ *
+ * **Where it is produced**
+ * - {@link inferTupleProjectType} — primary checker for tuple projections
+ * - {@link checkTuplePattern} — when matching tuple patterns with incorrect arity
+ *
+ * **Related**
+ * - {@link TupleType} — structural representation of tuple types
+ * - {@link tupleProjectTerm} — AST node for tuple indexing
+ * - {@link NotATupleTypeError} — when the scrutinee is not a tuple at all
+ *
+ * **Examples**
+ *
+ * Projecting an out‑of‑bounds index:
  * ```ts
- * import { freshState, addType, inferType, tupleTerm, tupleProjectTerm, conTerm, conType, starKind, showError } from "system-f-omega";
+ * import {
+ *   tupleTerm, conTerm, conType,
+ *   tupleProjectTerm, inferType,
+ *   freshState, addType, starKind, showError
+ * } from "system-f-omega";
  *
  * let state = freshState();
  * state = addType(state, "Int", starKind).ok;
  *
- * const tup1 = tupleTerm([conTerm("1", conType("Int"))]);  // Length 1
- * const proj1 = tupleProjectTerm(tup1, 1);  // Index 1 ≥ 1
- * const result = inferType(state, proj1);
- * console.log("error:", showError(result.err));  // "Tuple index out of bounds: Tuple: (Int,), Index: 1"
+ * const tup = tupleTerm([conTerm("1", conType("Int"))]); // (1,)
+ *
+ * const bad = tupleProjectTerm(tup, 1); // index 1 out of range
+ * console.log(showError(inferType(state, bad).err));
+ * // "Tuple index out of bounds:
+ * //    Tuple: (Int)
+ * //    Index: 1"
  * ```
  *
- * @see {@link inferTupleProjectType} Producer
- * @see {@link tupleProjectTerm} Usage
- * @see {@link showError} "Tuple index out of bounds: Tuple: τ, Index: n"
+ * Indexing unit:
+ * ```ts
+ * import { tupleProjectTerm, tupleTerm, inferType, freshState, showError } from "system-f-omega";
+ *
+ * const state = freshState();
+ * const unit = tupleTerm([]);  // ()
+ *
+ * console.log(showError(inferType(state, tupleProjectTerm(unit, 0)).err));
+ * // "Tuple index out of bounds"
+ * ```
+ *
+ * Tuple pattern mismatch example:
+ * ```ts
+ * import {
+ *   checkPattern, tuplePattern, varPattern,
+ *   tupleType, conType, addType, freshState, starKind, showError
+ * } from "system-f-omega";
+ *
+ * let state = freshState();
+ * state = addType(state, "Int", starKind).ok;
+ *
+ * const pat = tuplePattern([varPattern("x"), varPattern("y")]); // (x, y)
+ * const ty  = tupleType([conType("Int")]);                     // (Int)
+ *
+ * // During checking, index 1 is out-of-bounds
+ * console.log(showError(checkPattern(state, pat, ty).err));
+ * ```
  */
 export type TupleIndexOutofBoundsTypeError = {
   tuple_index_out_of_bounds: { tuple: Type; index: number };
 };
 
 /**
- * Missing trait impl error (no dictionary for trait+type).
+ * An error raised when the typechecker cannot find a **trait implementation**
+ * for a required trait–type combination.
  *
- * **Purpose**: Resolution failure:
- * - **Exact**: No `trait_impl` with `typesEqual(type)`.
- * - **Poly**: No instantiable impl (unify fail).
- * From `checkTraitImplementation` (single), `checkTraitConstraints` (multi).
+ * **What it represents**
+ * `MissingTraitImplError` means the system was asked to resolve a trait
+ * constraint:
  *
- * @typedef {Object} MissingTraitImplError
- * @property {Object} missing_trait_impl
- * @property {string} missing_trait_impl.trait - Missing trait (`"Eq"`)
- * @property {Type} missing_trait_impl.type - Target type (`String`)
- *
- * @example Construction
- * ```ts
- * import { MissingTraitImplError, conType } from "system-f-omega";
- *
- * const err: MissingTraitImplError = {
- *   missing_trait_impl: { trait: "Eq", type: conType("String") }
- * };
- * console.log(JSON.stringify(err));
+ * ```
+ * Trait<T>
  * ```
  *
- * @example No impl (exact)
+ * but no dictionary exists in the context (`Γ`) that implements the trait for
+ * that type.
+ *
+ * For example:
+ * - `Eq<String>` with no `impl Eq for String`
+ * - `Functor<F>` with no matching implementation for the constructor `F`
+ *
+ * The error includes:
+ * - `trait` — the missing trait name (`"Eq"`, `"Ord"`, `"Functor"`, …)
+ * - `type` — the type for which no implementation exists
+ *
+ * **Why it's useful**
+ * This error pinpoints missing or incorrect trait implementations. It helps
+ * detect:
+ * - missing `impl` blocks
+ * - incorrect types inside trait dictionaries
+ * - forgetting to register the implementation with {@link addTraitImpl}
+ * - mismatches between expected and actual trait instances
+ *
+ * It is essential for:
+ * - trait‑bounded polymorphism (`∀Self where Eq<Self>. …`)
+ * - dictionary‑passing resolution
+ * - verifying completeness of trait instances
+ *
+ * **Where it is produced**
+ * - {@link checkTraitConstraints} — when resolving trait bounds
+ * - {@link checkTraitImplementation} — when resolving a single constraint
+ * - {@link inferTraitAppType} — when applying a trait‑lambda to a type
+ *
+ * **Related**
+ * - {@link TraitImplBinding} — stores trait implementations
+ * - {@link checkTraitConstraints} — batch resolution
+ * - {@link TraitConstraint} — required constraints
+ * - {@link showError} — formats this error for user display
+ *
+ * **Examples**
+ *
+ * Missing trait implementation for a concrete type:
  * ```ts
- * import { freshState, addType, addTraitDef, checkTraitImplementation, conType, starKind, showError } from "system-f-omega";
+ * import {
+ *   freshState, addType, addTraitDef, checkTraitImplementation,
+ *   conType, starKind, showError
+ * } from "system-f-omega";
  *
  * let state = freshState();
  * state = addType(state, "String", starKind).ok;
- * state = addTraitDef(state, "Eq", "A", starKind, [["eq", conType("Bool")]]).ok;  // Def only
  *
- * const result = checkTraitImplementation(state, "Eq", conType("String"));
- * console.log("error:", showError(result.err));  // "Missing trait implementation: Trait: Eq Type: String"
+ * state = addTraitDef(state, "Eq", "A", starKind, [
+ *   ["eq", { con: "Bool" }]
+ * ]).ok;
+ *
+ * const res = checkTraitImplementation(state, "Eq", conType("String"));
+ * console.log(showError(res.err));
+ * // "Missing trait implementation:
+ * //    Trait: Eq
+ * //    Type:  String"
  * ```
  *
- * @example Poly impl mismatch
+ * Missing implementation inside trait constraints:
  * ```ts
- * import { freshState, addType, addTraitDef, traitImplBinding, dictTerm, checkTraitImplementation, forallType, appType, starKind, showError } from "system-f-omega";
- * import { varType } from "system-f-omega";
+ * import {
+ *   checkTraitConstraints, conType, freshState
+ * } from "system-f-omega";
  *
- * let state = freshState();
- * state = addType(state, "Int", starKind).ok;
- * state = addTraitDef(state, "Eq", "A", starKind, [["eq", conType("Bool")]]).ok;
- * const polyDict = dictTerm("Eq", forallType("a", starKind, varType("a")), []);  // Poly impl
- * state.ctx.push(traitImplBinding("Eq", appType(conType("List"), conType("Int")), polyDict));  // List<Int>
+ * const state = freshState();  // no impls
  *
- * const result = checkTraitImplementation(state, "Eq", conType("String"));  // No String
- * console.log("no impl:", showError(result.err));  // "Missing trait implementation: Trait: Eq Type: String"
+ * const constraints = [{ trait: "Show", type: conType("Int") }];
+ * console.log(checkTraitConstraints(state, constraints).err);
+ * // { missing_trait_impl: { trait: "Show", type: Int } }
  * ```
- *
- * @see {@link checkTraitImplementation} Single producer
- * @see {@link checkTraitConstraints} Multi producer
- * @see {@link traitImplBinding} Stores impls
- * @see {@link showError} "Missing trait implementation: Trait: T Type: τ"
  */
 export type MissingTraitImplError = {
   missing_trait_impl: { trait: string; type: Type };
 };
 
 /**
- * Missing method error (dict lacks required trait method).
+ * An error raised when a trait dictionary is **missing a required method**, or
+ * when code attempts to access a method that the trait does not define.
  *
- * **Purpose**: Dict validation failures:
- * - **inferDictType**: Provided methods miss required from trait_def.
- * - **inferTraitMethodType**: Method absent in dict/trait_def.
- * Reports trait + method (no type, sig from trait_def).
+ * **What it represents**
+ * `MissingMethodError` indicates a mismatch between:
  *
- * @typedef {Object} MissingMethodError
- * @property {Object} missing_method
- * @property {string} missing_method.trait - Trait name
- * @property {string} missing_method.method - Missing method
+ * - a trait’s **declared method list** (in {@link TraitDef}), and
+ * - the methods provided by a dictionary ({@link DictTerm}) or accessed through
+ *   a {@link TraitMethodTerm}.
  *
- * @example Construction
+ * This can happen when:
+ * - A dictionary omits one of the trait’s required methods
+ * - A trait method projection (`dict.m`) refers to a method not in the trait
+ * - A trait definition changes but existing dictionaries weren’t updated
+ *
+ * The error stores:
+ * - `trait` — the trait name (`"Eq"`, `"Ord"`, `"Show"`, …)
+ * - `method` — the method name that was missing
+ *
+ * **Why it's useful**
+ * This error ensures trait implementations are **complete** and consistent:
+ * - Prevents partially implemented typeclasses
+ * - Ensures dictionary‑passing works correctly
+ * - Avoids runtime failures due to missing evidence
+ *
+ * In effect, this enforces typeclass‑like *interface completeness*.
+ *
+ * **Where it is produced**
+ * - {@link inferDictType} — when validating a dictionary against a trait def
+ * - {@link inferTraitMethodType} — when projecting a method from a dictionary
+ * - {@link checkTraitConstraints} — validating evidence for trait‑bounded polymorphism
+ *
+ * **Related**
+ * - {@link TraitDef} — source of required method signatures
+ * - {@link DictTerm} — dictionary providing method implementations
+ * - {@link TraitMethodTerm} — projects dictionary methods
+ * - {@link TraitImplBinding} — stored trait implementations
+ *
+ * **Examples**
+ *
+ * Dictionary missing a required method:
  * ```ts
- * import { MissingMethodError } from "system-f-omega";
- *
- * const err: MissingMethodError = {
- *   missing_method: { trait: "Eq", method: "lt" }
- * };
- * console.log(JSON.stringify(err));
- * ```
- *
- * @example Dict missing method
- * ```ts
- * import { freshState, addType, addTraitDef, inferType, dictTerm, conType, starKind, arrowType, varType, showError } from "system-f-omega";
+ * import {
+ *   freshState, addType, addTraitDef,
+ *   dictTerm, inferType, conType, starKind, showError
+ * } from "system-f-omega";
  *
  * let state = freshState();
  * state = addType(state, "Int", starKind).ok;
+ *
  * state = addTraitDef(state, "Eq", "A", starKind, [
- *   ["eq", arrowType(varType("A"), varType("Bool"))],
- *   ["lt", arrowType(varType("A"), varType("Bool"))]
+ *   ["eq", conType("Bool")],
+ *   ["lt", conType("Bool")]
  * ]).ok;
  *
- * const incompleteDict = dictTerm("Eq", conType("Int"), [["eq", conType("Int")]]);  // Missing lt
- * const result = inferType(state, incompleteDict);
- * console.log("error:", showError(result.err));  // "Missing method 'lt' in trait 'Eq'"
+ * const incomplete = dictTerm("Eq", conType("Int"), [
+ *   ["eq", conType("Bool")]  // missing "lt"
+ * ]);
+ *
+ * console.log(showError(inferType(state, incomplete).err));
+ * // "Missing method 'lt' in trait 'Eq'"
  * ```
  *
- * @example Trait method (missing in dict)
+ * Accessing a method not in the trait:
  * ```ts
- * import { freshState, addType, addTraitDef, addDict, dictTerm, inferType, traitMethodTerm, varTerm, conType, starKind, showError } from "system-f-omega";
+ * import {
+ *   freshState, addType, addTraitDef, traitMethodTerm,
+ *   dictTerm, conType, starKind, showError, inferType
+ * } from "system-f-omega";
  *
  * let state = freshState();
  * state = addType(state, "Int", starKind).ok;
- * state = addTraitDef(state, "Eq", "A", starKind, [["eq", conType("Bool")], ["lt", conType("Bool")]]).ok;
- * const noLtDict = dictTerm("Eq", conType("Int"), [["eq", conType("Int")]]);
- * state = addDict(state, "eqInt", noLtDict).ok;
  *
- * const ltMethod = traitMethodTerm(varTerm("eqInt"), "lt");
- * const result = inferType(state, ltMethod);
- * console.log("missing method:", showError(result.err));  // "Missing method 'lt' in trait 'Eq'"
+ * state = addTraitDef(state, "Eq", "A", starKind, [
+ *   ["eq", conType("Bool")]
+ * ]).ok;
+ *
+ * const d = dictTerm("Eq", conType("Int"), [["eq", conType("Bool")]]);
+ *
+ * const bad = traitMethodTerm(d, "lt");  // 'lt' not in Eq
+ * console.log(showError(inferType(state, bad).err));
+ * // "Missing method 'lt' in trait 'Eq'"
  * ```
- *
- * @see {@link inferDictType} Dict validation
- * @see {@link inferTraitMethodType} Method lookup
- * @see {@link showError} "Missing method 'm' in trait 'T'"
  */
 export type MissingMethodError = {
   missing_method: { trait: string; method: string };
 };
 
 /**
- * Wrong number of dictionaries error (trait app mismatch).
+ * An error raised when a **trait application supplies the wrong number of
+ * dictionaries** compared to the trait constraints required by a
+ * {@link BoundedForallType}.
  *
- * **Purpose**: TraitAppTerm dicts != constraints:
- * - **inferTraitAppTerm**: Checks `dicts.length == constraints.length` pre-resolution.
- * Reports expected (constraints) vs actual (provided).
+ * **What it represents**
+ * Trait‑polymorphic functions (introduced via {@link TraitLamTerm}) may require
+ * one or more trait constraints:
  *
- * @typedef {Object} WrongNumberOfDictsError
- * @property {Object} wrong_number_of_dicts
- * @property {number} wrong_number_of_dicts.expected - Required dicts
- * @property {number} wrong_number_of_dicts.actual - Provided dicts
- *
- * @example Construction
- * ```ts
- * import { WrongNumberOfDictsError } from "system-f-omega";
- *
- * const err: WrongNumberOfDictsError = {
- *   wrong_number_of_dicts: { expected: 1, actual: 0 }
- * };
- * console.log(JSON.stringify(err));
+ * ```
+ * ΛSelf where Eq<Self>, Show<Self>. body
  * ```
  *
- * @example Trait app (missing dict)
- * ```ts
- * import { freshState, inferType, traitAppTerm, traitLamTerm, conType, starKind, varType, showError } from "system-f-omega";
+ * Instantiating such a function requires providing **one dictionary per
+ * constraint**, in the correct order:
  *
- * let state = freshState();
- * const traitLam = traitLamTerm("d", "Eq", "Self", starKind, [{ trait: "Eq", type: varType("Self") }], conType("Int"));
- * const badApp = traitAppTerm(traitLam, conType("Int"), []);  // 0 dicts, needs 1
- * const result = inferType(state, badApp);
- * console.log("error:", showError(result.err));  // "Wrong number of dictionaries provided: Expected: 1 Actual: 0"
+ * ```
+ * f[Int] with { eqIntDict, showIntDict }
  * ```
  *
- * @example Trait app (extra dicts)
- * ```ts
- * import { freshState, inferType, traitAppTerm, traitLamTerm, conType, starKind, varType, dictTerm, showError } from "system-f-omega";
+ * `WrongNumberOfDictsError` occurs when:
+ * - *Too few* dictionaries are provided
+ * - *Too many* dictionaries are provided
  *
- * let state = freshState();
- * const traitLam = traitLamTerm("d", "Eq", "Self", starKind, [], conType("Int"));  // 0 constraints
- * const eqDict = dictTerm("Eq", conType("Int"), []);
- * const badApp = traitAppTerm(traitLam, conType("Int"), [eqDict]);  // 1 dict, needs 0
- * const result = inferType(state, badApp);
- * console.log("extra dicts:", showError(result.err));  // "Wrong number of dictionaries provided: Expected: 0 Actual: 1"
+ * The error reports:
+ * - `expected` — how many dictionaries the trait lambda needs
+ * - `actual` — how many were supplied
+ *
+ * **Why it's useful**
+ * This error ensures that:
+ * - All required trait evidence is provided
+ * - No extraneous evidence is passed
+ * - Trait‑bounded polymorphism behaves like typeclass application
+ *
+ * It prevents confusing runtime behavior by enforcing exact dictionary arity.
+ *
+ * **Where it is produced**
+ * - {@link inferTraitAppType} — the main checker for trait application
+ * - Possibly surfaced through {@link checkTraitConstraints}
+ *
+ * **Related**
+ * - {@link TraitAppTerm} — application with dictionary arguments
+ * - {@link TraitLamTerm} — introduces trait constraints
+ * - {@link TraitConstraint} — describes each required dictionary
+ * - {@link MissingTraitImplError} — used when a required dictionary is missing or unresolved
+ *
+ * **Examples**
+ *
+ * Too few dictionaries:
+ * ```ts
+ * import {
+ *   traitLamTerm, traitAppTerm, varType, conType,
+ *   starKind, inferType, freshState, showError
+ * } from "system-f-omega";
+ *
+ * const state = freshState();
+ *
+ * const lam = traitLamTerm(
+ *   "d", "Eq", "Self", starKind,
+ *   [{ trait: "Eq", type: varType("Self") }],
+ *   { var: "body" }
+ * );
+ *
+ * const bad = traitAppTerm(lam, conType("Int"), []);  // missing 1 dictionary
+ *
+ * console.log(showError(inferType(state, bad).err));
+ * // "Wrong number of dictionaries provided:
+ * //    Expected: 1
+ * //    Actual:   0"
  * ```
  *
- * @see {@link inferTraitAppType} Producer
- * @see {@link traitAppTerm} Usage
- * @see {@link showError} "Wrong number of dictionaries provided: Expected: n Actual: m"
+ * Too many dictionaries:
+ * ```ts
+ * import {
+ *   traitAppTerm, traitLamTerm, varType, conType,
+ *   starKind, dictTerm, inferType, freshState, showError
+ * } from "system-f-omega";
+ *
+ * const state = freshState();
+ * const lam = traitLamTerm(
+ *   "d", "Eq", "Self", starKind,
+ *   [],  // no constraints
+ *   { var: "body" }
+ * );
+ *
+ * const extraDict = dictTerm("Eq", conType("Int"), []);
+ * const bad = traitAppTerm(lam, conType("Int"), [extraDict]);  // provided 1, expected 0
+ *
+ * console.log(showError(inferType(state, bad).err));
+ * // "Wrong number of dictionaries provided:
+ * //    Expected: 0
+ * //    Actual:   1"
+ * ```
  */
 export type WrongNumberOfDictsError = {
   wrong_number_of_dicts: { expected: number; actual: number };
 };
 
 /**
- * Unexpected kind assigned to binding error.
+ * An error raised when a type binding or declaration receives a **kind that the
+ * typechecker did not expect**.
  *
- * **Purpose**: Binding kind mismatch in context:
- * - **addType/TraitDef**: Assigned kind unexpected (ctx validation).
- * - **Param kinds**: Mismatch during alias/enum/trait param binding.
- * Reports name + kind (pre-binding).
+ * **What it represents**
+ * `UnexpectedKindError` indicates that a type, constructor, or parameter was
+ * assigned a kind that violates the expected definition or context rules.
  *
- * @typedef {Object} UnexpectedKindError
- * @property {Object} unexpected_kind
- * @property {string} unexpected_kind.name - Binding name
- * @property {Kind} unexpected_kind.kind - Unexpected kind
+ * This typically occurs when:
+ * - A type is declared with a kind that doesn't match expected usage
+ *   (e.g., giving `Int` the kind `* → *` instead of `*`)
+ * - A type alias or enum provides a kind inconsistent with its parameters
+ * - A type definition is reused with an incompatible kind in a different module
+ * - A module import renames a type but kind mismatches appear afterward
  *
- * @example Construction
+ * The error reports:
+ * - `name` — the binding that received the wrong kind
+ * - `kind` — the unexpected kind that was encountered
+ *
+ * **Why it's useful**
+ * This error helps catch:
+ * - Incorrect HKT declarations
+ * - Mistakes in enum or alias parameterization
+ * - Mismatched kinds across modules during import
+ * - Conceptual misuse of type constructors
+ *
+ * It acts as a safeguard ensuring that type constructors behave consistently
+ * across the entire program.
+ *
+ * **Where it is produced**
+ * Although rare, this error may surface in:
+ * - {@link addType} — when a declared kind contradicts expected usage
+ * - {@link addEnum} — inconsistencies in enum parameter kinds
+ * - {@link addTypeAlias} — kind mismatch in type alias declarations
+ * - {@link importModule} — when imported types conflict in kind
+ *
+ * **Related**
+ * - {@link Kind} — describes allowed kinds (`*` and `κ₁ → κ₂`)
+ * - {@link KindMismatchTypeError} — for mismatch between *two* kinds
+ * - {@link TypeBinding} — associates names with kinds
+ * - {@link checkKind} — computes and validates kind information
+ *
+ * **Examples**
+ *
+ * Declaring a primitive with the wrong kind:
  * ```ts
- * import { UnexpectedKindError, starKind, arrowKind } from "system-f-omega";
- *
- * const err: UnexpectedKindError = {
- *   unexpected_kind: { name: "List", kind: arrowKind(starKind, starKind) }
- * };
- * console.log(JSON.stringify(err));
- * ```
- *
- * @example Hypothetical binder mismatch
- * ```ts
- * // Assume addType validates against expected (e.g., primitive * only)
- * import { freshState, addType, starKind, arrowKind, showError } from "system-f-omega";
+ * import { addType, arrowKind, starKind, freshState, showError } from "system-f-omega";
  *
  * let state = freshState();
- * // If primitive expected * but arrow given
- * const result = addType(state, "Int", arrowKind(starKind, starKind));  // Hypothetical strict
- * console.log("unexpected:", showError(result.err));  // "Unexpected kind assigned to 'Int': (* → *)"
+ *
+ * // Suppose Int is expected to be :: *
+ * const res = addType(state, "Int", arrowKind(starKind, starKind));  // invalid
+ *
+ * console.log(showError(res.err));
+ * // "Unexpected kind assigned to 'Int': (* → *)"
  * ```
  *
- * @see {@link addType} Potential producer
- * @see {@link showError} "Unexpected kind assigned to 'name': κ"
+ * Incorrect enum parameterization:
+ * ```ts
+ * import { addEnum, starKind, tupleType, showError, freshState } from "system-f-omega";
+ *
+ * let state = freshState();
+ *
+ * // Wrong kinds for parameters in enum definition
+ * const res = addEnum(state, "Bad", ["A"], [tupleType([])], [["Case", tupleType([])]]);
+ *
+ * console.log(showError(res.err));  // Unexpected kind assigned in enum definition
+ * ```
+ *
+ * Importing a conflicting type binding:
+ * ```ts
+ * import { importModule, starKind, arrowKind, addType, freshState } from "system-f-omega";
+ *
+ * let from = freshState();
+ * from = addType(from, "List", arrowKind(starKind, starKind)).ok; // List :: * → *
+ *
+ * let into = freshState();
+ * into = addType(into, "List", starKind).ok; // Incorrect :: *
+ *
+ * const res = importModule({ from, into, roots: ["List"] });
+ * console.log("unexpected_kind" in res.err);  // true
+ * ```
  */
 export type UnexpectedKindError = {
   unexpected_kind: { name: string; kind: Kind };
 };
 
 /**
- * Circular import error (cyclic dependencies).
+ * An error raised when the module importer detects a **cyclic dependency
+ * between bindings**, such as:
  *
- * **Purpose**: Module import cycle detection:
- * - **collectDependencies** DFS: `A → B → ... → A`.
- * Reports cycle start + path (`visiting` stack).
- * From `importModule` → prevents infinite deps.
- *
- * @typedef {Object} CircularImportError
- * @property {Object} circular_import
- * @property {string} circular_import.name - Cycle trigger name
- * @property {string[]} circular_import.cycle - Cycle path `["A", "B", "A"]`
- *
- * @example Construction
- * ```ts
- * import { CircularImportError } from "system-f-omega";
- *
- * const err: CircularImportError = {
- *   circular_import: { name: "A", cycle: ["A", "AliasA", "A"] }
- * };
- * console.log(JSON.stringify(err));
+ * ```
+ * A depends on B
+ * B depends on C
+ * C depends on A    // cycle!
  * ```
  *
- * @example Cycle in deps (alias self-ref)
+ * **What it represents**
+ * `CircularImportError` is produced when {@link importModule} or
+ * {@link collectDependencies} discovers that importing certain bindings would
+ * create a recursive loop in the dependency graph.
+ *
+ * The error includes:
+ * - `name` — the binding where the cycle was detected
+ * - `cycle` — the sequence of names forming the cycle (e.g. `["A", "B", "A"]`)
+ *
+ * Cycles may occur in:
+ * - Type aliases referencing each other
+ * - Enums referencing aliases which refer back to the enum
+ * - Traits referencing types that reference the trait
+ * - Deep import graphs across modules
+ *
+ * **Why it's useful**
+ * This error prevents:
+ * - infinite recursive type or alias expansion
+ * - invalid recursive module structures
+ * - nonsensical or non‑terminating renaming during import
+ *
+ * It ensures imported code is **well‑formed, acyclic**, and safe to normalize.
+ *
+ * **Where it is produced**
+ * - {@link collectDependencies} — DFS traversal detects cycles
+ * - {@link importModule} — reports cycles before renaming and merging
+ *
+ * **Related**
+ * - {@link DuplicateBindingError} — name conflicts during import
+ * - {@link importModule} — full module importer
+ * - {@link bindingDependencies} — computes per‑binding dependencies
+ *
+ * **Examples**
+ *
+ * Direct cycle:
  * ```ts
- * import { freshState, addType, collectDependencies, showError } from "system-f-omega";
+ * import { freshState, collectDependencies, addTypeAlias,
+ *          typeAliasBinding, conType, showError } from "system-f-omega";
  *
  * let state = freshState();
- * state = addType(state, "A", { star: null }).ok;
- * // Hypothetical self-ref alias: A → AliasA → A
- * state.ctx.push({ type_alias: { name: "AliasA", params: [], kinds: [], body: { con: "A" } } });
  *
- * const result = collectDependencies(state, ["A"]);
- * console.log("cycle:", showError(result.err));  // "Circular import detected involving 'A': Cycle: A → AliasA → A"
+ * // A -> B -> A
+ * state.ctx.push(typeAliasBinding("A", [], [], conType("B")));
+ * state.ctx.push(typeAliasBinding("B", [], [], conType("A")));
+ *
+ * const res = collectDependencies(state, ["A"]);
+ * console.log(showError(res.err));
+ * // Circular import detected involving 'A': Cycle: A → B → A
  * ```
  *
- * @example importModule propagation
+ * Cycle through intermediate bindings:
  * ```ts
- * import { freshState, importModule, showError } from "system-f-omega";
+ * import { freshState, collectDependencies, typeAliasBinding, conType, showError } from "system-f-omega";
  *
- * let from = freshState();  // Assume cyclic deps
- * let into = freshState();
- * const result = importModule({ from, into, roots: ["A"] });
- * console.log("import cycle:", "circular_import" in result.err);  // true
+ * let state = freshState();
+ *
+ * state.ctx.push(typeAliasBinding("X", [], [], conType("Y")));
+ * state.ctx.push(typeAliasBinding("Y", [], [], conType("Z")));
+ * state.ctx.push(typeAliasBinding("Z", [], [], conType("X"))); // closes the loop
+ *
+ * console.log(showError(collectDependencies(state, ["X"]).err));
+ * // Cycle: X → Y → Z → X
  * ```
  *
- * @see {@link collectDependencies} DFS producer
- * @see {@link importModule} Module importer
- * @see {@link showError} "Circular import detected involving 'name': Cycle: A → B → ..."
+ * During module import:
+ * ```ts
+ * import { importModule, freshState, showError } from "system-f-omega";
+ *
+ * const from = freshState();   // assume contains a cycle
+ * const into = freshState();
+ *
+ * const result = importModule({ from, into, roots: ["A"] });
+ * console.log(showError(result.err));  // circular import error
+ * ```
  */
 export type CircularImportError = {
   circular_import: { name: string; cycle: string[] };
 };
 
 /**
- * Duplicate binding error (name conflict in context).
+ * An error raised when attempting to add a **binding with a name that already
+ * exists** in the typing context (`Γ`), without permission to override it.
  *
- * **Purpose**: Prevents overwriting in `add*`/`importModule`:
- * - **add***: Duplicate name (`addType("Int")` twice).
- * - **importModule**: Root deps conflict (unless `allowOverrides=true`).
- * Reports **name + both bindings** (existing/incoming) for diagnosis.
+ * **What it represents**
+ * `DuplicateBindingError` is produced when the typechecker encounters a
+ * redefinition of:
+ * - a term variable (`x`)
+ * - a type constructor (`Int`)
+ * - a trait (`Eq`)
+ * - a dictionary variable (`eqInt`)
+ * - an enum or type alias
  *
- * @typedef {Object} DuplicateBindingError
- * @property {Object} duplicate_binding
- * @property {string} duplicate_binding.name - Conflicting name
- * @property {Binding} duplicate_binding.existing - Current binding
- * @property {Binding} duplicate_binding.incoming - New binding
+ * The error includes:
+ * - `name` — the conflicting identifier
+ * - `existing` — the binding currently in the context
+ * - `incoming` — the new binding that attempted to overwrite it
  *
- * @example Construction
- * ```ts
- * import { DuplicateBindingError, typeBinding, starKind } from "system-f-omega";
- *
- * const err: DuplicateBindingError = {
- *   duplicate_binding: {
- *     name: "Int",
- *     existing: typeBinding("Int", starKind),
- *     incoming: typeBinding("Int", starKind)
- *   }
- * };
- * console.log(JSON.stringify(err));
+ * Example:
+ * ```
+ * Int :: *
+ * Int :: *
+ *         ↑ duplicate!
  * ```
  *
- * @example addType duplicate
+ * **Why it's useful**
+ * This error prevents:
+ * - accidental shadowing of important definitions
+ * - clashes between modules during {@link importModule}
+ * - inconsistencies between type constructors
+ * - silently overwriting dictionaries or implementations
+ *
+ * It ensures that the global context remains well‑formed and deterministic.
+ *
+ * **When it occurs**
+ * - {@link addType} — type already exists
+ * - {@link addTerm} — term name already used
+ * - {@link addTraitDef} — trait redefined
+ * - {@link addEnum} — enum name reused
+ * - {@link addTypeAlias} — alias name collides
+ * - {@link importModule} — merging modules without `allowOverrides`
+ *
+ * **Related**
+ * - {@link bindingName} — extracts the name used for duplicate checking
+ * - {@link renameBinding} — avoids conflicts during module import
+ * - {@link CircularImportError} — similar import‑time structural error
+ * - {@link showError} — formats duplicate binding errors nicely
+ *
+ * **Examples**
+ *
+ * Duplicating a type binding:
  * ```ts
- * import { freshState, addType, starKind, showError } from "system-f-omega";
+ * import {
+ *   freshState, addType, starKind, showError
+ * } from "system-f-omega";
  *
  * let state = freshState();
  * state = addType(state, "Int", starKind).ok;
- * const result = addType(state, "Int", starKind);  // Duplicate
- * console.log("error:", showError(result.err));
- * // "Duplicate binding for 'Int':
+ *
+ * const result = addType(state, "Int", starKind);  // duplicate
+ * console.log(showError(result.err));
+ * // Duplicate binding for 'Int':
  * //   Existing: Type: Int = *
- * //   Incoming: Type: Int = *"
+ * //   Incoming: Type: Int = *
  * ```
  *
- * @example importModule root conflict
+ * Duplicating a term binding:
+ * ```ts
+ * import {
+ *   freshState, addType, addTerm, conTerm, conType,
+ *   starKind, showError
+ * } from "system-f-omega";
+ *
+ * let state = freshState();
+ * state = addType(state, "Int", starKind).ok;
+ * state = addTerm(state, "x", conTerm("42", conType("Int"))).ok;
+ *
+ * const result = addTerm(state, "x", conTerm("7", conType("Int")));  // duplicate
+ * console.log(showError(result.err));
+ * ```
+ *
+ * Duplicate binding during module import:
  * ```ts
  * import { freshState, addType, importModule, starKind, showError } from "system-f-omega";
- *
- * let from = freshState();
- * from = addType(from, "Int", starKind).ok;
- *
- * let into = freshState();
- * into = addType(into, "Int", starKind).ok;  // Conflicts
- *
- * const result = importModule({ from, into, roots: ["Int"] });
- * console.log("import conflict:", showError(result.err));
- * // "Duplicate binding for 'Int':
- * //   Existing: Type: Int = *
- * //   Incoming: Type: Int = *"
- * ```
- *
- * @example Override (allowOverrides)
- * ```ts
- * import { freshState, addType, importModule, starKind } from "system-f-omega";
- *
- * let from = freshState();
- * from = addType(from, "Int", starKind).ok;
  *
  * let into = freshState();
  * into = addType(into, "Int", starKind).ok;
  *
- * const result = importModule({
- *   from, into, roots: ["Int"],
- *   allowOverrides: true  // Overrides existing
- * });
- * console.log("overridden:", "ok" in result);  // true
- * ```
+ * let from = freshState();
+ * from = addType(from, "Int", starKind).ok;
  *
- * @see {@link addBinding} Primary producer
- * @see {@link addType/Term/TraitDef/Impl/Dict/Enum/Alias} add* callers
- * @see {@link importModule} Import conflicts
- * @see {@link showError} "Duplicate binding for 'name': Existing: ... Incoming: ..."
+ * const result = importModule({ from, into, roots: ["Int"] });
+ * console.log(showError(result.err));  // duplicate binding error
+ * ```
  */
 export type DuplicateBindingError = {
   duplicate_binding: {
@@ -6359,122 +6606,85 @@ export type DuplicateBindingError = {
 };
 
 /**
- * Type checking errors from bidirectional inference/analysis.
+ * A tagged union of **all possible typechecking errors** produced by the
+ * typechecker.
  *
- * **Purpose**: **Precise diagnostics** for all failures:
- * - **Lookup**: Unbound vars/cons, missing impls/methods/fields/cases.
- * - **Formation**: Kind mismatches (HKT apps, binders, data fields).
- * - **Unification**: Type mismatches, cycles (occurs check).
- * - **Data**: Wrong constructors (not_a_*), index bounds, exhaustiveness.
- * - **Traits**: Wrong dict count, missing evidence.
- * - **Modules**: Cycles, duplicates.
- * Returned in `Result<TypingError, T>` from all APIs (`inferType`, `checkType`, `add*`, `importModule`).
- * Pretty-printed via `showError`.
+ * **What it represents**
+ * `TypingError` collects every error that can arise during:
+ * - type inference (`inferType`)
+ * - type checking (`checkType`)
+ * - kind checking (`checkKind`)
+ - pattern matching (`checkPattern`, `checkExhaustive`)
+ * - trait resolution (`checkTraitImplementation`, `checkTraitConstraints`)
+ * - module importing (`importModule`)
+ * - type unification (`unifyTypes`)
  *
- * **Error hierarchy**:
- * | Category | Errors | Common triggers |
- * |----------|--------|-----------------|
- * | **Lookup** | `UnboundTypeError`, `Missing*Error` | Missing bindings/impls/methods/fields/cases |
- * | **Kinds** | `KindMismatchTypeError`, `UnexpectedKindError`, `NotATypeFunctionTypeError` | HKT apps, binders, data fields |
- * | **Types** | `TypeMismatchTypeError`, `CyclicTypeError` | Unification/subsumption failures |
- * | **Data** | `NotA*TypeError`, `TupleIndexOutofBoundsTypeError`, `ExtraCaseTypeError` | Wrong constructors, bounds, over-coverage |
- * | **Traits** | `MissingTraitImplError`, `MissingMethodError`, `WrongNumberOfDictsError` | Resolution, dict validation |
- * | **Modules** | `CircularImportError`, `DuplicateBindingError` | Import cycles/conflicts |
+ * Each error variant provides precise information about what went wrong.
  *
- * @typedef {Union} TypingError
- * @type {UnboundTypeError} Missing type var/constructor
- * @type {KindMismatchTypeError} Wrong kind (HKT app, binder body)
- * @type {TypeMismatchTypeError} Incompatible types (unify/subsumes)
- * @type {NotAFunctionTypeError} App on non-function
- * @type {NotATypeFunctionTypeError} Type app on non-HKT
- * @type {CyclicTypeError} Infinite type (occurs check)
- * @type {NotARecordTypeError} Record op on non-record
- * @type {MissingFieldTypeError} Absent record field
- * @type {NotAVariantTypeError} Variant op on non-variant
- * @type {InvalidVariantTypeError} Wrong variant label
- * @type {MissingCaseTypeError} Non-exhaustive match
- * @type {ExtraCaseTypeError} Unreachable match case
- * @type {NotATupleTypeError} Tuple op on non-tuple
- * @type {TupleIndexOutofBoundsTypeError} Invalid tuple index
- * @type {MissingTraitImplError} No dict for trait+type
- * @type {MissingMethodError} Absent trait method
- * @type {WrongNumberOfDictsError} Trait app dict count mismatch
- * @type {UnexpectedKindError} Binding kind mismatch
- * @type {CircularImportError} Module cycle
- * @type {DuplicateBindingError} Name conflict
+ * **Categories of errors**
  *
- * @example Construction (major categories)
+ * **Lookup / Missing definitions**
+ * - {@link UnboundTypeError} — missing type or variable  
+ * - {@link MissingTraitImplError} — missing trait instance  
+ * - {@link MissingMethodError} — missing required trait method  
+ * - {@link MissingFieldTypeError} — missing record field  
+ * - {@link MissingCaseTypeError} — missing match case  
+ *
+ * **Kind errors**
+ * - {@link KindMismatchTypeError} — kind mismatch  
+ * - {@link UnexpectedKindError} — invalid or unexpected kind  
+ * - {@link NotATypeFunctionTypeError} — type application on a non‑function kind  
+ *
+ * **Type errors**
+ * - {@link TypeMismatchTypeError} — incompatible types  
+ * - {@link CyclicTypeError} — infinite/cyclic type detected  
+ * - {@link WrongNumberOfDictsError} — mismatched dictionary evidence arity  
+ *
+ * **Data shape errors**
+ * - {@link NotARecordTypeError} — used as record but isn’t  
+ * - {@link NotATupleTypeError} — used as tuple but isn’t  
+ * - {@link TupleIndexOutofBoundsTypeError} — invalid tuple projection  
+ * - {@link NotAVariantTypeError} — used as variant but isn’t  
+ * - {@link InvalidVariantTypeError} — invalid variant label  
+ * - {@link ExtraCaseTypeError} — extraneous match case not present in data  
+ *
+ * **Function errors**
+ * - {@link NotAFunctionTypeError} — applying non‑function value  
+ *
+ * **Module/import errors**
+ * - {@link CircularImportError} — dependency cycle during module import  
+ * - {@link DuplicateBindingError} — conflicting name in context  
+ *
+ * **Why it’s useful**
+ * Collecting all errors under a single type allows:
+ * - clean and uniform error handling through `Result<TypingError, T>`  
+ * - pattern matching on error kinds  
+ * - user‑friendly formatting via {@link showError}  
+ * - IDE tooling and REPLs to surface precise diagnostics  
+ *
+ * **Where it is used**
+ * - All high‑level APIs return `Result<TypingError, T>`  
+ * - {@link inferType}, {@link checkType}, {@link solveConstraints}  
+ * - {@link importModule}  
+ * - {@link showError} understands every variant  
+ *
+ * **Example**
  * ```ts
  * import {
- *   UnboundTypeError, KindMismatchTypeError, TypeMismatchTypeError,
- *   MissingTraitImplError, CyclicTypeError, DuplicateBindingError,
- *   starKind, conType
+ *   freshState, inferType, varTerm,
+ *   showError
  * } from "system-f-omega";
- * import { typeBinding } from "system-f-omega";
  *
- * // Lookup
- * const unbound: UnboundTypeError = { unbound: "Missing" };
+ * const state = freshState();
+ * const res = inferType(state, varTerm("missing"));
  *
- * // Kinds
- * const kindMismatch: KindMismatchTypeError = {
- *   kind_mismatch: { expected: starKind, actual: { arrow: { from: starKind, to: starKind } } }
- * };
- *
- * // Types
- * const typeMismatch: TypeMismatchTypeError = {
- *   type_mismatch: { expected: conType("Int"), actual: conType("Bool") }
- * };
- *
- * // Traits
- * const missingImpl: MissingTraitImplError = { missing_trait_impl: { trait: "Eq", type: conType("String") } };
- *
- * // Cycles
- * const cyclic: CyclicTypeError = { cyclic: "a" };
- *
- * // Modules
- * const duplicate: DuplicateBindingError = {
- *   duplicate_binding: { name: "Int", existing: typeBinding("Int", starKind), incoming: typeBinding("Int", starKind) }
- * };
+ * if ("err" in res) {
+ *   console.log(showError(res.err));  // "Unbound identifier: missing"
+ * }
  * ```
  *
- * @example Real inference failures
- * ```ts
- * import { freshState, addType, inferType, checkType, lamTerm, appTerm, varTerm, conTerm, projectTerm, matchTerm, variantPattern, varPattern, recordTerm, conType, starKind, arrowType, showError } from "system-f-omega";
- *
- * let state = freshState();
- * state = addType(state, "Int", starKind).ok;
- *
- * // Type mismatch (app arg)
- * const id = lamTerm("x", conType("Int"), varTerm("x"));
- * const badApp = appTerm(id, conTerm("true", conType("Bool")));
- * console.log("app err:", showError(inferType(state, badApp).err));
- *
- * // Not a record (project)
- * const rec = recordTerm([["x", conTerm("1", conType("Int"))]]);
- * console.log("project err:", showError(inferType(state, projectTerm(conTerm("42", conType("Int")), "x")).err));
- *
- * // Missing impl (assume traits)
- * ```
- *
- * @example showError output
- * ```ts
- * import { freshState, inferType, showError } from "system-f-omega";
- * import { lamTerm, varTerm, conTerm, conType, starKind } from "system-f-omega";
- *
- * let state = freshState();
- * state = addType(state, "Int", starKind).ok;
- * const badLam = lamTerm("x", conType("Bool"), varTerm("x"));  // Assume Bool missing
- * console.log(showError(inferType(state, badLam).err));  // Formatted error
- * ```
- *
- * @see {@link inferType} Synthesis errors
- * @see {@link checkType} Checking errors
- * @see {@link checkKind} Kind errors
- * @see {@link checkPattern} Pattern errors
- * @see {@link checkExhaustive} Match errors
- * @see {@link importModule} Binding/module errors
- * @see {@link showError} Pretty-printer
- * @see {@link Result} Error container
+ * @see {@link showError} for pretty‑printing all errors
+ * @see {@link inferType} and {@link checkType} which produce these errors
  */
 export type TypingError =
   | CircularImportError
@@ -6499,279 +6709,417 @@ export type TypingError =
   | WrongNumberOfDictsError;
 
 /**
- * Type equality constraint `left = right` (unification equation).
+ * A **type equality constraint** of the form `left = right`, used by the
+ * constraint‑based unification engine.
  *
- * **Purpose**: **Core unification primitive**:
- * - Added during inference/checking: app args, subsumption, patterns.
- * - Processed by `solveConstraints` → `processConstraint` → `unifyTypes`.
- * - Triggers normalization, flex-rigid binding, structural recursion.
- * Drives entire type inference via worklist.
+ * **What it represents**
+ * `TypeEqConstraint` is an instruction telling the solver:
  *
- * @typedef {Object} TypeEqConstraint
- * @property {Object} type_eq
- * @property {Type} type_eq.left - Left type
- * @property {Type} type_eq.right - Right type
+ * > “These two types must be equal. Unify them.”
  *
- * @example Construction (typeEq helper)
+ * It is the fundamental building block of type inference under a worklist
+ * algorithm.
+ *
+ * Whenever the typechecker needs to enforce that two types match (e.g.
+ * function argument matching, subsumption, pattern checking), it generates
+ * a `type_eq` constraint and pushes it into the solver’s worklist.
+ *
+ * **Why it's useful**
+ * TypeEq constraints allow:
+ * - Incremental, ordered unification
+ * - Collecting many equality checks before solving
+ * - Supporting higher‑kinded unification
+ * - Delaying constraints until enough information is learned
+ * - Explicit control over meta‑variable solving
+ *
+ * They allow complex typing rules to remain simple: rules only generate
+ * constraints; the solver performs the unification.
+ *
+ * **Where it is used**
+ * - {@link unifyTypes} — consumes type equality constraints
+ * - {@link solveConstraints} — processes the entire worklist
+ * - {@link subsumes} — adds constraints for subtyping
+ * - {@link checkPattern} — generates constraints when matching patterns
+ * - {@link checkType} — produces equality constraints for expected types
+ *
+ * **Related**
+ * - {@link KindEqConstraint} — the analogous constraint for kinds
+ * - {@link HasTypeConstraint} — deferred type checking
+ * - {@link HasKindConstraint} — deferred kind checking
+ * - {@link processConstraint} — dispatches constraint solving
+ *
+ * **Examples**
+ *
+ * Creating a simple type‑equality constraint:
  * ```ts
  * import { typeEq, varType, conType } from "system-f-omega";
  *
- * const constraint: TypeEqConstraint = typeEq(varType("a"), conType("Int"));
- * console.log(JSON.stringify(constraint));
+ * const eq = typeEq(varType("A"), conType("Int"));
+ * // { type_eq: { left: A, right: Int } }
  * ```
  *
- * @example Worklist solving
+ * Solving a single constraint:
  * ```ts
- * import { freshState, solveConstraints, typeEq, varType, conType } from "system-f-omega";
+ * import {
+ *   freshState, solveConstraints,
+ *   typeEq, varType, conType
+ * } from "system-f-omega";
  *
  * const state = freshState();
  * const worklist = [typeEq(varType("a"), conType("Int"))];
- * const subst = new Map<string, Type>();
+ * const subst = new Map();
+ *
  * const result = solveConstraints(state, worklist, subst);
- * console.log("a := Int:", subst.has("a"));  // true
+ * console.log(subst.get("a"));  // { con: "Int" }
  * ```
  *
- * @example Real inference (app arg unify)
+ * Constraints generated during type inference:
  * ```ts
- * import { freshState, addType, inferType, lamTerm, appTerm, varTerm, conTerm, conType, starKind } from "system-f-omega";
+ * import {
+ *   freshState, unifyTypes,
+ *   arrowType, varType, conType
+ * } from "system-f-omega";
  *
- * let state = freshState();
- * state = addType(state, "Int", starKind).ok;
- * const id = lamTerm("x", conType("Int"), varTerm("x"));
- * const app = appTerm(id, conTerm("42", conType("Int")));
- * // inferAppType adds typeEq(?0, Int) internally
- * const result = inferType(state, app);
- * console.log("solved via constraints");
+ * const state = freshState();
+ * const subst = new Map();
+ * const worklist = [];
+ *
+ * unifyTypes(
+ *   state,
+ *   arrowType(varType("A"), varType("B")),
+ *   arrowType(conType("Int"), conType("Bool")),
+ *   worklist,
+ *   subst
+ * );
+ *
+ * // worklist now contains:
+ * //  A = Int
+ * //  B = Bool
  * ```
- *
- * @see {@link typeEq} Constructor
- * @see {@link solveConstraints} Worklist solver
- * @see {@link unifyTypes} Processor
- * @see {@link Constraint} Worklist item
  */
 export type TypeEqConstraint = { type_eq: { left: Type; right: Type } };
 
 /**
- * Kind equality constraint `left = right` (kind unification).
+ * A **kind equality constraint** of the form `left = right`, used during
+ * higher‑kinded type checking.
  *
- * **Purpose**: **HKT kind matching**:
- * - Added by `checkAppKind`: `func :: κ₁ → κ₂`, `arg :: κ₁`.
- * - Processed by `solveConstraints` → `unifyKinds` (structural).
- * Less common than types (triggers on HKT apps like `List<Int>`).
+ * **What it represents**
+ * `KindEqConstraint` tells the solver:
  *
- * @typedef {Object} KindEqConstraint
- * @property {Object} kind_eq
- * @property {Kind} kind_eq.left - Left kind
- * @property {Kind} kind_eq.right - Right kind
+ * > “These two kinds must be equal—unify them.”
  *
- * @example Construction (kindEq helper)
+ * This is the kind‑level analogue of {@link TypeEqConstraint}.
+ * It is generated when:
+ * - Applying a higher‑kinded type (`F<T>`)
+ * - Instantiating polymorphic types with kinded type parameters
+ * - Checking lambda kinds in {@link LamType}
+ * - Ensuring record/variant fields have kind `*`
+ *
+ * **Why it's useful**
+ * Kind equality constraints enable:
+ * - Proper checking of type‑level functions (`* → *`, `(* → *) → *`, etc.)
+ * - Ensuring type constructors are applied correctly
+ * - Supporting System F‑omega’s higher‑kinded polymorphism
+ * - Clean separation between *generating constraints* and *solving them*
+ *
+ * They allow kind checking to be deferred until enough meta‑kind information is
+ * known.
+ *
+ * **Where it is used**
+ * - {@link checkAppKind} — verifies constructor application kinds
+ * - {@link solveConstraints} — processes kind equality constraints
+ * - {@link unifyKinds} — performs structural kind unification
+ * - {@link HasKindConstraint} — may produce kind equality constraints indirectly
+ *
+ * **Related**
+ * - {@link TypeEqConstraint} — type‑level equality constraint
+ * - {@link HasKindConstraint} — deferred kind check constraint
+ * - {@link kindsEqual} — structural kind equality
+ * - {@link showError} — formats kind errors
+ *
+ * **Examples**
+ *
+ * A simple kind‑equality constraint:
  * ```ts
- * import { kindEq, starKind, arrowKind } from "system-f-omega";
+ * import { kindEq, starKind } from "system-f-omega";
  *
- * const constraint: KindEqConstraint = kindEq(starKind, arrowKind(starKind, starKind));
- * console.log(JSON.stringify(constraint));
+ * const c = kindEq(starKind, starKind);
+ * // { kind_eq: { left: *, right: * } }
  * ```
  *
- * @example Worklist solving (success)
- * ```ts
- * import { freshState, solveConstraints, kindEq, starKind } from "system-f-omega";
- *
- * const state = freshState();
- * const worklist = [kindEq(starKind, starKind)];
- * const result = solveConstraints(state, worklist);
- * console.log("equal:", "ok" in result);  // true
- * ```
- *
- * @example Worklist failure (mismatch)
+ * Solving kind constraints:
  * ```ts
  * import { freshState, solveConstraints, kindEq, starKind, arrowKind } from "system-f-omega";
  *
  * const state = freshState();
- * const worklist = [kindEq(starKind, arrowKind(starKind, starKind))];
- * const result = solveConstraints(state, worklist);
- * console.log("mismatch:", "kind_mismatch" in result.err);  // true
+ * const worklist = [
+ *   kindEq(arrowKind(starKind, starKind), arrowKind(starKind, starKind))
+ * ];
+ *
+ * console.log("ok" in solveConstraints(state, worklist));  // true
  * ```
  *
- * @example Real HKT app (kindEq added)
+ * Detecting kind mismatch:
  * ```ts
- * import { freshState, addType, checkKind, appType, conType, starKind, arrowKind } from "system-f-omega";
+ * import { freshState, solveConstraints, kindEq, starKind, arrowKind, showError } from "system-f-omega";
  *
- * let state = freshState();
- * state = addType(state, "List", arrowKind(starKind, starKind)).ok;
- * state = addType(state, "Int", starKind).ok;
+ * const state = freshState();
+ * const bad = [kindEq(starKind, arrowKind(starKind, starKind))];
  *
- * // checkAppKind adds kindEq(starKind, starKind) internally
- * const result = checkKind(state, appType(conType("List"), conType("Int")));
- * console.log("HKT kind OK");
+ * console.log(showError(solveConstraints(state, bad).err));
+ * // "Kind mismatch: Expected: *  Actual: (* → *)"
  * ```
- *
- * @see {@link kindEq} Constructor
- * @see {@link solveConstraints} Worklist solver
- * @see {@link unifyKinds} Processor
- * @see {@link checkAppKind} HKT trigger
- * @see {@link Constraint} Worklist item
  */
 export type KindEqConstraint = { kind_eq: { left: Kind; right: Kind } };
 
 /**
- * Has-kind constraint `Γ ⊢ ty : kind` (deferred well-formedness).
+ * A **deferred kind-checking constraint** of the form:
  *
- * **Purpose**: **Defer type kinding** to solver:
- * - Added when kind needed but ctx/metas incomplete (unification, alias bodies).
- * - Solver: `checkKind(state, ty)` → add `kindEq(result, kind)`.
- * Avoids premature errors during constraint propagation.
- *
- * @typedef {Object} HasKindConstraint
- * @property {Object} has_kind
- * @property {Type} has_kind.ty - Type to kind-check
- * @property {Kind} has_kind.kind - Expected kind
- * @property {TypeCheckerState} has_kind.state - Checker state (ctx/meta snapshot)
- *
- * @example Construction (hasKind helper)
- * ```ts
- * import { hasKind, lamType, starKind } from "system-f-omega";
- * import { freshState } from "system-f-omega";
- *
- * const state = freshState();
- * const constraint = hasKind(lamType("X", starKind, { var: "X" }), starKind, state);
- * console.log(JSON.stringify(constraint));
+ * ```
+ * Γ ⊢ ty : kind
  * ```
  *
- * @example Worklist deferral
+ * meaning “check that type `ty` has kind `kind`, using the stored
+ * `TypeCheckerState`.”
+ *
+ * **What it represents**
+ * `HasKindConstraint` is added to the solver’s worklist when the typechecker
+ * needs to **delay a kind check** until more information is known—usually
+ * because:
+ *
+ * - Meta‑variables (`?N`) must first be solved
+ * - Type-level normalization may reveal new structure
+ * - Higher‑kinded unification depends on constraints processed earlier
+ *
+ * The constraint stores:
+ * - `ty` — the type whose kind must be checked
+ * - `kind` — the expected kind
+ * - `state` — a snapshot of the typechecker state to use for kind checking
+ *
+ * When processed, the solver:
+ * 1. Runs `checkKind(state, ty)`
+ * 2. Generates a {@link KindEqConstraint} equating the inferred and expected kind
+ *
+ * **Why it's useful**
+ * Deferred kind checking enables:
+ * - Correct higher‑kinded type inference
+ * - Avoiding premature errors when meta‑vars are not yet solved
+ * - Smooth interaction between unification, normalization, and kind inference
+ *
+ * Without deferred constraints, many valid programs involving type‑level lambdas,
+ * polymorphism, or trait‑bounded types would fail too early.
+ *
+ * **Where it is used**
+ * - Automatically introduced by certain typing rules that rely on kind
+ *   information not yet available
+ * - Processed by {@link processConstraint} and {@link solveConstraints}
+ * - Used in type-level normalization paths that need delayed kind validation
+ *
+ * **Related**
+ * - {@link KindEqConstraint} — constraint generated after a deferred check
+ * - {@link TypeEqConstraint} — analogous mechanism for type equality
+ * - {@link checkKind} — performs actual kind inference
+ * - {@link processConstraint} — executes deferred kind checking
+ *
+ * **Examples**
+ *
+ * Deferring a kind check:
  * ```ts
- * import { freshState, solveConstraints, hasKind, lamType, starKind, arrowKind } from "system-f-omega";
+ * import {
+ *   hasKind, lamType, varType, starKind,
+ *   freshState, solveConstraints, showError
+ * } from "system-f-omega";
  *
  * const state = freshState();
- * const worklist = [hasKind(lamType("X", starKind, { var: "X" }), starKind, state)];
- * const subst = new Map<string, Type>();
- * const result = solveConstraints(state, worklist, subst);
- * console.log("defers → kindEq(*, *→*):", "kind_mismatch" in result.err);  // true (mismatch)
+ *
+ * // λX::*. X   has kind * → *
+ * const ty = lamType("X", starKind, varType("X"));
+ *
+ * const worklist = [
+ *   hasKind(ty, starKind, state)  // Expect kind *, but actual is * → *
+ * ];
+ *
+ * const result = solveConstraints(state, worklist);
+ * console.log(showError(result.err));
+ * // "Kind mismatch: Expected: * Actual: (* → *)"
  * ```
  *
- * @see {@link hasKind} Constructor
- * @see {@link solveConstraints} Processor
- * @see {@link checkKind} Triggered check
+ * A valid deferred check:
+ * ```ts
+ * import { hasKind, conType, starKind, freshState, solveConstraints } from "system-f-omega";
+ *
+ * const state = freshState();
+ * const w = [hasKind(conType("Int"), starKind, state)];
+ *
+ * console.log("ok" in solveConstraints(state, w));  // true
+ * ```
  */
 export type HasKindConstraint = {
   has_kind: { ty: Type; kind: Kind; state: TypeCheckerState };
 };
 
 /**
- * Has-type constraint `Γ ⊢ term : ty` (deferred subterm typing).
+ * A **deferred type-checking constraint** of the form:
  *
- * **Purpose**: **Defer inference/checking** of subterms:
- * - Added in bidirectional when ctx incomplete (lets, trait methods, dicts).
- * - Solver: `inferType(state, term)` → add `typeEq(result, ty)`.
- * Enables constraint-based flow (no blocking inference).
- *
- * @typedef {Object} HasTypeConstraint
- * @property {Object} has_type
- * @property {Term} has_type.term - Term to type
- * @property {Type} has_type.ty - Expected type
- * @property {TypeCheckerState} has_type.state - Checker state (ctx/meta snapshot)
- *
- * @example Construction (hasType helper)
- * ```ts
- * import { hasType, lamTerm, arrowType } from "system-f-omega";
- * import { freshState, conType } from "system-f-omega";
- *
- * const state = freshState();
- * const constraint = hasType(lamTerm("x", conType("Int"), { var: "x" }), arrowType(conType("Int"), conType("Int")), state);
- * console.log(JSON.stringify(constraint));
+ * ```
+ * Γ ⊢ term : ty
  * ```
  *
- * @example Worklist deferral
+ * meaning “infer the type of `term` later, and unify it with the expected
+ * type `ty`.”
+ *
+ * **What it represents**
+ * `HasTypeConstraint` is added to the solver’s worklist when the typechecker
+ * wants to **delay the type inference or checking** of a subterm.
+ *
+ * This is typically necessary when:
+ * - Unification has not yet solved enough meta‑variables
+ * - Let‑expressions or trait methods rely on types discovered later
+ * - Polymorphic or trait‑bounded expressions require staged resolution
+ * - Complex expressions produce constraints that must be solved before checking a subterm
+ *
+ * When processed, the solver:
+ * 1. Runs `inferType(state, term)`
+ * 2. Produces a {@link TypeEqConstraint} equating the inferred type with `ty`
+ *
+ * **Why it's useful**
+ * Deferred type checking enables:
+ * - Constraint‑based typing (worklist‑driven inference)
+ * - Handling forward references and staged type reconstruction
+ * - Allowing type inference to proceed even when some information is missing
+ * - Let‑polymorphism and trait checking without premature failure
+ *
+ * Without this mechanism, many programs would fail early simply because the
+ * typechecker had not yet solved enough constraints to infer nested types.
+ *
+ * **Where it is used**
+ * - Pattern checking and record/variant matching
+ * - Dictionary validation in {@link inferDictType}
+ * - Trait‑bounded polymorphism and trait applications
+ * - Inference paths that rely on staged resolution
+ *
+ * **Related**
+ * - {@link TypeEqConstraint} — produced after deferring the check
+ * - {@link HasKindConstraint} — analogous mechanism for deferred kind checking
+ * - {@link processConstraint} — executes deferred inference
+ * - {@link inferType} — used to infer the type of the deferred term
+ *
+ * **Examples**
+ *
+ * Deferred typecheck for a lambda value:
  * ```ts
- * import { freshState, solveConstraints, hasType, lamTerm, arrowType } from "system-f-omega";
- * import { conType } from "system-f-omega";
+ * import {
+ *   hasType, lamTerm, varTerm, conType,
+ *   arrowType, freshState, solveConstraints, showError
+ * } from "system-f-omega";
  *
  * const state = freshState();
- * const worklist = [hasType(lamTerm("x", conType("Int"), { var: "x" }), arrowType(conType("Int"), conType("Bool")), state)];
- * const subst = new Map<string, Type>();
- * const result = solveConstraints(state, worklist, subst);
- * console.log("defers → typeEq");
+ *
+ * const term = lamTerm("x", conType("Int"), varTerm("x"));
+ *
+ * const worklist = [
+ *   hasType(term, arrowType(conType("Int"), conType("Int")), state)
+ * ];
+ *
+ * console.log("ok" in solveConstraints(state, worklist));  // true
  * ```
  *
- * @see {@link hasType} Constructor
- * @see {@link solveConstraints} Processor
- * @see {@link inferType} Triggered inference
+ * Using deferred typing for trait dictionary validation:
+ * ```ts
+ * import {
+ *   hasType, dictTerm, conType, freshState, solveConstraints
+ * } from "system-f-omega";
+ *
+ * const state = freshState();
+ *
+ * const dict = dictTerm("Eq", conType("Int"), [["eq", { var: "impl" }]]);
+ *
+ * const w = [hasType(dict, conType("Bool"), state)];  // obviously wrong
+ *
+ * console.log("err" in solveConstraints(state, w));  // true
+ * ```
  */
 export type HasTypeConstraint = {
   has_type: { term: Term; ty: Type; state: TypeCheckerState };
 };
 
 /**
- * Constraints for worklist-based unification/solving.
+ * A **worklist constraint** used by the typechecker’s unification engine.
  *
- * **Purpose**: **Deferred solving** via `solveConstraints(worklist, subst)`:
- * - **Atomic**: `type_eq`/`kind_eq` → immediate unify.
- * - **Deferred**: `has_kind`/`has_type` → trigger inference/check → add eqs.
- * Processed by `processConstraint` loop until fixed-point.
- * Enables **non-blocking inference**: generate → solve → propagate.
-
- * | Variant | Trigger | Processor |
- * |---------|---------|-----------|
- * | `TypeEqConstraint` | App args, subsumption | `unifyTypes` (flex-rigid/structural) |
- * | `KindEqConstraint` | HKT apps | `unifyKinds` (structural) |
- * | `HasKindConstraint` | Well-formedness needed | `checkKind` → `kindEq` |
- * | `HasTypeConstraint` | Subterm typing | `inferType` → `typeEq` |
-
- * @typedef {Union} Constraint
- * @type {TypeEqConstraint} `left = right` - Type unification
- * @type {KindEqConstraint} `left = right` - Kind unification
- * @type {HasKindConstraint} `Γ ⊢ ty : kind` - Deferred kinding
- * @type {HasTypeConstraint} `Γ ⊢ term : ty` - Deferred typing
-
- * @example Construction (helpers)
+ * This union covers all kinds of constraints that may appear in the solver:
+ *
+ * 1. **Type equality** — {@link TypeEqConstraint}
+ *    Ensures two types must be equal (`τ₁ = τ₂`).
+ *
+ * 2. **Kind equality** — {@link KindEqConstraint}
+ *    Ensures two kinds match (`κ₁ = κ₂`).
+ *
+ * 3. **Deferred kind checking** — {@link HasKindConstraint}
+ *    Postpones checking `Γ ⊢ τ : κ` until more information is known.
+ *
+ * 4. **Deferred type checking** — {@link HasTypeConstraint}
+ *    Postpones checking `Γ ⊢ e : τ` until constraints solve enough meta‑vars.
+ *
+ * **What it represents**
+ * `Constraint` is the atomic unit of the **worklist‑based solver** in the
+ * typechecker.
+ *
+ * Constraint generation happens during type inference whenever the typechecker
+ * wants to *require* something but not necessarily solve it immediately.
+ *
+ * The solver (`solveConstraints`) repeatedly processes these constraints until
+ * no constraints remain or an error occurs.
+ *
+ * **Why it's useful**
+ * Constraints allow the typechecker to:
+ * - Defer decisions until enough information is available
+ * - Perform unification incrementally
+ * - Support higher‑kinded polymorphism
+ * - Cleanly separate constraint generation from solving
+ * - Simultaneously solve many dependent equations
+ *
+ * This makes the typechecker more expressive and more predictable.
+ *
+ * **Where it is used**
+ * - {@link unifyTypes} → pushes {@link TypeEqConstraint}
+ * - {@link checkAppKind} → pushes {@link KindEqConstraint}
+ * - {@link inferDictType} → often pushes {@link HasTypeConstraint}
+ * - {@link solveConstraints} and {@link processConstraint} → consume constraints
+ *
+ * **Related**
+ * - {@link TypeEqConstraint} — type equality
+ * - {@link KindEqConstraint} — kind equality
+ * - {@link HasKindConstraint} — deferred kind checking
+ * - {@link HasTypeConstraint} — deferred type checking
+ * - {@link solveConstraints} — solver worklist engine
+ *
+ * **Examples**
+ *
+ * Building a worklist manually:
  * ```ts
- * import { typeEq, kindEq, hasKind, hasType } from "system-f-omega";
- * import { freshState, varType, conType, lamTerm, arrowType } from "system-f-omega";
+ * import {
+ *   typeEq, kindEq, hasKind, hasType,
+ *   starKind, conType, varType, freshState
+ * } from "system-f-omega";
  *
  * const state = freshState();
  *
- * // Atomic
- * const typeC = typeEq(varType("a"), conType("Int"));
- * const kindC = kindEq({ star: null }, { star: null });
- *
- * // Deferred
- * const kindC2 = hasKind(varType("a"), { star: null }, state);
- * const typeC2 = hasType(lamTerm("x", conType("Int"), { var: "x" }), arrowType(conType("Int"), conType("Int")), state);
- * ```
-
- * @example Worklist solving
- * ```ts
- * import { freshState, solveConstraints, typeEq, kindEq, hasKind } from "system-f-omega";
- * import { varType, conType, starKind } from "system-f-omega";
- *
- * const state = freshState();
- * const worklist = [
- *   typeEq(varType("a"), conType("Int")),  // Solves a=Int
- *   kindEq(starKind, starKind),            // Trivial
- *   hasKind(varType("a"), starKind, state) // Defers → kindEq
+ * const constraints: Constraint[] = [
+ *   typeEq(varType("A"), conType("Int")),
+ *   kindEq(starKind, starKind),
+ *   hasKind(conType("Bool"), starKind, state),
+ *   hasType({ var: "x" }, conType("String"), state)
  * ];
- * const subst = new Map<string, Type>();
- * const result = solveConstraints(state, worklist, subst);
- * console.log("solved:", "ok" in result && subst.has("a"));  // true
  * ```
-
- * @example Real inference (internal constraints)
- * ```ts
- * import { freshState, addType, inferType, lamTerm, appTerm, varTerm, conTerm, conType, starKind } from "system-f-omega";
  *
- * let state = freshState();
- * state = addType(state, "Int", starKind).ok;
- * const id = lamTerm("x", conType("Int"), varTerm("x"));
- * const app = appTerm(id, conTerm("42", conType("Int")));
- * // inferAppType/checkType generate type_eq(?0, Int) internally
- * const result = inferType(state, app);
- * console.log("constraints solved implicitly");
+ * Solving constraints:
+ * ```ts
+ * import { solveConstraints } from "system-f-omega";
+ *
+ * const subst = new Map();
+ * const result = solveConstraints(state, constraints, subst);
+ * // If successful, `subst` now contains inferred meta-type solutions.
  * ```
-
- * @see {@link solveConstraints} Worklist solver
- * @see {@link processConstraint} Dispatcher
- * @see {@link typeEq/kindEq/hasKind/hasType} Constructors
- * @see {@link unifyTypes} TypeEq processor
- * @see {@link inferType/checkKind} Has* triggers
  */
 export type Constraint =
   | TypeEqConstraint
@@ -6858,107 +7206,228 @@ export type Value =
   | { vthunk: { term: Term; env: Environment } };
 
 /**
- * Closure/thunk environment (var → value mapping).
+ * The **runtime environment** used by the experimental evaluator,
+ * mapping term variables to their evaluated **Values**.
  *
- * **Purpose**: **Captured bindings** for evaluation:
- * - **Closures** (`vlam`): `env` at lambda creation.
- * - **Thunks** (`vthunk`): Lazy env for call-by-name.
- * - **Lookup**: `vvar "x"` → `env.get("x")`.
- * Used in big-step eval (experimental).
- *
- * @typedef {Map<string, Value>} Environment
- *
- * @example Construction
- * ```ts
- * import type { Environment, Value } from "system-f-omega";
- *
- * const env: Environment = new Map([
- *   ["x", { vvar: "self" } as Value],
- *   ["id", { vlam: { param: "y", body: { var: "y" }, env: new Map() } } as Value]
- * ]);
+ * ```
+ * Environment = Map<variableName, Value>
  * ```
  *
- * @example Closure capture
- * ```ts
- * import type { Environment, Value } from "system-f-omega";
+ * **What it represents**
+ * During evaluation (big‑step or small‑step), an `Environment` stores:
+ * - **closure bindings** for lambda abstractions
+ *   (when a lambda is evaluated, it captures the environment in which it was defined)
+ * - **thunk bindings** for call‑by-name or lazy evaluation
+ *   (unevaluated terms paired with the environment needed to evaluate them)
+ * - **local variable bindings** introduced by `let`, pattern matches, or
+ *   lambda application
  *
- * const outerEnv: Environment = new Map([["f", { vvar: "add" } as Value]]);
- * const closure: Value = {
+ * This enables lexical scoping, proper closure semantics, and lazy evaluation.
+ *
+ * **Why it's useful**
+ * The environment:
+ * - Keeps track of free variables inside closures
+ * - Ensures correct variable lookup during evaluation
+ * - Supports thunk evaluation for lazy semantics
+ * - Allows the evaluator to behave like a real-world interpreter
+ *   (e.g., Haskell’s or Scheme’s evaluation strategies)
+ *
+ * Without an environment, closures would not capture context, and evaluation
+ * would not be able to resolve variable references.
+ *
+ * **Where it is used**
+ * - {@link Value.vlam} — closures store the environment they were defined in
+ * - {@link Value.vthunk} — lazy thunks store an environment for deferred eval
+ * - The evaluation engine (`eval` / `reduce`) carries an environment around
+ *
+ * **Related**
+ * - {@link Value} — the value-level runtime representation
+ * - {@link VarTerm} — evaluated by looking up values in the environment
+ * - {@link vlam} and {@link vthunk} variants of `Value`
+ *
+ * **Examples**
+ *
+ * Creating an empty environment:
+ * ```ts
+ * let env: Environment = new Map();
+ * ```
+ *
+ * Storing a value in the environment:
+ * ```ts
+ * import { vvar, vlam } from "system-f-omega";  // Example shapes
+ *
+ * const env: Environment = new Map();
+ * env.set("x", { vvar: "42" });  // pretend evaluated literal
+ * ```
+ *
+ * Closure capturing an environment:
+ * ```ts
+ * import { vlam, varTerm } from "system-f-omega";
+ *
+ * const env: Environment = new Map([["y", { vvar: "7" }]]);
+ *
+ * const closure = {
  *   vlam: {
  *     param: "x",
- *     body: { var: "x" },
- *     env: outerEnv  // Captures outer
+ *     body: varTerm("y"),  // references captured y
+ *     env                     // closure captures env
  *   }
  * };
  * ```
  *
- * @see {@link Value.vlam/vthunk} Uses env
- * @see {@link EvalResult} Eval output
+ * Thunk with an environment:
+ * ```ts
+ * const thunk = {
+ *   vthunk: {
+ *     term: { var: "x" },
+ *     env: new Map([["x", { vvar: "100" }]])
+ *   }
+ * };
+ * ```
  */
 export type Environment = Map<string, Value>;
 
 /**
- * Evaluation result: success value or string error (experimental).
+ * The result of evaluating a term: either a **runtime value** or a **string
+ * error message**.
  *
- * **Purpose**: **Big-step eval** output:
- * - **Success**: Reduced `Value` (closures/data).
- * - **Errors**: Simple strings (`"unbound x"`, `"non-exhaustive"`, `"max steps"`).
- * From `eval(term, env?, config?)` (CBV/CBN, steps).
- * Uses untagged `Result<string, Value>` (string errs).
- *
- * @typedef {Result<string, Value>} EvalResult
- *
- * @example Success (Value)
- * ```ts
- * import type { EvalResult, Value } from "system-f-omega";
- *
- * const success: EvalResult = { ok: { vvar: "42" } as Value };
+ * ```
+ * EvalResult = { ok: Value } | { err: string }
  * ```
  *
- * @example Error (string)
- * ```ts
- * import type { EvalResult } from "system-f-omega";
+ * **What it represents**
+ * `EvalResult` is a specialization of the generic {@link Result} type used by
+ * the *experimental* evaluator.
  *
- * const err: EvalResult = { err: "Unbound variable 'x'" };
+ * It captures the outcome of evaluating a term:
+ * - `ok: Value` → evaluation succeeded and produced a runtime value
+ * - `err: string` → evaluation failed with a human-readable error message
+ *
+ * This keeps the evaluator simple and separate from the typing system:
+ * runtime errors use plain strings rather than {@link TypingError}.
+ *
+ * **Why it's useful**
+ * `EvalResult` provides:
+ * - A simple, type-safe way to distinguish success from failure
+ * - Clear error reporting for evaluation-specific problems
+ * - Support for different evaluation strategies (strict vs lazy)
+ *
+ * Evaluation may fail due to:
+ * - Unbound variables at runtime
+ * - Invalid applications
+ * - Unsupported constructs in the current evaluator stage
+ * - Step limit exceeded (depending on config)
+ *
+ * **Where it is used**
+ * - Returned by `eval` or `evaluate` functions
+ * - Produced by stepping functions in small-step evaluation
+ * - Interacts with {@link Environment} and {@link Value} during evaluation
+ *
+ * **Related**
+ * - {@link Value} — the runtime representation of evaluated expressions
+ * - {@link Environment} — variable bindings during evaluation
+ * - {@link Result} — the generic success/error wrapper
+ * - {@link EvalConfig} — evaluation strategy + step limits
+ *
+ * **Examples**
+ *
+ * Successful evaluation:
+ * ```ts
+ * import { vvar } from "system-f-omega";  // pretend Value shape
+ *
+ * const result: EvalResult = { ok: { vvar: "42" } };
+ * // evaluation produced the value 42
  * ```
  *
- * @see {@link Result} Untagged union
- * @see {@link Value} Success type
- * @see {@link EvalConfig} Eval options
- * @see {@link Environment} Eval env
+ * Runtime error:
+ * ```ts
+ * const result: EvalResult = { err: "Unbound variable 'x'" };
+ * ```
+ *
+ * Handling evaluation results:
+ * ```ts
+ * function run(result: EvalResult) {
+ *   if ("ok" in result) {
+ *     console.log("Value:", result.ok);
+ *   } else {
+ *     console.error("Runtime error:", result.err);
+ *   }
+ * }
+ * ```
  */
 export type EvalResult = Result<string, Value>; // Using string for error messages
 
 /**
- * Evaluation configuration (experimental).
+ * Configuration options for the **experimental evaluator**, controlling how
+ * terms are reduced and how infinite loops are prevented.
  *
- * **Purpose**: Controls **reduction strategy** + safety:
- * - **strict**: Call-by-value (reduce args first) vs call-by-name (lazy thunks).
- * - **maxSteps**: Loop prevention (divergence guard).
- * Passed to `eval(term, env?, config?)`.
+ * **What it represents**
+ * `EvalConfig` specifies:
+ * - **Evaluation strategy**
+ *   - `strict: true` → call‑by‑value
+ *   - `strict: false` → call‑by‑name (lazy, via thunks)
+ * - **Step limit** (`maxSteps`) to avoid non‑termination
  *
- * @typedef {Object} EvalConfig
- * @property {boolean} strict - `true`: CBV (reduce `vapp.arg`), `false`: CBN (`vthunk`)
- * @property {number} maxSteps - Step limit (defaults `∞` or large)
+ * These settings allow you to experiment with different operational semantics
+ * without changing the evaluator implementation.
  *
- * @example CBV (strict=true)
+ * **Why it's useful**
+ * Evaluation strategy dramatically affects program behavior:
+ *
+ * 1. **Call‑by‑value (strict)**
+ *    - Arguments are evaluated *before* a function call
+ *    - Simpler reasoning, predictable performance
+ *    - Matches languages like JavaScript, OCaml, and ML
+ *
+ * 2. **Call‑by‑name (lazy)**
+ *    - Arguments are wrapped as thunks and evaluated only if needed
+ *    - Enables non‑strict semantics
+ *    - Matches lazy languages like Haskell
+ *    - Useful for testing the correctness of your closure/thunk model
+ *
+ * The `maxSteps` limit ensures the evaluator:
+ * - halts on infinite recursion
+ * - avoids runaway computations
+ * - behaves safely in REPL or debugging environments
+ *
+ * **Where it is used**
+ * - By the evaluator function (`eval`, `step`, or equivalent)
+ * - Interacts with {@link Environment} and {@link Value}
+ * - Governs how closures and thunks are reduced
+ *
+ * **Related**
+ * - {@link Value.vthunk} — used when `strict: false` (lazy mode)
+ * - {@link Value.vlam} — closures depend on the evaluation environment
+ * - {@link EvalResult} — evaluation outcome
+ *
+ * **Examples**
+ *
+ * Strict evaluation:
  * ```ts
- * import type { EvalConfig } from "system-f-omega";
- *
- * const cbv: EvalConfig = { strict: true, maxSteps: 1000 };
- * // Reduces args eagerly
+ * const config: EvalConfig = {
+ *   strict: true,
+ *   maxSteps: 1000
+ * };
+ * // Arguments are evaluated immediately (call‑by‑value)
  * ```
  *
- * @example CBN (strict=false)
+ * Lazy evaluation using thunks:
  * ```ts
- * import type { EvalConfig } from "system-f-omega";
- *
- * const cbn: EvalConfig = { strict: false, maxSteps: 1000 };
- * // Lazy args (thunks)
+ * const config: EvalConfig = {
+ *   strict: false,
+ *   maxSteps: 2000
+ * };
+ * // Arguments are evaluated on demand (call‑by‑name)
  * ```
  *
- * @see {@link EvalResult} Output
- * @see {@link Value.vthunk} Lazy values
+ * Step-limited evaluation:
+ * ```ts
+ * const config: EvalConfig = {
+ *   strict: true,
+ *   maxSteps: 10
+ * };
+ * // Prevents infinite loops by stopping after 10 reduction steps
+ * ```
  */
 export type EvalConfig = {
   strict: boolean; // true for call-by-value, false for call-by-name
@@ -6966,88 +7435,161 @@ export type EvalConfig = {
 };
 
 /**
- * Generic success/error result (tagged union).
+ * A generic **tagged result type** used throughout the typechecker and
+ * evaluator to represent either:
  *
- * **Purpose**: **Error monad** for all APIs:
- * - **ok**: Success value.
- * - **err**: Error payload.
- * Ubiquitous: `inferType: Result<TypingError, Type>`, `eval: Result<string, Value>`, `add*: Result<TypingError, State>`.
- * Processed via `"ok" in res ? res.ok : handle(res.err)` or `showError(err)`.
+ * - a **successful** result: `{ ok: value }`
+ * - an **error** result: `{ err: errorValue }`
  *
- * @typedef {Union} Result<TErr, TOk>
- * @template TErr Error type (`TypingError`, `string`)
- * @template TOk Success type (`Type`, `Value`, `State`)
- * @property {TOk} ok - Success value
- * @property {TErr} err - Error payload
- *
- * @example Success (Type)
- * ```ts
- * import type { Result } from "system-f-omega";
- * import { conType } from "system-f-omega";
- *
- * const okRes: Result<string, Type> = { ok: conType("Int") };
+ * ```
+ * Result<TErr, TOk> = { ok: TOk } | { err: TErr }
  * ```
  *
- * @example Error (TypingError)
- * ```ts
- * import type { Result, TypingError } from "system-f-omega";
+ * **What it represents**
+ * `Result` is a lightweight alternative to exceptions.
+ * It makes success and failure explicit in the type system, enabling safe,
+ * predictable error handling without throwing.
  *
- * const errRes: Result<TypingError, Type> = {
- *   err: { unbound: "Missing" } as TypingError
- * };
+ * This is used across:
+ * - type inference
+ * - kind checking
+ * - unification
+ * - module importing
+ * - evaluator runtime errors
+ *
+ * **Why it's useful**
+ * `Result` allows:
+ * - *composable* typechecking and evaluation functions
+ * - precise handling of domain-specific errors (e.g., {@link TypingError})
+ * - clean propagation of failures without intermediate try/catch
+ * - safe pattern matching in user code or higher-level utilities
+ *
+ * TypeScript understands unions like `{ ok: ... } | { err: ... }`, enabling good
+ * editor support:
+ *
  * ```
- *
- * @example Usage (inferType)
- * ```ts
- * import { freshState, inferType } from "system-f-omega";
- * import type { Result } from "system-f-omega";
- *
- * const state = freshState();
- * const res: Result<any, any> = inferType(state, { var: "x" });
- * if ("ok" in res) {
- *   console.log("Type:", res.ok);
+ * if ("ok" in result) {
+ *   // success case
  * } else {
- *   console.log("Error:", res.err);
+ *   // error case
  * }
  * ```
  *
- * @see {@link TypingError} Common TErr
- * @see {@link EvalResult} Eval specialization (`Result<string, Value>`)
- * @see {@link ok/err} Helpers
- * @see {@link showError} Error display
+ * **Where it is used**
+ * - Most typechecker APIs return `Result<TypingError, Type>`
+ * - Evaluator returns `Result<string, Value>` as {@link EvalResult}
+ * - Add/lookup operations return `Result<TypingError, State>`
+ *
+ * **Related**
+ * - {@link TypingError} — common error type for the typechecker
+ * - {@link EvalResult} — runtime evaluation result type
+ * - {@link ok} / {@link err} — helper constructors for success/failure
+ *
+ * **Examples**
+ *
+ * Successful result:
+ * ```ts
+ * import type { Result } from "system-f-omega";
+ *
+ * const r: Result<string, number> = { ok: 42 };
+ * ```
+ *
+ * Error result:
+ * ```ts
+ * const r: Result<string, number> = { err: "Something went wrong" };
+ * ```
+ *
+ * Handling a result:
+ * ```ts
+ * function handle<T>(res: Result<string, T>) {
+ *   if ("ok" in res) {
+ *     console.log("Success:", res.ok);
+ *   } else {
+ *     console.error("Error:", res.err);
+ *   }
+ * }
+ * ```
  */
 export type Result<TErr, TOk> = { ok: TOk } | { err: TErr };
 
 /**
- * Free type names in `Type` (binder-respecting dependency analysis).
+ * A collection of **free names** discovered inside a `Type`—used primarily for
+ * dependency analysis, renaming, and module imports.
  *
- * **Purpose**: Collects **free identifiers** for modules/imports:
- * - Skips bound vars (`∀α.τ` → no `α`).
- * - Used in `collectDependencies`, `renameType`, cycle detection.
- * From `computeFreeTypes(type)`.
+ * **What it represents**
+ * `FreeTypeNames` gathers all identifiers that appear *unbound* inside a type:
  *
- * @typedef {Object} FreeTypeNames
- * @property {Set<string>} typeVars - Free vars (`"a"`, `"Self"`)
- * @property {Set<string>} typeCons - Constructors (`"Int"`, `"List"`)
- * @property {Set<string>} traits - Trait names (`"Eq"`)
- * @property {Set<string>} labels - Record/variant labels (`"x"`, `"Left"`)
+ * - `typeVars` — free type variables (`"A"`, `"T"`, `"Self"`)
+ * - `typeCons` — referenced type constructors (`"Int"`, `"List"`)
+ * - `traits` — trait names referenced inside bounded foralls (`Eq`, `Show`)
+ * - `labels` — record/variant labels (`"x"`, `"Left"`, `"Some"`)
  *
- * @example Computation
+ * These sets are generated by {@link computeFreeTypes} and are used to
+ * understand how a type depends on other parts of the program.
+ *
+ * **Why it's useful**
+ * Collecting free names is essential for:
+ *
+ * - **Module imports** — determining which definitions must be carried over
+ * - **Renaming** — applying consistent renames via {@link renameType}
+ * - **Cycle detection** — ensuring type aliases and enums don't form loops
+ * - **Dependency analysis** — discovering which types reference which others
+ *
+ * The typechecker uses this information extensively during
+ * {@link collectDependencies}, {@link importModule}, and renaming passes.
+ *
+ * **Where it is used**
+ * - {@link computeFreeTypes} — builds this data structure
+ * - {@link importModule} — determines what needs to be imported
+ * - {@link bindingDependencies} — detects dependencies between bindings
+ * - {@link renameType} — renames labels, constructors, and vars
+ *
+ * **Related**
+ * - {@link FreeTermNames} — collects free names from full terms
+ * - {@link FreePatternNames} — collects free names from patterns
+ * - {@link Type} — the input structure analyzed
+ *
+ * **Examples**
+ *
+ * Free names of a type application:
  * ```ts
- * import { computeFreeTypes, arrowType, appType, conType, varType } from "system-f-omega";
+ * import { computeFreeTypes, appType, conType, varType, freshState } from "system-f-omega";
  *
- * const ty = arrowType(
- *   appType(conType("List"), varType("a")),
- *   { variant: [["Left", varType("a")]] }
- * );
- * const free = computeFreeTypes({ ctx: [], meta: { counter: 0, kinds: new Map(), solutions: new Map() } }, ty);
- * console.log("vars:", Array.from(free.typeVars));  // ["a"]
- * console.log("cons:", Array.from(free.typeCons));  // ["List"]
- * console.log("labels:", Array.from(free.labels));  // ["Left"]
+ * const state = freshState();
+ * const ty = appType(conType("List"), varType("A"));
+ *
+ * const free = computeFreeTypes(state, ty);
+ *
+ * console.log([...free.typeVars]); // ["A"]
+ * console.log([...free.typeCons]); // ["List"]
  * ```
  *
- * @see {@link computeFreeTypes} Producer
- * @see {@link importModule} Deps/renaming
+ * Free names inside a variant type:
+ * ```ts
+ * import { computeFreeTypes, variantType, conType } from "system-f-omega";
+ *
+ * const ty = variantType([
+ *   ["Left",  conType("Int")],
+ *   ["Right", conType("Bool")]
+ * ]);
+ *
+ * const free = computeFreeTypes({ ctx: [], meta: { counter: 0, kinds: new Map(), solutions: new Map() } }, ty);
+ *
+ * console.log([...free.labels]);   // ["Left", "Right"]
+ * console.log([...free.typeCons]); // ["Int", "Bool"]
+ * ```
+ *
+ * Trait‑bounded polymorphism:
+ * ```ts
+ * import { computeFreeTypes, boundedForallType, varType, starKind } from "system-f-omega";
+ *
+ * const ty = boundedForallType("A", starKind, [{ trait: "Eq", type: varType("A") }], varType("A"));
+ *
+ * const free = computeFreeTypes({ ctx: [], meta: { counter: 0, kinds: new Map(), solutions: new Map() } }, ty);
+ *
+ * console.log([...free.traits]);   // ["Eq"]
+ * console.log([...free.typeVars]); // ["A"]
+ * ```
  */
 export type FreeTypeNames = {
   typeVars: Set<string>;
@@ -7057,33 +7599,82 @@ export type FreeTypeNames = {
 };
 
 /**
- * Free pattern names in `Pattern` (no binders, all vars free).
+ * A collection of **free names** extracted from a pattern.
+ * This is used for renaming, dependency analysis, and module imports.
  *
- * **Purpose**: Pattern dependencies for imports/renaming.
- * Collects vars/cons/labels (patterns bind vars).
- * From `computeFreePatterns(pattern)`.
+ * **What it represents**
+ * `FreePatternNames` gathers all identifiers that appear inside a pattern:
  *
- * @typedef {Object} FreePatternNames
- * @property {Set<string>} vars - Pattern vars (`"x"`)
- * @property {Set<string>} constructors - Con patterns (`"None"`)
- * @property {Set<string>} labels - Record/variant labels (`"Cons"`)
+ * - `vars` — variable names bound by the pattern (`x`, `hd`, `y`)
+ * - `constructors` — constructors used in constant/variant patterns (`None`, `true`, `Zero`)
+ * - `labels` — record labels or variant tags (`x`, `Left`, `Some`)
  *
- * @example Computation
+ * These are collected by {@link computeFreePatterns}.
+ *
+ * **Why it's useful**
+ * Free pattern names are essential for:
+ *
+ * - **Module import renaming** — mapping labels, constructors, and var names
+ * - **Dependency analysis** — determining which enums or constructors are used
+ * - **Pattern‑scoped renaming** — used by {@link renamePattern}
+ * - **Matching dependencies** — extracting labels for {@link checkExhaustive}
+ *
+ * Unlike types or terms, patterns do *not* distinguish bound vs free variables
+ * for renaming—they are all collected to ensure safe and complete renaming.
+ *
+ * **Where it is used**
+ * - {@link computeFreePatterns} — the producer of this structure
+ * - {@link importModule} — detects dependencies across modules
+ * - {@link renamePattern} — applies renaming maps
+ * - {@link computeFreeTerms} — uses this when scanning match terms
+ *
+ * **Related**
+ * - {@link FreeTypeNames} — free names that appear in types
+ * - {@link FreeTermNames} — free names from terms
+ * - {@link Pattern} — includes variables, constructors, labels
+ *
+ * **Examples**
+ *
+ * Extracting names from a simple pattern:
  * ```ts
- * import { computeFreePatterns, recordPattern, variantPattern, varPattern, conPattern } from "system-f-omega";
+ * import { computeFreePatterns, varPattern } from "system-f-omega";
  *
- * const pat = recordPattern([
- *   ["head", variantPattern("Cons", varPattern("hd"))],
- *   ["tail", conPattern("Nil", { con: "Unit" })]
- * ]);
+ * const pat = varPattern("x");
  * const free = computeFreePatterns({ ctx: [], meta: { counter: 0, kinds: new Map(), solutions: new Map() } }, pat);
- * console.log("vars:", Array.from(free.vars));     // ["hd"]
- * console.log("cons:", Array.from(free.constructors)); // ["Nil"]
- * console.log("labels:", Array.from(free.labels)); // ["head", "Cons", "tail"]
+ *
+ * console.log([...free.vars]);  // ["x"]
+ * console.log([...free.labels]); // []
+ * console.log([...free.constructors]); // []
  * ```
  *
- * @see {@link computeFreePatterns} Producer
- * @see {@link importModule} Renaming
+ * Pattern with constructors and labels:
+ * ```ts
+ * import {
+ *   computeFreePatterns, recordPattern,
+ *   variantPattern, varPattern
+ * } from "system-f-omega";
+ *
+ * const pat = recordPattern([
+ *   ["x", varPattern("a")],
+ *   ["y", variantPattern("Cons", varPattern("hd"))]
+ * ]);
+ *
+ * const free = computeFreePatterns({ ctx: [], meta: { counter: 0, kinds: new Map(), solutions: new Map() } }, pat);
+ *
+ * console.log([...free.vars]);          // ["a", "hd"]
+ * console.log([...free.labels]);        // ["x", "y", "Cons"]
+ * console.log([...free.constructors]);  // []
+ * ```
+ *
+ * Constructor pattern:
+ * ```ts
+ * import { computeFreePatterns, conPattern, conType } from "system-f-omega";
+ *
+ * const pat = conPattern("None", conType("Unit"));
+ * const free = computeFreePatterns({ ctx: [], meta: { ... } }, pat);
+ *
+ * console.log([...free.constructors]); // ["None"]
+ * ```
  */
 export type FreePatternNames = {
   vars: Set<string>;
@@ -7092,35 +7683,104 @@ export type FreePatternNames = {
 };
 
 /**
- * Free term names in `Term` (binder-respecting + embedded types/patterns).
+ * A collection of **free names** discovered inside a `Term`, including names
+ * from embedded **types** and **patterns**.
  *
- * **Purpose**: Full term dependencies (terms + types + patterns).
- * Used for module analysis (`collectDependencies`).
- * From `computeFreeTerms(term)` (recurses types/patterns).
+ * Extracted by {@link computeFreeTerms}, this structure summarizes all
+ * identifiers referenced anywhere within a term.
  *
- * @typedef {Object} FreeTermNames
- * @property {Set<string>} terms - Term vars (`"x"`)
- * @property {Set<string>} constructors - ConTerms (`"42"`)
- * @property {Set<string>} traits - Trait names (`"Eq"`)
- * @property {Set<string>} dicts - Dict vars (`"eqInt"`)
- * @property {Set<string>} labels - Record/method/variant labels
- * @property {Set<string>} typeVars - Embedded type vars
- * @property {Set<string>} typeCons - Embedded type cons
+ * **What it represents**
+ * `FreeTermNames` contains seven categories of free names:
  *
- * @example Computation
+ * - `terms` — free term variables (`x`, `f`, `xs`)
+ * - `constructors` — literal or variant constructor names in terms (`"42"`, `"Some"`, `"Nil"`)
+ * - `traits` — traits referenced inside type annotations or dictionary usage (`Eq`, `Ord`)
+ * - `dicts` — dictionary variable names used in trait method calls (`d`, `eqInt`)
+ * - `labels` — record field names and variant labels (`x`, `head`, `Left`)
+ * - `typeVars` — type variables appearing in embedded types (`A`, `T`, `Self`)
+ * - `typeCons` — type constructors appearing in embedded types (`Int`, `List`, `Option`)
+ *
+ * **Why it's useful**
+ * Collecting free names across an entire term enables:
+ *
+ * - **Module dependency analysis**
+ *   Determining which types, traits, or terms must be imported.
+ *
+ * - **Safe renaming during imports**
+ *   Used by {@link renameTerm} to avoid shadowing or collisions.
+ *
+ * - **Enum/trait dependency tracking**
+ *   Helps {@link importModule} find all nested references.
+ *
+ * - **Pattern‑aware free name detection**
+ *   Through integration with {@link computeFreePatterns}.
+ *
+ * It’s the most comprehensive “name collector,” combining data from:
+ * - term syntax,
+ * - embedded types,
+ * - embedded patterns,
+ * - and dictionary usages.
+ *
+ * **Where it is used**
+ * - {@link computeFreeTerms} — main producer
+ * - {@link computeFreeTypes} — collects embedded type names
+ * - {@link computeFreePatterns} — collects names inside match patterns
+ * - {@link importModule} — gathers dependency roots
+ * - {@link renameTerm} — renames all free occurrences
+ *
+ * **Related**
+ * - {@link FreeTypeNames}
+ * - {@link FreePatternNames}
+ * - {@link Term}
+ * - {@link Pattern}
+ *
+ * **Examples**
+ *
+ * Free names in a simple application:
  * ```ts
- * import { computeFreeTerms, lamTerm, appTerm, varTerm, recordTerm } from "system-f-omega";
+ * import { computeFreeTerms, appTerm, varTerm } from "system-f-omega";
  *
- * const term = lamTerm("x", { con: "Int" }, appTerm(varTerm("f"), recordTerm([["y", varTerm("z")]])));
- * const free = computeFreeTerms({ ctx: [], meta: { counter: 0, kinds: new Map(), solutions: new Map() } }, term);
- * console.log("terms:", Array.from(free.terms));  // ["f", "z"]
- * console.log("labels:", Array.from(free.labels)); // ["y"]
- * console.log("typeCons:", Array.from(free.typeCons)); // ["Int"]
+ * const term = appTerm(varTerm("f"), varTerm("x"));
+ * const free = computeFreeTerms({ ctx: [], meta: ... }, term);
+ *
+ * console.log([...free.terms]); // ["f", "x"]
  * ```
  *
- * @see {@link computeFreeTerms} Producer
- * @see {@link computeFreeTypes} Embedded types
- * @see {@link importModule} Deps/renaming
+ * Free names inside a record + constructor:
+ * ```ts
+ * import { computeFreeTerms, recordTerm, conTerm, conType } from "system-f-omega";
+ *
+ * const term = recordTerm([
+ *   ["x", conTerm("1", conType("Int"))],
+ *   ["y", conTerm("Some", conType("Option<Int>"))]
+ * ]);
+ *
+ * const free = computeFreeTerms(..., term);
+ *
+ * console.log([...free.labels]);        // ["x", "y"]
+ * console.log([...free.constructors]);  // ["1", "Some"]
+ * console.log([...free.typeCons]);      // ["Int", "Option"]
+ * ```
+ *
+ * Free names in a match expression:
+ * ```ts
+ * import {
+ *   computeFreeTerms,
+ *   matchTerm, variantPattern, varPattern,
+ *   conTerm, conType
+ * } from "system-f-omega";
+ *
+ * const term = matchTerm(
+ *   { var: "rec" },
+ *   [[ variantPattern("Cons", varPattern("hd")), varTerm("hd") ]]
+ * );
+ *
+ * const free = computeFreeTerms(..., term);
+ *
+ * console.log([...free.terms]);         // ["rec", "hd"]
+ * console.log([...free.labels]);        // ["Cons"]
+ * console.log([...free.typeCons]);      // (depends on scrutinee type)
+ * ```
  */
 export type FreeTermNames = {
   terms: Set<string>;
@@ -7133,242 +7793,470 @@ export type FreeTermNames = {
 };
 
 /**
- * Constraint worklist (queue for iterative solving).
+ * A **queue of constraints** to be processed by the unification solver.
  *
- * **Purpose**: **Worklist algorithm** for unification:
- * - Filled by `unifyTypes`/`subsumes`/`infer/check` (generate eqs).
- * - Processed by `solveConstraints` → `processConstraint` until empty.
- * Mutated in-place (shift/pop).
- * Enables **fixed-point solving** (deferred has/eqs).
- *
- * @typedef {Array<Constraint>} Worklist
- *
- * @example Worklist filling (unify)
- * ```ts
- * import { freshState, unifyTypes, appType, conType, varType } from "system-f-omega";
- *
- * const state = freshState();
- * const worklist: Worklist = [];
- * const subst = new Map<string, Type>();
- * unifyTypes(state, appType(conType("List"), varType("a")), appType(conType("List"), conType("Int")), worklist, subst);
- * console.log("filled:", worklist.length > 0);  // true (typeEq("a", Int))
+ * ```
+ * Worklist = Constraint[]
  * ```
  *
- * @example Solving loop
- * ```ts
- * import { freshState, solveConstraints, typeEq, varType, conType } from "system-f-omega";
+ * **What it represents**
+ * A `Worklist` is an ordered list of constraints (see {@link Constraint})
+ * generated during type inference and kind checking.
  *
- * const state = freshState();
- * const worklist: Worklist = [typeEq(varType("a"), conType("Int"))];
- * const subst = new Map<string, Type>();
- * const result = solveConstraints(state, worklist, subst);
- * console.log("solved:", "ok" in result && subst.has("a"));  // true
+ * Each constraint describes something the solver must eventually enforce:
+ * - a type equality (`τ₁ = τ₂`)
+ * - a kind equality (`κ₁ = κ₂`)
+ * - a deferred type check (`Γ ⊢ e : τ`)
+ * - a deferred kind check (`Γ ⊢ τ : κ`)
+ *
+ * The solver (`solveConstraints`) repeatedly removes constraints from this list
+ * and attempts to resolve them, often adding *new* constraints as it learns more
+ * about types and kinds.
+ *
+ * **Why it's useful**
+ * The worklist enables:
+ * - Incremental, ordered constraint solving
+ * - Deferred checking when meta‑variables are unresolved
+ * - A clean separation between **generating constraints** and **solving them**
+ * - Support for higher‑kinded polymorphism and trait‑bounded polymorphism
+ *
+ * It is the backbone of constraint‑based type inference.
+ *
+ * **Where it is used**
+ * - Populated by:
+ *   - {@link unifyTypes}
+ *   - {@link checkType}
+ *   - {@link subsumes}
+ *   - {@link inferDictType}
+ *   - {@link checkKind}
+ * - Consumed by:
+ *   - {@link solveConstraints}
+ *   - {@link processConstraint}
+ *
+ * **Related**
+ * - {@link Constraint} — the union of possible worklist items
+ * - {@link solveConstraints} — processes the worklist
+ * - {@link processConstraint} — processes a single constraint
+ * - {@link Substitution} — solver output
+ *
+ * **Examples**
+ *
+ * A simple worklist with a type equality:
+ * ```ts
+ * import { typeEq, varType, conType } from "system-f-omega";
+ *
+ * const wl: Worklist = [
+ *   typeEq(varType("A"), conType("Int"))
+ * ];
  * ```
  *
- * @see {@link solveConstraints} Consumer
- * @see {@link Constraint} Items
- * @see {@link Substitution} Bindings
+ * Worklist built by unification:
+ * ```ts
+ * import {
+ *   unifyTypes, arrowType, varType, conType,
+ *   freshState
+ * } from "system-f-omega";
+ *
+ * let state = freshState();
+ * const wl: Worklist = [];
+ * const subst = new Map();
+ *
+ * unifyTypes(
+ *   state,
+ *   arrowType(varType("X"), varType("Y")),
+ *   arrowType(conType("Int"), conType("Bool")),
+ *   wl,
+ *   subst
+ * );
+ *
+ * console.log(wl.length);  // 2 constraints: X=Int, Y=Bool
+ * ```
+ *
+ * Solving a complete worklist:
+ * ```ts
+ * import { solveConstraints } from "system-f-omega";
+ *
+ * const result = solveConstraints(state, wl, subst);
+ * console.log("ok" in result);  // true if all constraints solved successfully
+ * ```
  */
 export type Worklist = Constraint[];
 
 /**
- * Type substitution `?N/α → τ` (local bindings).
+ * A mapping from **type variables or meta‑variables** to their inferred
+ * **substituted types**.
  *
- * **Purpose**: **Unification solutions**:
- * - Local (scoped): From `solveConstraints` → merged to global `meta.solutions`.
- * - Applied by `applySubstitution` (resolve metas/vars).
- * - Shadowing: Local > global (`mergeSubsts`).
- * Keys: Meta-vars (`"?0"`) + type vars (`"a"`).
+ * ```
+ * Substitution = Map<string, Type>
+ * ```
  *
- * @typedef {Map<string, Type>} Substitution
+ * **What it represents**
+ * A `Substitution` describes the partial or complete results of unification.
  *
- * @example Local solving
+ * Keys are:
+ * - meta‑variables (`"?0"`, `"?1"`, …) created via {@link freshMetaVar}
+ * - rigid type variables (`"A"`, `"Self"`) in certain unification contexts
+ *
+ * Values are:
+ * - the fully or partially solved types associated with those variables
+ *   (`Int`, `List<?1>`, `A → A`, etc.)
+ *
+ * Example substitutions:
+ * ```
+ * ?0 → Int
+ * ?1 → List<?2>
+ * A  → Bool
+ * ```
+ *
+ * **Why it's useful**
+ * Substitutions are essential for:
+ * - Representing the evolving results of unification
+ * - Replacing unknown types with concrete ones during inference
+ * - Propagating solutions across the entire AST
+ * - Combining local and global inference results
+ *
+ * They are returned by:
+ * - {@link solveConstraints}
+ * - {@link unifyTypes}
+ * - {@link checkType} (as part of its result)
+ *
+ * And consumed by:
+ * - {@link applySubstitution}
+ * - {@link mergeSubsts}
+ * - {@link normalizeType}
+ *
+ * **Where it is used**
+ * - Every unification and constraint solver step updates a substitution
+ * - The typechecker threads substitutions to apply solved types to terms, types,
+ *   trait constraints, and recursive structures
+ *
+ * **Related**
+ * - {@link applySubstitution} — applies a substitution to a type
+ * - {@link MetaEnv} — global store of solved meta‑vars
+ * - {@link unifyTypes} — generates new substitution entries
+ * - {@link mergeSubsts} — combines local and global substitutions
+ *
+ * **Examples**
+ *
+ * A simple substitution:
  * ```ts
- * import { freshState, solveConstraints, typeEq, varType, conType } from "system-f-omega";
+ * import { Substitution } from "system-f-omega";
  *
- * const state = freshState();
- * const worklist = [typeEq(varType("a"), conType("Int"))];
- * const subst: Substitution = new Map();
+ * const subst: Substitution = new Map([
+ *   ["?0", { con: "Int" }]
+ * ]);
+ * ```
+ *
+ * Unification producing a substitution:
+ * ```ts
+ * import {
+ *   unifyTypes, varType, conType,
+ *   freshState
+ * } from "system-f-omega";
+ *
+ * let state = freshState();
+ * const subst = new Map();
+ * const worklist = [];
+ *
+ * unifyTypes(state, varType("A"), conType("Bool"), worklist, subst);
  * solveConstraints(state, worklist, subst);
- * console.log("a := Int:", subst.get("a")?.con === "Int");  // true
+ *
+ * console.log(subst.get("A"));  // { con: "Bool" }
  * ```
  *
- * @example Merging (local shadows)
+ * Applying a substitution:
  * ```ts
- * import { mergeSubsts, varType, conType } from "system-f-omega";
+ * import {
+ *   applySubstitution, varType,
+ *   conType, freshState
+ * } from "system-f-omega";
  *
- * const global = new Map([["a", conType("Bool")]]);
- * const local = new Map([["a", conType("Int")], ["b", conType("String")]]);
- * const merged = mergeSubsts(local, global);
- * console.log("a:Int (local):", merged.get("a")?.con === "Int");  // true
+ * const subst: Substitution = new Map([["A", conType("Int")]]);
+ *
+ * console.log(
+ *   applySubstitution(freshState(), subst, varType("A"))
+ * );
+ * // → Int
  * ```
- *
- * @example Application
- * ```ts
- * import { freshState, applySubstitution, varType } from "system-f-omega";
- * import { conType } from "system-f-omega";
- *
- * const state = freshState();
- * const subst: Substitution = new Map([["a", conType("Int")]]);
- * const resolved = applySubstitution(state, subst, varType("a"));
- * console.log("resolved:", resolved.con === "Int");  // true
- * ```
- *
- * @see {@link solveConstraints} Producer
- * @see {@link mergeSubsts} Local+global
- * @see {@link applySubstitution} Consumer
- * @see {@link Worklist} Source
  */
 export type Substitution = Map<string, Type>;
 
 /**
- * Success result constructor for `Result<TErr, TOk>`.
+ * Constructs a **successful** {@link Result} value:
  *
- * **Purpose**: Builds `{ok: val}` (tagged success).
- * Ubiquitous in APIs: `inferType.ok(Type)`, `addType.ok(State)`.
+ * ```
+ * ok(value)  →  { ok: value }
+ * ```
  *
- * @template T Success type (`Type`, `State`, `Value`)
- * @param {T} val - Success value
- * @returns `{ok: T}`
+ * **What it represents**
+ * `ok` is a tiny helper used throughout the typechecker and evaluator to
+ * produce the “success” branch of a {@link Result}.
+ * This avoids manually writing `{ ok: ... }` and keeps APIs consistent.
  *
- * @example Success (Type)
+ * It pairs naturally with {@link err}, the constructor for error results.
+ *
+ * **Why it's useful**
+ * `ok` helps ensure:
+ * - uniform creation of success results
+ * - clearer code in inference functions
+ * - fewer mistakes when assembling `Result` values
+ *
+ * It is used everywhere results need to be returned, including:
+ * - type inference (`inferType`)
+ * - type checking (`checkType`)
+ * - constraint solving (`solveConstraints`)
+ * - trait resolution (`checkTraitImplementation`)
+ * - module importing (`importModule`)
+ * - evaluation (`EvalResult`)
+ *
+ * **Related**
+ * - {@link Result} — the union type returned by many APIs
+ * - {@link err} — constructor for failure cases
+ * - {@link showError} — pretty-prints error results
+ *
+ * **Examples**
+ *
+ * Creating a successful result:
+ * ```ts
+ * import { ok } from "system-f-omega";
+ *
+ * const r = ok(42);
+ * // { ok: 42 }
+ * ```
+ *
+ * Using `ok` inside a type inference rule:
  * ```ts
  * import { ok } from "system-f-omega";
  * import { conType } from "system-f-omega";
  *
- * const success = ok(conType("Int"));  // { ok: { con: "Int" } }
- * console.log("ok:", success.ok.con);  // "Int"
+ * function inferLiteral() {
+ *   return ok(conType("Int"));
+ * }
  * ```
  *
- * @example API usage (inferType)
+ * Pattern matching on a `Result`:
  * ```ts
- * import { freshState, addType, inferType, conTerm, conType, starKind } from "system-f-omega";
+ * import { ok } from "system-f-omega";
  *
- * let state = freshState();
- * state = addType(state, "Int", starKind).ok;  // Uses ok
- * const result = inferType(state, conTerm("42", conType("Int")));
- * if ("ok" in result) console.log("Type:", result.ok);  // Uses ok internally
+ * const r = ok("hello");
+ *
+ * if ("ok" in r) {
+ *   console.log("Success:", r.ok);
+ * }
  * ```
- *
- * @see {@link err} Failure counterpart
- * @see {@link Result} Tagged union
  */
 export const ok = <T>(val: T) => ({ ok: val });
 
 /**
- * Error result constructor for `Result<TErr, TOk>`.
+ * Constructs an **error** {@link Result} value:
  *
- * **Purpose**: Builds `{err: val}` (tagged failure).
- * Ubiquitous: `inferType.err(TypingError)`, `addType.err(DuplicateBindingError)`.
- *
- * @template T Error type (`TypingError`, `string`)
- * @param {T} val - Error payload
- * @returns `{err: T}`
- *
- * @example Error (TypingError)
- * ```ts
- * import { err, UnboundTypeError } from "system-f-omega";
- *
- * const unboundErr = err({ unbound: "Missing" } as UnboundTypeError);
- * console.log("err:", unboundErr.err.unbound);  // "Missing"
+ * ```
+ * err(value)  →  { err: value }
  * ```
  *
- * @example API usage (unbound)
- * ```ts
- * import { freshState, inferType, varTerm } from "system-f-omega";
+ * **What it represents**
+ * `err` is the counterpart to {@link ok}.
+ * It wraps an error payload in the `{ err: ... }` form used throughout the
+ * typechecker and evaluator.
  *
- * const state = freshState();
- * const result = inferType(state, varTerm("missing"));  // Uses err internally
- * if ("err" in result) console.log("Error:", result.err);  // { unbound: "missing" }
+ * The error payload can be:
+ * - a {@link TypingError} (for typechecking)
+ * - a `string` (for the evaluator)
+ * - any user-defined error type
+ *
+ * **Why it's useful**
+ * This helper ensures:
+ * - consistent construction of error results
+ * - cleaner code in functions that may fail
+ * - fewer mistakes when wrapping error payloads
+ *
+ * Many core APIs return `Result<TErr, TOk>` values, including:
+ * - {@link inferType}
+ * - {@link checkType}
+ * - {@link solveConstraints}
+ * - {@link checkTraitImplementation}
+ * - {@link importModule}
+ * - evaluator functions (`EvalResult`)
+ *
+ * `err` makes these error returns lightweight and readable.
+ *
+ * **Related**
+ * - {@link ok} — constructor for success cases
+ * - {@link Result} — the result type used by all major APIs
+ * - {@link showError} — pretty-prints type errors
+ *
+ * **Examples**
+ *
+ * Creating an error result:
+ * ```ts
+ * import { err } from "system-f-omega";
+ *
+ * const r = err("Something went wrong");
+ * // { err: "Something went wrong" }
  * ```
  *
- * @see {@link ok} Success counterpart
- * @see {@link Result} Tagged union
- * @see {@link showError} Error display
+ * Using `err` in a typechecking function:
+ * ```ts
+ * import { err } from "system-f-omega";
+ *
+ * function lookup(name) {
+ *   return err({ unbound: name });  // UnboundTypeError
+ * }
+ * ```
+ *
+ * Handling a result:
+ * ```ts
+ * function handle(result) {
+ *   if ("err" in result) {
+ *     console.error("Error:", result.err);
+ *   }
+ * }
+ * ```
  */
 export const err = <T>(val: T) => ({ err: val });
 
 /**
- * Pretty-prints context bindings (multi-line).
+ * Pretty‑prints the current typing **context** (`Γ`) as a multi‑line string.
  *
- * **Purpose**: Debugs `TypeCheckerState.ctx`. Uses `showBinding`.
+ * **What it represents**
+ * `showContext` converts each {@link Binding} in the context into a readable
+ * line using {@link showBinding}, and joins them with newlines.
  *
- * @param context - Binding list
- * @returns Newline-joined strings
+ * This is especially useful for:
+ * - debugging type inference
+ * - inspecting the environment in a REPL
+ * - showing the result of module imports
+ * - logging intermediate typechecker state
  *
- * @example Empty context
+ * **Why it's useful**
+ * The typing context may contain many different kinds of bindings:
+ * - term bindings (`x : Int`)
+ * - type constructors (`List :: * → *`)
+ * - trait definitions
+ * - trait implementations
+ * - dictionary bindings
+ * - enums and type aliases
+ *
+ * `showContext` provides a simple, human‑readable summary of all of them.
+ *
+ * **Related**
+ * - {@link Context} — the list of bindings being printed
+ * - {@link Binding} — union of all binding types
+ * - {@link showBinding} — pretty‑prints each individual binding
+ *
+ * **Examples**
+ *
+ * Empty context:
  * ```ts
  * import { freshState, showContext } from "system-f-omega";
  *
- * const state = freshState();
- * console.log(showContext(state.ctx));  // ""
+ * console.log(showContext(freshState().ctx));
+ * // ""
  * ```
  *
- * @example Basic bindings
+ * After adding some bindings:
  * ```ts
- * import { freshState, addType, addTerm, showContext, starKind, conType } from "system-f-omega";
+ * import {
+ *   freshState, addType, addTerm,
+ *   conTerm, conType, starKind, showContext
+ * } from "system-f-omega";
  *
  * let state = freshState();
  * state = addType(state, "Int", starKind).ok;
- * state = addTerm(state, "x", { con: { name: "42", type: conType("Int") } }).ok;
+ * state = addTerm(state, "x", conTerm("42", conType("Int"))).ok;
+ *
  * console.log(showContext(state.ctx));
- * // "Type: Int = *\nTerm: x = Int"
+ * // Type: Int = *
+ * // Term: x = Int
  * ```
  *
- * @example Complex (trait/enum)
+ * With traits and enums:
  * ```ts
- * import { freshState, addType, addEnum, addTraitDef, showContext, starKind } from "system-f-omega";
+ * import { showContext } from "system-f-omega";
  *
- * let state = freshState();
- * state = addType(state, "Int", starKind).ok;
- * state = addEnum(state, "Option", ["T"], [starKind], [["None", { tuple: [] }]]).ok;
- * state = addTraitDef(state, "Eq", "A", starKind, [["eq", { arrow: { from: { var: "A" }, to: { var: "Bool" } }}]]).ok;
  * console.log(showContext(state.ctx));
- * // Multi-line: Type, Enum, TraitDef...
+ * // Prints each binding on its own line
  * ```
- *
- * @see {@link showBinding} Single binding
- * @see {@link freshState} Empty ctx
  */
 export const showContext = (context: Context) =>
   context.map((t) => showBinding(t)).join("\n");
 
 /**
- * Extracts spine arguments from left-associated applications.
+ * Extracts the **argument types** from a left‑associated type application spine.
  *
- * **Purpose**: Deconstructs nominal types: `Either<Int, Bool>` → `["Int", "Bool"]`.
- * Used in nominal unification, enum expansion, `showType`.
+ * **What it represents**
+ * Many type constructors—especially HKTs—are applied in *spine form*:
  *
- * @param ty - Possibly nested app type
- * @returns Argument array (left-to-right)
+ * ```
+ * Either<Int, Bool>
+ *    ≡ appType(appType(Either, Int), Bool)
  *
- * @example Nested nominal app
- * ```ts
- * import { getSpineArgs, appType, conType } from "system-f-omega";
- *
- * const either = appType(appType(conType("Either"), conType("Int")), conType("Bool"));
- * console.log("spine:", getSpineArgs(either));  // ["Int", "Bool"]
+ * List<Int>
+ *    ≡ appType(List, Int)
  * ```
  *
- * @example Single app
+ * `getSpineArgs` walks through nested `AppType` nodes and collects all argument
+ * types in **left‑to‑right order**.
+ *
+ * Given:
+ * ```
+ * appType(appType(F, A), B)
+ * ```
+ *
+ * it returns:
+ * ```
+ * [A, B]
+ * ```
+ *
+ * **Why it's useful**
+ * Extracting the “spine” of a type is essential for:
+ * - **Nominal unification**
+ *   Matching parameterized types like `Either<Int, Bool>` vs `Either<a, b>`
+ *   (via {@link unifyTypes})
+ *
+ * - **Enum/ADT expansion**
+ *   When normalizing `Option<T>` or `List<T>` via {@link normalizeType}
+ *
+ * - **Pretty‑printing**
+ *   Used by {@link showType} to display `F<A, B, C>` nicely
+ *
+ * - **Pattern/type inspection utilities**
+ *
+ * In short, anything that needs to know “what arguments were given to this type
+ * constructor” uses this helper.
+ *
+ * **Related**
+ * - {@link getSpineHead} — extracts the root constructor (e.g. `Either`)
+ * - {@link AppType} — representation of type application
+ * - {@link normalizeType} — uses spines to expand enums/aliases
+ * - {@link unifyTypes} — uses spines for structural unification
+ *
+ * **Examples**
+ *
+ * Extracting arguments from a nested application:
  * ```ts
  * import { getSpineArgs, appType, conType } from "system-f-omega";
  *
+ * const ty = appType(
+ *   appType(conType("Either"), conType("Int")),
+ *   conType("Bool")
+ * );
+ *
+ * console.log(getSpineArgs(ty));  // [Int, Bool]
+ * ```
+ *
+ * Single argument:
+ * ```ts
  * const listInt = appType(conType("List"), conType("Int"));
- * console.log("single:", getSpineArgs(listInt));  // ["Int"]
+ * console.log(getSpineArgs(listInt));  // [Int]
  * ```
  *
- * @example Non-app
+ * Non‑application types:
  * ```ts
- * import { getSpineArgs, conType, arrowType } from "system-f-omega";
- * import { conType as int } from "system-f-omega";
+ * import { getSpineArgs, conType } from "system-f-omega";
  *
- * console.log("con:", getSpineArgs(conType("Int")));       // []
- * console.log("arrow:", getSpineArgs(arrowType(conType("Int"), int("Bool"))));  // []
+ * console.log(getSpineArgs(conType("Int")));  // []
  * ```
- *
- * @internal Used by {@link unifyTypes}, {@link showType}
- * @see {@link getSpineHead} Head extractor
  */
 export function getSpineArgs(ty: Type): Type[] {
   const args: Type[] = [];
@@ -7381,65 +8269,98 @@ export function getSpineArgs(ty: Type): Type[] {
 }
 
 /**
- * Pretty-prints single binding for context display.
+ * Pretty‑prints a single {@link Binding} from the typing context (`Γ`).
  *
- * **Purpose**: Formats `Context` entries. Used by `showContext`.
+ * **What it represents**
+ * `showBinding` converts any kind of binding—term, type, trait, dictionary,
+ * enum, or type alias—into a human‑readable string.
  *
- * @param bind - Binding variant
- * @returns Formatted string
+ * This function is the core printer used by {@link showContext} to display
+ * multi‑line, debugging‑friendly summaries of the entire context.
  *
- * @example Term binding
+ * Each binding form is printed as:
+ *
+ * - **TermBinding**
+ *   ```
+ *   Term: x = Int
+ *   ```
+ *
+ * - **TypeBinding**
+ *   ```
+ *   Type: List = (* → *)
+ *   ```
+ *
+ * - **TraitDefBinding**
+ *   ```
+ *   Trait: Eq = TraitDef (Eq A = *
+ *     eq : (A → Bool))
+ *   ```
+ *
+ * - **TraitImplBinding**
+ *   ```
+ *   Impl: Eq = dict Eq<Int> {...} : Int
+ *   ```
+ *
+ * - **DictBinding**
+ *   ```
+ *   Dict: eqInt = Trait Eq : Int
+ *   ```
+ *
+ * - **TypeAliasBinding**
+ *   ```
+ *   Type Alias: Id<A::*> = A
+ *   ```
+ *
+ * **Why it's useful**
+ * Human‑readable printing of bindings is important for:
+ * - REPLs and debugging
+ * - Understanding typechecker output
+ * - Inspecting module imports and renamings
+ * - Showing what is currently in `Γ`
+ *
+ * `showBinding` provides a unified, consistent formatting for all binding types.
+ *
+ * **Where it is used**
+ * - {@link showContext} — iterates through all bindings
+ * - Debugging utilities
+ * - Test outputs and error messages
+ *
+ * **Related**
+ * - {@link Binding} — the union type handled by this function
+ * - {@link showType} — prints embedded types
+ * - {@link showKind} — prints kinds (`*`, `(* → *)`, ...)
+ * - {@link showTraitDef} — prints trait method signatures
+ *
+ * **Examples**
+ *
+ * Displaying a term binding:
  * ```ts
- * import { showBinding } from "system-f-omega";
- * import { conType } from "system-f-omega";
+ * import { termBinding, conType, showBinding } from "system-f-omega";
  *
- * const termBind = { term: { name: "x", type: conType("Int") } };
- * console.log(showBinding(termBind));  // "Term: x = Int"
+ * const bind = termBinding("x", conType("Int"));
+ * console.log(showBinding(bind));  // "Term: x = Int"
  * ```
  *
- * @example Type binding
+ * Printing a trait definition:
  * ```ts
- * import { showBinding, starKind } from "system-f-omega";
+ * import { traitDefBinding, starKind, arrowType, varType, showBinding } from "system-f-omega";
  *
- * const typeBind = { type: { name: "Int", kind: starKind } };
- * console.log(showBinding(typeBind));  // "Type: Int = *"
+ * const eqDef = traitDefBinding("Eq", "A", starKind, [
+ *   ["eq", arrowType(varType("A"), varType("Bool"))]
+ * ]);
+ *
+ * console.log(showBinding(eqDef));
+ * // "Trait: Eq = TraitDef (Eq A = *\n  eq : (A → Bool))"
  * ```
  *
- * @example Trait def
+ * Type alias binding printout:
  * ```ts
- * import { showBinding } from "system-f-omega";
- * import { starKind, arrowType, varType } from "system-f-omega";
+ * import { typeAliasBinding, varType, starKind, showBinding } from "system-f-omega";
  *
- * const traitBind = {
- *   trait_def: {
- *     name: "Eq",
- *     type_param: "A",
- *     kind: starKind,
- *     methods: [["eq", arrowType(varType("A"), varType("Bool"))]]
- *   }
- * };
- * console.log(showBinding(traitBind));  // "Trait: Eq = TraitDef (Eq A = *\n  eq : (A → Bool))"
+ * const alias = typeAliasBinding("Id", ["A"], [starKind], varType("A"));
+ * console.log(showBinding(alias));
+ * // "Type Alias: Id<A::*> = A"
  * ```
- *
- * @example Trait impl + dict + alias
- * ```ts
- * import { showBinding, conType } from "system-f-omega";
- *
- * const implBind = { trait_impl: { trait: "Eq", type: conType("Int"), dict: { var: "d" } } };
- * console.log(showBinding(implBind));  // "Impl: Eq = d: Int"
- *
- * const dictBind = { dict: { name: "eqInt", trait: "Eq", type: conType("Int") } };
- * console.log(showBinding(dictBind));  // "Dict: eqInt = Trait Eq : Int"
- *
- * const aliasBind = {
- *   type_alias: { name: "Id", params: ["A"], kinds: [starKind], body: conType("A") }
- * };
- * console.log(showBinding(aliasBind));  // "Type Alias: Id<A::*> = A"
- * ```
- *
- * @see {@link showContext} Multi-binding printer
- * @see {@link showType} Embedded types
- * @see {@link showTraitDef} Trait methods
  */
 export const showBinding = (bind: Binding) => {
   if ("term" in bind)
@@ -7461,142 +8382,134 @@ export const showBinding = (bind: Binding) => {
 };
 
 /**
- * Pretty-prints `TypingError` for user-facing diagnostics.
+ * Converts a {@link TypingError} into a **human‑readable error message**.
  *
- * **Purpose**: Human-readable errors with context (types/kinds shown).
- * Covers all variants: unbound, mismatch, missing impl/case/field, cyclic, etc.
-
- * @param err - Typing error
- * @returns Formatted string
+ * **What it represents**
+ * `showError` is the central pretty‑printer for all typechecker errors.
+ * It pattern‑matches on every variant of {@link TypingError} and produces a
+ * descriptive, multiline string suitable for:
  *
- * @example Unbound identifier
+ * - REPL output
+ * - debugging
+ * - error reporting
+ * - IDE diagnostics
+ *
+ * Each error kind (unbound names, kind mismatches, type mismatches, invalid
+ * variants, missing dictionaries, etc.) is formatted in a clear and consistent
+ * style that’s readable by beginners and experts alike.
+ *
+ * **Why it's useful**
+ * Errors–especially in a formal type system—can be cryptic.
+ * `showError` transforms low‑level error objects into meaningful messages.
+ *
+ * This function:
+ * - Ensures every error variant has a consistent format
+ * - Helps users understand *why* inference failed
+ * - Improves debugging of pattern matches, trait resolution, and HKT usage
+ * - Bridges the gap between internal error structures and user‑facing feedback
+ *
+ * **Where it is used**
+ * - In top‑level APIs (REPL, CLI, editor integrations)
+ * - Inside `unwrap` to produce clear exception messages
+ * - Anywhere a `TypingError` is printed
+ *
+ * **Related**
+ * - {@link TypingError} — the union of all typechecker error variants
+ * - {@link showType} — used to embed types in error messages
+ * - {@link showKind} — embeds kinds
+ * - {@link showBinding} — embeds duplicate binding info
+ * - {@link unwrap} — throws errors using `showError`
+ *
+ * **Examples**
+ *
+ * Unbound identifier:
  * ```ts
- * import { freshState, inferType, varTerm, showError } from "system-f-omega";
+ * import { showError } from "system-f-omega";
  *
- * const state = freshState();
- * const result = inferType(state, varTerm("missing"));
- * console.log(showError(result.err));  // "Unbound identifier: missing"
+ * console.log(showError({ unbound: "X" }));
+ * // "Unbound identifier: X"
  * ```
  *
- * @example Type mismatch
+ * Type mismatch:
  * ```ts
- * import { freshState, addType, inferType, conTerm, appTerm, lamTerm, varTerm, arrowType, conType, starKind, showError, showType } from "system-f-omega";
+ * import { showError, conType, arrowType } from "system-f-omega";
  *
- * let state = freshState();
- * state = addType(state, "Int", starKind).ok;
- * state = addType(state, "Bool", starKind).ok;
- *
- * const id = lamTerm("x", conType("Int"), varTerm("x"));
- * const badApp = appTerm(id, conTerm("true", conType("Bool")));
- * const result = inferType(state, badApp);
- * console.log(showError(result.err));
- * // "Type mismatch:
+ * console.log(showError({
+ *   type_mismatch: {
+ *     expected: arrowType(conType("Int"), conType("Int")),
+ *     actual: conType("Bool")
+ *   }
+ * }));
+ * // Type mismatch:
  * //   Expected: (Int → Int)
- * //   Actual:   Bool"
+ * //   Actual:   Bool
  * ```
  *
- * @example Missing trait impl
+ * Invalid variant label:
  * ```ts
- * import { freshState, addType, addTraitDef, checkTraitImplementation, conType, starKind, showError } from "system-f-omega";
+ * import { showError, conType } from "system-f-omega";
  *
- * let state = freshState();
- * state = addType(state, "String", starKind).ok;
- * state = addTraitDef(state, "Eq", "A", starKind, [["eq", conType("Bool")]]).ok;
- *
- * const result = checkTraitImplementation(state, "Eq", conType("String"));
- * console.log(showError(result.err));  // "Missing trait implementation:\n  Trait: Eq\n  Type:  String"
+ * console.log(showError({
+ *   invalid_variant_label: {
+ *     label: "Bad",
+ *     variant: conType("Option")
+ *   }
+ * }));
+ * // Invalid variant label 'Bad' for:
+ * //   Option
  * ```
  *
- * @example Non-exhaustive match
+ * Duplicate binding:
  * ```ts
- * import { freshState, addEnum, checkExhaustive, variantPattern, varPattern, conType, starKind, showError } from "system-f-omega";
- *
- * let state = freshState();
- * state = addEnum(state, "Color", [], [], [["Red", { var: "Unit" }], ["Blue", { var: "Unit" }]]).ok;
- *
- * const patterns = [variantPattern("Red", varPattern("x"))];  // Missing Blue
- * const result = checkExhaustive(state, patterns, conType("Color"));
- * console.log(showError(result.err));  // "Non-exhaustive match: missing case 'Blue'"
+ * console.log(showError({
+ *   duplicate_binding: {
+ *     name: "Int",
+ *     existing: typeBinding("Int", starKind),
+ *     incoming: typeBinding("Int", starKind)
+ *   }
+ * }));
+ * // Duplicate binding for 'Int':
+ * //   Existing: Type: Int = *
+ * //   Incoming: Type: Int = *
  * ```
- *
- * @example Cyclic type
- * ```ts
- * import { freshState, unifyTypes, arrowType, varType, showError } from "system-f-omega";
- *
- * const state = freshState();
- * const subst = new Map<string, Type>();
- * const result = unifyTypes(state, varType("a"), arrowType(varType("a"), varType("Int")), [], subst);
- * console.log(showError(result.err));  // "Cyclic type detected involving: a"
- * ```
- *
- * @example Duplicate binding (import)
- * ```ts
- * import { freshState, addType, importModule, starKind, showError } from "system-f-omega";
- *
- * let from = freshState();
- * from = addType(from, "Int", starKind).ok;
- *
- * let into = freshState();
- * into = addType(into, "Int", starKind).ok;
- *
- * const result = importModule({ from, into, roots: ["Int"] });
- * console.log(showError(result.err));
- * // "Duplicate binding for 'Int':\n  Existing: Type: Int = *\n  Incoming: Type: Int = *"
- * ```
- *
- * @see {@link inferType} Common caller
- * @see {@link checkType} Checking errors
  */
 export function showError(err: TypingError): string {
   if ("unbound" in err) return `Unbound identifier: ${err.unbound}`;
 
-  if ("kind_mismatch" in err) {
+  if ("kind_mismatch" in err)
     return `Kind mismatch:\n  Expected: ${showKind(err.kind_mismatch.expected)}\n  Actual:   ${showKind(err.kind_mismatch.actual)}`;
-  }
 
-  if ("type_mismatch" in err) {
+  if ("type_mismatch" in err)
     return `Type mismatch:\n  Expected: ${showType(err.type_mismatch.expected)}\n  Actual:   ${showType(err.type_mismatch.actual)}`;
-  }
 
-  if ("not_a_function" in err) {
+  if ("not_a_function" in err)
     return `Not a function:\n  ${showType(err.not_a_function)}`;
-  }
 
-  if ("not_a_type_function" in err) {
+  if ("not_a_type_function" in err)
     return `Not a type-level function:\n  ${showType(err.not_a_type_function)}`;
-  }
 
-  if ("cyclic" in err) {
-    return `Cyclic type detected involving: ${err.cyclic}`;
-  }
+  if ("cyclic" in err) return `Cyclic type detected involving: ${err.cyclic}`;
 
-  if ("not_a_record" in err) {
+  if ("not_a_record" in err)
     return `Not a record type:\n  ${showType(err.not_a_record)}`;
-  }
 
-  if ("missing_field" in err) {
+  if ("missing_field" in err)
     return `Missing field '${err.missing_field.label}' in record:\n  ${showType(err.missing_field.record)}`;
-  }
 
-  if ("not_a_variant" in err) {
+  if ("not_a_variant" in err)
     return `Not a variant type:\n  ${showType(err.not_a_variant)}`;
-  }
 
-  if ("invalid_variant_label" in err) {
+  if ("invalid_variant_label" in err)
     return `Invalid variant label '${err.invalid_variant_label.label}' for:\n  ${showType(err.invalid_variant_label.variant)}`;
-  }
 
-  if ("missing_case" in err) {
+  if ("missing_case" in err)
     return `Non-exhaustive match: missing case '${err.missing_case.label}'`;
-  }
 
-  if ("extra_case" in err) {
+  if ("extra_case" in err)
     return `Unreachable case in match: '${err.extra_case.label}'`;
-  }
 
-  if ("not_a_tuple" in err) {
+  if ("not_a_tuple" in err)
     return `Not a tuple type:\n  ${showType(err.not_a_tuple)}`;
-  }
 
   if ("tuple_index_out_of_bounds" in err) {
     const { tuple, index } = err.tuple_index_out_of_bounds;
@@ -7644,24 +8557,76 @@ export function showError(err: TypingError): string {
 }
 
 /**
- * Extracts success with custom error message.
+ * Extracts the successful value from a {@link Result}, or throws a JavaScript
+ * `Error` containing a friendly, formatted message using {@link showError}.
  *
- * **Purpose**: `unwrap` + formatted error:
- * - Uses `showError` for TypingError → user-friendly.
+ * ```
+ * unwrap({ ok: value })          → value
+ * unwrap({ err: typingError })   → throws Error("Failed: <formatted error>")
+ * ```
  *
- * @template TErr Error type
- * @template TOk Success type
- * @param {Result<TErr, TOk>} result - Result to unwrap
- * @param {string} [msg="Failed"] - Prefix message
- * @returns {TOk} Success value
- * @throws {Error} `${msg}: ${showError(err)}`
+ * **What it represents**
+ * `unwrap` is a convenience helper for tests, REPLs, and one‑off scripts where
+ * you want:
+ * - the *successful value* directly
+ * - and are comfortable throwing an exception on error
  *
- * @example
+ * It is particularly useful when you are certain the computation should succeed
+ * (e.g., inside tests) or when you want concise code without manual error
+ * handling.
+ *
+ * **Why it's useful**
+ * `unwrap`:
+ * - Removes boilerplate `"ok" in result` checks
+ * - Provides *descriptive exceptions* thanks to {@link showError}
+ * - Helps when debugging failing inference
+ * - Makes test code expressive and readable
+ *
+ * **Important**
+ * This function **throws**, so it should not be used in production code unless
+ * failure is intended to abort evaluation.
+ *
+ * **Where it is used**
+ * - Testing type inference (`inferType`, `checkType`, etc.)
+ * - Debugging constraint solving
+ * - REPL commands to display immediate feedback
+ *
+ * **Related**
+ * - {@link Result} — the wrapped success/error type
+ * - {@link showError} — turns a {@link TypingError} into a human‑readable string
+ * - {@link ok} / {@link err} — constructors for Result values
+ *
+ * **Examples**
+ *
+ * Successful unwrap:
  * ```ts
- * import { expect, err, UnboundTypeError } from "system-f-omega";
+ * import { unwrap, ok } from "system-f-omega";
  *
- * expect(err({ unbound: "x" } as UnboundTypeError), "Var lookup failed");
- * // Throws: "Var lookup failed: Unbound identifier: x"
+ * const r = ok(42);
+ * console.log(unwrap(r));  // 42
+ * ```
+ *
+ * Unwrapping a failure (throws):
+ * ```ts
+ * import { unwrap, err } from "system-f-omega";
+ *
+ * try {
+ *   unwrap(err({ unbound: "MissingType" }), "Typecheck failed");
+ * } catch (e) {
+ *   console.log(e.message);
+ *   // "Typecheck failed: Unbound identifier: MissingType"
+ * }
+ * ```
+ *
+ * Using unwrap inside a type inference test:
+ * ```ts
+ * import { freshState, inferType, unwrap, showType } from "system-f-omega";
+ *
+ * const state = freshState();
+ * const result = inferType(state, { var: "x" });
+ *
+ * // If result is err, unwrap throws with a formatted message.
+ * console.log(showType(unwrap(result)));
  * ```
  */
 export const unwrap = <TOk = unknown>(
@@ -7673,32 +8638,63 @@ export const unwrap = <TOk = unknown>(
 };
 
 /**
- * Pretty-prints kinds for debugging and error messages.
+ * Pretty‑prints a {@link Kind} into a human‑readable string representation.
  *
- * **Purpose**: Human-readable kind strings (parenthesized arrows).
- * Used in `showType` (`∀a::κ.τ`), `showTerm` (tylam kinds), kind errors.
+ * **What it represents**
+ * `showKind` converts the internal `Kind` structure (either:
+ * - `StarKind` — representing `*`
+ * - `ArrowKind` — representing `κ₁ → κ₂`
  *
- * @param k - Kind to print
- * @returns String (e.g., `*`, `(* → *)`)
+ * into conventional kind notation used throughout type theory and in languages
+ * like Haskell, OCaml, and PureScript.
  *
- * @example Basic kinds
+ * Examples of printed kinds:
+ * - `*`
+ * - `(* → *)`
+ * - `(* → (* → *))`
+ *
+ * **Why it's useful**
+ * Pretty‑printed kinds appear in:
+ * - error messages ({@link KindMismatchTypeError}, {@link UnexpectedKindError})
+ * - type displays involving `∀` or `Λ` binders ({@link showType})
+ * - debug information when printing contexts (`showBinding`)
+ * - developer‑facing output in REPL or logs
+ *
+ * Without readable kind printing, understanding higher‑kind errors would be much
+ * more difficult.
+ *
+ * **How it works**
+ * - If the kind is `*`, print `"*"`.
+ * - If it is an arrow kind (`κ₁ → κ₂`), recursively print both sides wrapped
+ *   in parentheses for clarity.
+ *
+ * **Related**
+ * - {@link Kind} — the full kind system
+ * - {@link StarKind} — base kind
+ * - {@link ArrowKind} — kind-level function
+ * - {@link showType} — pretty-prints types, embedding kinds for polymorphism
+ *
+ * **Examples**
+ *
+ * Printing simple and complex kinds:
  * ```ts
  * import { showKind, starKind, arrowKind } from "system-f-omega";
  *
- * showKind(starKind);                           // "*"
- * showKind(arrowKind(starKind, starKind));      // "(* → *)"
+ * console.log(showKind(starKind));                           // "*"
+ * console.log(showKind(arrowKind(starKind, starKind)));      // "(* → *)"
+ * console.log(showKind(arrowKind(starKind,
+ *   arrowKind(starKind, starKind)
+ * )));                                                       // "(* → (* → *))"
  * ```
  *
- * @example Nested HKT
+ * Kind inside a type printer:
  * ```ts
- * import { showKind, starKind, arrowKind } from "system-f-omega";
+ * import { forallType, starKind, varType, showType } from "system-f-omega";
  *
- * showKind(arrowKind(starKind, arrowKind(starKind, starKind)));
- * // "(* → ((* → *) → *))"
+ * const ty = forallType("A", starKind, varType("A"));
+ * console.log(showType(ty));   // "∀A::*. A"
+ * // showKind is used internally for the ":: *"
  * ```
- *
- * @see {@link showType} Uses for polymorphic binders
- * @see {@link showTerm} Tylam/trait-lam kinds
  */
 export function showKind(k: Kind): string {
   if ("star" in k) return "*";
@@ -7708,61 +8704,114 @@ export function showKind(k: Kind): string {
 }
 
 /**
- * Pretty-prints types for debugging, REPL, and error messages.
+ * Pretty‑prints a {@link Type} into a human‑readable string representation.
  *
- * **Purpose**: Human-readable type strings with conventional notation:
- * - Nominal apps: `Either<I32, Bool>` (spine-aware).
- * - Functions: `(Int → Bool)` (parenthesized).
- * - Polymorphism: `∀a::*. a → a`, `λt::*. t → t`.
- * - Data: `{x: Int}`, `<Left: I32 | Right: Bool>`, `(Int, Bool)`.
- * - Special: `⊥` (never), `?0` (metas), `μX. ...` (recursion).
+ * **What it represents**
+ * `showType` renders every kind of type in the language, including:
+ * - simple types (`Int`, `Bool`)
+ * - applications (`List<Int>`, `Either<A, B>`)
+ * - function types (`A → B`)
+ * - polymorphic types (`∀A::*. A → A`)
+ * - trait‑bounded polymorphism (`∀Self::* where Eq<Self>. Self → Int`)
+ * - type‑level lambdas (`λt::*. body`)
+ * - records, variants, tuples
+ * - recursive types (`μX. body`)
+ * - meta‑variables (`?0`, `?1`)
  *
- * Recursive. Primary output for `inferType`, errors, docs.
+ * It is the primary way the language displays types to the user—in errors,
+ * REPL output, logs, and debugging tools.
  *
- * @param t - Type to print
- * @returns Pretty-printed string
+ * **Why it's useful**
+ * Pretty‑printed types appear everywhere:
+ * - type errors (`showError`)
+ * - inferred types (`inferType`)
+ * - context printing (`showBinding`)
+ * - variant and record displays
  *
- * @example Nominal type applications
+ * A type system this rich would be nearly impossible to debug without a clear,
+ * well‑structured type printer.
+ *
+ * **Printing rules**
+ *
+ * `showType` formats types using familiar, conventional notation:
+ *
+ * | Form                  | Printed As                                   |
+ * |-----------------------|-----------------------------------------------|
+ * | `VarType`            | `A`                                           |
+ * | `ConType`            | `Int`, `List`, etc.                           |
+ * | `AppType` (nominal)  | `List<Int>` / `Either<Int, Bool>`             |
+ * | `AppType` (lambda)   | `(F A)`                                       |
+ * | `ArrowType`          | `(A → B)`                                     |
+ * | `ForallType`         | `∀A::*. body`                                 |
+ * | `BoundedForallType`  | `∀A::*. where Eq<A>. body`                    |
+ * | `LamType`            | `λA::*. body`                                 |
+ * | `RecordType`         | `{ x: Int, y: Bool }`                         |
+ * | `VariantType`        | `<Left: Int | Right: Bool>`                   |
+ * | `TupleType`          | `(A, B, C)` or `()`                           |
+ * | `MuType`             | `μX. body`                                    |
+ * | `NeverType`          | `⊥`                                           |
+ * | `MetaType`           | `?0`, `?1`                                    |
+ *
+ * Nominal type applications use **angle brackets**:
+ * ```
+ * Either<Int, Bool>
+ * ```
+ * while applied lambdas use **parenthesized application form**:
+ * ```
+ * (F A)
+ * ```
+ * detected via {@link getSpineArgs}.
+ *
+ * **Where it is used**
+ * - {@link showError} — embedding types in error messages
+ * - {@link showBinding} — printing context entries
+ * - REPL inference output
+ * - Debug logs
+ *
+ * **Related**
+ * - {@link showKind} — prints kinds
+ * - {@link getSpineArgs} — extracts application arguments
+ * - {@link Type} — type AST representation
+ *
+ * **Examples**
+ *
+ * Nominal type application:
  * ```ts
  * import { showType, appType, conType } from "system-f-omega";
  *
- * showType(appType(appType(conType("Either"), conType("Int")), conType("Bool")));
- * // "Either<Int, Bool>"
+ * const t = appType(conType("List"), conType("Int"));
+ * console.log(showType(t));   // "List<Int>"
  * ```
  *
- * @example Polymorphic + higher-kinded
+ * Function type:
  * ```ts
- * import { showType, forallType, arrowType, lamType, starKind, arrowKind, varType } from "system-f-omega";
- * import { conType } from "system-f-omega";
- *
- * showType(forallType("a", starKind, arrowType(varType("a"), varType("a"))));
- * // "∀a::*. (a → a)"
- *
- * showType(lamType("F", arrowKind(starKind, starKind), varType("F")));
- * // "λF::(* → *). F"
+ * console.log(showType({
+ *   arrow: { from: conType("Int"), to: conType("Bool") }
+ * }));
+ * // "(Int → Bool)"
  * ```
  *
- * @example Data structures + recursion
+ * Polymorphic type:
  * ```ts
- * import { showType, recordType, variantType, muType, tupleType, boundedForallType } from "system-f-omega";
- * import { varType, starKind, conType } from "system-f-omega";
+ * import { forallType, arrowType, varType, starKind } from "system-f-omega";
  *
- * showType(recordType([["x", conType("Int")], ["y", conType("Bool")]]));
- * // "{x: Int, y: Bool}"
- *
- * showType(variantType([["Left", conType("Int")], ["Right", conType("Bool")]]));
- * // "<Left: Int | Right: Bool>"
- *
- * showType(muType("L", varType("L")));  // "μL.L"
- *
- * showType(boundedForallType("a", starKind, [{ trait: "Eq", type: varType("a") }], varType("a")));
- * // "∀a::* where Eq<a>. a"
+ * const poly = forallType("A", starKind,
+ *   arrowType(varType("A"), varType("A"))
+ * );
+ * console.log(showType(poly));  // "∀A::*. (A → A)"
  * ```
  *
- * @see {@link showTerm} Term printer (uses this)
- * @see {@link showKind} Kind printer (embedded)
- * @see {@link showPattern} Pattern printer
- * @see {@link getSpineArgs} Nominal app spine
+ * Structural variant:
+ * ```ts
+ * import { variantType, conType } from "system-f-omega";
+ *
+ * const v = variantType([
+ *   ["Left", conType("Int")],
+ *   ["Right", conType("Bool")]
+ * ]);
+ *
+ * console.log(showType(v));  // "<Left: Int | Right: Bool>"
+ * ```
  */
 export function showType(t: Type): string {
   if ("app" in t && "con" in t.app.func) {
@@ -7792,9 +8841,8 @@ export function showType(t: Type): string {
       .join(" | ");
     return `<${cases}>`;
   }
-  if ("mu" in t) {
-    return `μ${t.mu.var}.${showType(t.mu.body)}`;
-  }
+  if ("mu" in t) return `μ${t.mu.var}.${showType(t.mu.body)}`;
+
   if ("tuple" in t) {
     const elements = t.tuple.map(showType).join(", ");
     return `(${elements})`;
@@ -7810,68 +8858,108 @@ export function showType(t: Type): string {
 }
 
 /**
- * Pretty-prints terms for debugging, REPL, and error messages.
+ * Pretty‑prints a {@link Term} into a human‑readable string.
  *
- * **Purpose**: Human-readable term strings with conventional notation:
- * - Lambdas: `λx:τ.body`
- * - Apps: `(callee arg)` (parenthesized).
- * - Polymorphism: `Λα::κ.body`, `term [τ]`.
- * - Data: `{x = 1, y = true}`, `<Left=42> as Either<Int,Bool>`.
- * - Traits: `dict Eq<Int> { eq = λx:Int.λy:Int.true }`, `d.eq`.
- * - Control: `match xs { Nil => 0 | Cons(x,_) => x }`.
+ * **What it represents**
+ * `showTerm` converts the internal term AST into a readable expression using
+ * familiar functional‑language syntax:
  *
- * Recursive. Embeds `showType`/`showKind`/`showPattern`. Primary output for inference results.
+ * - Variables: `x`
+ * - Lambdas: `λx:τ. body`
+ * - Applications: `(f x)`
+ * - Type lambdas: `ΛA::*. e`
+ * - Type applications: `f [Int]`
+ * - Records: `{ x = 1, y = true }`
+ * - Projections: `e.x`
+ * - Variants: `<Some=42> as Option<Int>`
+ * - Pattern matches: `match e { Some(x) => ... | None => ... }`
+ * - Trait lambdas: `ΛSelf::* where Eq<Self>. body`
+ * - Trait apps: `f[Int] with dicts {d1, d2}`
+ * - Dictionaries: `dict Eq<Int> { eq = ... }`
+ * - Trait methods: `d.eq`
+ * - Folds / unfolds: `fold[μX. ...](term)`, `unfold(term)`
+ * - Tuples: `(e1, e2, ...)`
+ * - Tuple projection: `tup.0`
  *
- * @param t - Term to print
- * @returns Pretty-printed string
+ * It is the *term‑level counterpart* to {@link showType}.
  *
- * @example Core lambda calculus
+ * **Why it's useful**
+ * Pretty‑printed terms appear in:
+ * - REPL output
+ * - debugging logs
+ * - error messages (e.g., in {@link showError})
+ * - teaching or visualizing the structure of complex expressions
+ *
+ * Without this printer, debugging the raw AST would be far more difficult.
+ *
+ * **How it prints terms**
+ * `showTerm` follows a series of formatting rules:
+ * - Lambda: `λx:τ. body`
+ * - Application: parentheses ensure left associativity
+ * - Type lambda: `ΛA::κ. body`
+ * - Type application: `term [type]`
+ * - Trait lambda / app: printed with constraint lists
+ * - Pattern match: `match scrutinee { pat1 => e1 | pat2 => e2 }`
+ * - Variant injection: `<Label=value> as Type`
+ * - Fold/unfold: explicit runtime forms for recursive types
+ *
+ * **Related**
+ * - {@link showType} — for printing embedded types
+ * - {@link showPattern} — for printing match case patterns
+ * - {@link Term} — the full AST this printer handles
+ * - {@link showBinding} — prints bindings containing terms
+ *
+ * **Examples**
+ *
+ * Lambda and application:
  * ```ts
- * import { showTerm, lamTerm, appTerm, varTerm, conType } from "system-f-omega";
+ * import { lamTerm, varTerm, conType, appTerm, showTerm } from "system-f-omega";
  *
  * const id = lamTerm("x", conType("Int"), varTerm("x"));
- * showTerm(id);  // "λx:Int.x"
+ * const call = appTerm(id, varTerm("y"));
  *
- * const app = appTerm(varTerm("f"), varTerm("x"));
- * showTerm(app);  // "(f x)"
+ * console.log(showTerm(id));   // "λx:Int.x"
+ * console.log(showTerm(call)); // "(λx:Int.x y)"
  * ```
  *
- * @example Data + patterns
+ * Type-level constructs:
  * ```ts
- * import { showTerm, recordTerm, injectTerm, matchTerm, tupleTerm } from "system-f-omega";
- * import { conTerm, conType, varTerm, showPattern, varPattern, wildcardPattern, variantPattern, tuplePattern } from "system-f-omega";
+ * import { tylamTerm, tyappTerm, varTerm, conType, starKind, showTerm } from "system-f-omega";
  *
- * showTerm(recordTerm([["x", conTerm("1", conType("Int"))]]));  // "{x = 1}"
+ * const poly = tylamTerm("A", starKind, varTerm("x"));
+ * console.log(showTerm(poly));  // "ΛA::*. x"
  *
- * const inj = injectTerm("Left", conTerm("42", conType("Int")), conType("Either"));
- * showTerm(inj);  // "<Left=42> as Either"
- *
- * const match = matchTerm(varTerm("xs"), [
- *   [varPattern("x"), conTerm("0", conType("Int"))],
- *   [variantPattern("Cons", tuplePattern([varPattern("hd"), wildcardPattern()])), varTerm("hd")]
- * ]);
- * showTerm(match);  // "match xs { x => 0 | Cons((hd, _)) => hd }"
+ * const inst = tyappTerm(poly, conType("Int"));
+ * console.log(showTerm(inst));  // "ΛA::*. x [Int]"
  * ```
  *
- * @example Traits + polymorphism
+ * Pattern match:
  * ```ts
- * import { showTerm, tylamTerm, tyappTerm, dictTerm, traitMethodTerm, starKind } from "system-f-omega";
- * import { lamTerm, varTerm, conType, conTerm, showType } from "system-f-omega";
+ * import {
+ *   matchTerm, variantPattern, varPattern,
+ *   conTerm, conType, showTerm
+ * } from "system-f-omega";
  *
- * const polyId = tylamTerm("a", starKind, lamTerm("x", conType("Int"), varTerm("x")));
- * showTerm(polyId);  // "Λa::*. λx:Int.x"
+ * const m = matchTerm(
+ *   conTerm("opt", conType("Option<Int>")),
+ *   [
+ *     [variantPattern("Some", varPattern("x")), varTerm("x")],
+ *     [variantPattern("None", varPattern("_")), conTerm("0", conType("Int"))],
+ *   ]
+ * );
  *
- * showTerm(tyappTerm(polyId, conType("Bool")));  // "Λa::*. λx:Int.x [Bool]"
- *
- * const dict = dictTerm("Eq", conType("Int"), [["eq", conTerm("eqInt", conType("Bool"))]]);
- * showTerm(dict);  // "dict Eq<Int> { eq = eqInt }"
- *
- * showTerm(traitMethodTerm(dict, "eq"));  // "dict Eq<Int> { eq = eqInt }.eq"
+ * console.log(showTerm(m));
+ * // match opt { Some(x) => x | None(_) => 0 }
  * ```
  *
- * @see {@link showType} Embedded types
- * @see {@link showKind} Kind annotations
- * @see {@link showPattern} Match cases
+ * Record and projection:
+ * ```ts
+ * import { recordTerm, conTerm, conType, projectTerm, showTerm } from "system-f-omega";
+ *
+ * const rec = recordTerm([["x", conTerm("1", conType("Int"))]]);
+ * console.log(showTerm(rec));                  // "{x = 1}"
+ * console.log(showTerm(projectTerm(rec, "x"))); // "{x = 1}.x"
+ * ```
  */
 export function showTerm(t: Term): string {
   if ("var" in t) return t.var;
@@ -7940,41 +9028,83 @@ export function showTerm(t: Term): string {
 }
 
 /**
- * Pretty-prints patterns for debugging and error messages.
+ * Pretty‑prints a {@link Pattern} into a human‑readable string representation.
  *
- * **Purpose**: Human-readable string for patterns in `match` expressions.
- * Recursive: handles nested records/variants/tuples.
+ * **What it represents**
+ * `showPattern` converts the internal pattern AST into conventional pattern
+ * matching syntax used in functional languages:
  *
- * Used in: `showTerm(match)`, error reporting (`missing_case`).
+ * - Variable pattern: `x`
+ * - Wildcard: `_`
+ * - Constructor / literal: `None`, `true`, `"42"`
+ * - Record pattern: `{ x: p1, y: p2 }`
+ * - Variant pattern: `Some(x)`
+ * - Tuple pattern: `(p1, p2, p3)`
  *
- * @param p - Pattern to print
- * @returns String representation (e.g., `{x: y}`, `Cons(_)`)
+ * This is the pattern‑level counterpart of {@link showTerm} and {@link showType}.
  *
- * @example Simple patterns
+ * **Why it's useful**
+ * Human‑readable patterns appear in:
+ * - Error messages (especially match failures)
+ * - REPL displays of pattern structures
+ * - Debugging tools that show typed pattern trees
+ * - Pretty‑printing match expressions in {@link showTerm}
+ *
+ * Without readable patterns, `match` expressions would be extremely difficult to
+ * understand during debugging and error reporting.
+ *
+ * **How it prints each pattern**
+ * - `VarPattern`: prints the variable name
+ *   → `x`
+ *
+ * - `WildcardPattern`: always prints `_`
+ *
+ * - `ConPattern`: prints the constructor/tag name
+ *
+ * - `RecordPattern`: prints record fields in `{label: pat}` format
+ *
+ * - `VariantPattern`: prints `Label(pat)`
+ *   Example: `Some(x)`
+ *
+ * - `TuplePattern`: prints `(p1, p2, ...)`
+ *
+ * **Related**
+ * - {@link Pattern} — pattern AST forms
+ * - {@link showTerm} — prints patterns inside match branches
+ * - {@link showType} — for printing types that patterns correspond to
+ *
+ * **Examples**
+ *
+ * Variable and wildcard:
  * ```ts
- * import { showPattern, varPattern, wildcardPattern, conPattern } from "system-f-omega";
+ * import { showPattern, varPattern, wildcardPattern } from "system-f-omega";
  *
- * showPattern(varPattern("x"));     // "x"
- * showPattern(wildcardPattern());   // "_"
- * showPattern(conPattern("None", {}));  // "None"
+ * console.log(showPattern(varPattern("x"))); // "x"
+ * console.log(showPattern(wildcardPattern())); // "_"
  * ```
  *
- * @example Nested structures
+ * Constructor and variant pattern:
  * ```ts
- * import { showPattern, recordPattern, variantPattern, tuplePattern } from "system-f-omega";
- * import { varPattern, wildcardPattern } from "system-f-omega";
+ * import { showPattern, conPattern, variantPattern, varPattern, conType } from "system-f-omega";
  *
- * showPattern(recordPattern([["x", varPattern("a")], ["y", wildcardPattern()]]));
- * // "{x: a, y: _}"
- *
- * showPattern(variantPattern("Cons", tuplePattern([varPattern("hd"), wildcardPattern()]))));
- * // "Cons((hd, _))"
- *
- * showPattern(tuplePattern([varPattern("1"), varPattern("2")]));  // "(1, 2)"
+ * console.log(showPattern(conPattern("None", conType("Unit"))));     // "None"
+ * console.log(showPattern(variantPattern("Some", varPattern("x")))); // "Some(x)"
  * ```
  *
- * @see {@link showType} Type pretty-printer
- * @see {@link showTerm} Term pretty-printer (uses this)
+ * Record and tuple patterns:
+ * ```ts
+ * import { showPattern, recordPattern, tuplePattern, varPattern } from "system-f-omega";
+ *
+ * console.log(showPattern(recordPattern([
+ *   ["x", varPattern("a")],
+ *   ["y", varPattern("b")]
+ * ]))); // "{x: a, y: b}"
+ *
+ * console.log(showPattern(tuplePattern([
+ *   varPattern("a"),
+ *   varPattern("b")
+ * ]))); // "(a, b)"
+ * ```
  */
 export function showPattern(p: Pattern): string {
   if ("var" in p) return p.var;
@@ -7997,63 +9127,82 @@ export function showPattern(p: Pattern): string {
 }
 
 /**
- * Pretty-prints trait definition (multi-line methods).
+ * Pretty‑prints a {@link TraitDef} into a human‑readable, multi‑line format.
  *
- * **Purpose**: Debugs `TraitDef` bindings. Used in `showBinding`.
+ * **What it represents**
+ * `showTraitDef` displays the structure of a trait definition, including:
+ * - the trait name
+ * - its type parameter and kind
+ * - each method and its type signature
  *
- * @param t - Trait definition
- * @returns Formatted string
+ * Output format:
+ * ```
+ * TraitDef (Eq A = *
+ *   eq : (A → Bool)
+ * )
+ * ```
  *
- * @example Basic trait
+ * This mirrors how traits are printed in context listings (via {@link showBinding})
+ * and error messages.
+ *
+ * **Why it's useful**
+ * Pretty‑printing trait definitions is important for:
+ * - diagnostic messages in the REPL or CLI
+ * - debugging mismatched method signatures
+ * - showing trait bindings in {@link showContext}
+ * - validating dictionary implementations
+ *
+ * `showTraitDef` provides a consistent, readable representation for learners and
+ * experts alike.
+ *
+ * **Formatting rules**
+ * - `TraitDef (name typeParam = kind`
+ * - Each method printed on its own line:
+ *   `  methodName : methodType`
+ * - Closed with a final `)` for grouping
+ *
+ * **Related**
+ * - {@link TraitDef} — the trait metadata structure
+ * - {@link showBinding} — prints the full binding for traits
+ * - {@link showType} — used to render method signatures
+ * - {@link showKind} — used for printing the parameter kind
+ *
+ * **Examples**
+ *
+ * Basic trait:
  * ```ts
- * import { showTraitDef } from "system-f-omega";
- * import { starKind, arrowType, varType } from "system-f-omega";
+ * import { showTraitDef, starKind, arrowType, varType } from "system-f-omega";
  *
- * const eqTrait = {
+ * const eq = {
  *   name: "Eq",
  *   type_param: "A",
  *   kind: starKind,
- *   methods: [["eq", arrowType(varType("A"), varType("Bool"))]]
- * };
- * console.log(showTraitDef(eqTrait));
- * // "TraitDef (Eq A = *\n  eq : (A → Bool))"
- * ```
- *
- * @example Multi-method
- * ```ts
- * import { showTraitDef } from "system-f-omega";
- * import { starKind, arrowType, varType } from "system-f-omega";
- *
- * const ordTrait = {
- *   name: "Ord",
- *   type_param: "A",
- *   kind: starKind,
  *   methods: [
- *     ["eq", arrowType(varType("A"), varType("Bool"))],
- *     ["lt", arrowType(varType("A"), varType("Bool"))]
+ *     ["eq", arrowType(varType("A"), arrowType(varType("A"), { con: "Bool" }))]
  *   ]
  * };
- * console.log(showTraitDef(ordTrait));
- * // "TraitDef (Ord A = *\n  eq : (A → Bool)\n  lt : (A → Bool))"
+ *
+ * console.log(showTraitDef(eq));
+ * // TraitDef (Eq A = *
+ * //   eq : (A → (A → Bool))
+ * // )
  * ```
  *
- * @example HKT trait
+ * Higher‑kinded trait:
  * ```ts
- * import { showTraitDef, arrowKind, starKind } from "system-f-omega";
- * import { varType, arrowType } from "system-f-omega";
+ * import { showTraitDef, arrowKind, starKind, varType } from "system-f-omega";
  *
- * const functorTrait = {
+ * const functor = {
  *   name: "Functor",
  *   type_param: "F",
  *   kind: arrowKind(starKind, starKind),
- *   methods: [["map", arrowType(varType("F"), varType("F"))]]
+ *   methods: [
+ *     ["map", varType("MapType")]  // pretend type for example
+ *   ]
  * };
- * console.log(showTraitDef(functorTrait));
- * // "TraitDef (Functor F = (* → *)\n  map : (F → F))"
- * ```
  *
- * @internal Used by {@link showBinding}
- * @see {@link showBinding} Context printer
+ * console.log(showTraitDef(functor));
+ * ```
  */
 export const showTraitDef = (t: TraitDef) => {
   return `TraitDef (${t.name} ${t.type_param} = ${showKind(t.kind)}\n${t.methods.map((y) => `  ${y[0]} : ${showType(y[1])}`).join("\n")})`;
