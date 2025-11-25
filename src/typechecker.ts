@@ -13332,6 +13332,128 @@ export function addTerm(
 }
 
 /**
+ * Adds a **builtin term** to the typing context (`Γ`), validating its declared
+ * type and optionally checking an implementation term.
+ *
+ * Builtins are term-level entities (functions, constants, operators) whose
+ * type signatures are *given* rather than inferred. This utility ensures:
+ *
+ * 1. The declared type is **well‑kinded** (`checkKind`)
+ * 2. If a term implementation is provided, it **matches the declared type**
+ *    (`checkType`)
+ * 3. The builtin is inserted into the context as a **term binding**
+ *
+ * Builtins may be:
+ * - **external primitives** (implemented in the host language, no term AST)
+ * - **compiler‑generated functions** (e.g., enum constructors,
+ *   partial evaluators, bridging functions)
+ *
+ * In both cases, the declared type is trusted *only after verification*.
+ *
+ * ---------------------------------------------------------------------------
+ * Why a special builtin helper?
+ * ---------------------------------------------------------------------------
+ * - Builtins must not be inferred — they require explicit type signatures.
+ * - They frequently involve polymorphism (`∀A`) or higher‑kinded parameters.
+ * - They often have no syntactic implementation (e.g., addition or printing).
+ * - Injecting ill‑typed builtins would make the entire system unsound.
+ *
+ * `addBuiltin` ensures builtins are type‑checked and kind‑checked before being
+ * added to the context.
+ *
+ * ---------------------------------------------------------------------------
+ * @param state - Current typechecker state
+ * @param name - The term name of the builtin (`"add"`, `"print"`, `"id"`, etc.)
+ * @param declaredType - The full type signature of the builtin
+ * @param term - Optional implementation term (if null, builtin is primitive)
+ *
+ * @returns The updated state or a {@link TypingError}
+ *
+ * ---------------------------------------------------------------------------
+ * Example 1: External primitive builtin
+ * ```ts
+ * addBuiltin(
+ *   state,
+ *   "add",
+ *   arrowType(Int, arrowType(Int, Int)),
+ *   null
+ * );
+ * // => adds: add : Int → Int → Int
+ * // No term AST required
+ * ```
+ *
+ * Example 2: Polymorphic builtin with implementation
+ * ```ts
+ * const idTerm =
+ *   tylamTerm("A", starKind,
+ *     lamTerm("x", varType("A"), varTerm("x"))
+ *   );
+ *
+ * addBuiltin(
+ *   state,
+ *   "id",
+ *   forallType("A", starKind,
+ *     arrowType(varType("A"), varType("A"))
+ *   ),
+ *   idTerm
+ * );
+ * ```
+ *
+ * Example 3: Higher‑kinded builtin
+ * ```ts
+ * addBuiltin(
+ *   state,
+ *   "map",
+ *   forallType("F", arrowKind(starKind, starKind),
+ *     forallType("A", starKind,
+ *       forallType("B", starKind,
+ *         arrowType(
+ *           arrowType(varType("A"), varType("B")),
+ *           arrowType(
+ *             appType(varType("F"), varType("A")),
+ *             appType(varType("F"), varType("B"))
+ *           )
+ *         )
+ *       )
+ *     )
+ *   ),
+ *   null
+ * );
+ * ```
+ *
+ * ---------------------------------------------------------------------------
+ * Implementation details
+ * ---------------------------------------------------------------------------
+ * - Uses {@link checkKind} to ensure the declared builtin type is valid.
+ * - Uses {@link checkType} if a term implementation is provided.
+ * - Uses {@link termBinding} to create a binding.
+ * - Uses {@link addBinding} to insert the builtin into the context safely.
+ */
+export function addBuiltin(
+  state: TypeCheckerState,
+  name: string,
+  declaredType: Type,
+  term: Term | null = null,
+): Result<TypingError, TypeCheckerState> {
+  // 1. Ensure the declared type is well-kinded
+  const kindResult = checkKind(state, declaredType);
+  if ("err" in kindResult) {
+    return kindResult;
+  }
+
+  // 2. If there is an implementation term, ensure it matches the declared type
+  if (term !== null) {
+    const typeCheck = checkType(state, term, declaredType);
+    if ("err" in typeCheck) {
+      return typeCheck;
+    }
+  }
+
+  // 3. Insert as a term binding
+  return addBinding(state, termBinding(name, declaredType));
+}
+
+/**
  * Adds a **new type constructor** to the typing context (`Γ`):
  *
  *     name :: kind
