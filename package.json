@@ -1,6 +1,6 @@
 {
   "name": "system-f-omega",
-  "version": "0.2.3",
+  "version": "0.2.2",
   "description": "A higher-kinded polymorphic type checker and experimental type system implementing System F-Omega with traits, recursive types, variants, and kind inference.",
   "license": "MIT",
   "author": "Joshua Tenner <tenner.joshua@gmail.com>",
@@ -31,7 +31,8 @@
     "build": "tsc",
     "clean": "rm -rf lib",
     "test": "bun test",
-    "docs": "typedoc"
+    "docs": "typedoc",
+    "publish-docs": "git subtree push --prefix docs origin gh-pages"
   },
   "keywords": [
     "system-f",
