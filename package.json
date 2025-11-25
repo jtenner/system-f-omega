@@ -31,7 +31,7 @@
     "build": "tsc",
     "clean": "rm -rf lib",
     "test": "bun test",
-    "publish-docs": "typedoc && git subtree push --prefix docs origin gh-pages"
+    "docs": "typedoc"
   },
   "keywords": [
     "system-f",
