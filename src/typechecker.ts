@@ -13218,62 +13218,116 @@ function addBinding(
 }
 
 /**
- * Adds a **new term binding** to a typechecker state.
+ * Adds a **new term binding** to the typing context (`Γ`), optionally checking
+ * the term against an **expected type**.
  *
- * This is used for:
+ * This function is used for:
  * - defining global terms in a module
- * - adding local bindings in a REPL or top‑level environment
- * - programmatically extending a context with a value definition
+ * - installing auto‑generated functions (e.g. enum constructors)
+ * - REPL bindings
+ * - validating annotated definitions
  *
- * The steps performed:
+ * You may call it in two ways:
  *
- * 1. **Infer the type** of the provided term (`inferType`).
- * 2. On success, build a {@link TermBinding}:
- *        name : inferredType
- * 3. Insert the binding into the context using {@link addBinding}.
+ * **1. Inference mode**
+ *    The typechecker infers the type automatically:
+ *    ```ts
+ *    addTerm(state, "x", conTerm("42", Int));
+ *    // x : Int
+ *    ```
  *
- * If the term fails to typecheck, the error is returned unchanged.
+ * **2. Checking mode**
+ *    The term is checked against an expected type:
+ *    ```ts
+ *    addTerm(state, "id", idTerm, forallType("A", *, A -> A));
+ *    ```
  *
- * ---------------------------------------------------------------------------
- * Error cases
- * ---------------------------------------------------------------------------
- * - Any error produced by {@link inferType}
- * - `duplicate_binding` (raised inside `addBinding` if the name already exists
- *   in the context, unless overrides are permitted)
- *
- * ---------------------------------------------------------------------------
- * @param state - Current typechecker state (context + meta environment)
- * @param name - The term variable name to bind
- * @param term - The term whose type should be inferred and added
- *
- * @returns An updated `TypeCheckerState` or a {@link TypingError}
+ * Checking mode catches mismatches early, making it ideal for:
+ * - compiler‑generated definitions (enum constructors, trait helpers)
+ * - user‑annotated definitions
+ * - validating elaboration logic
  *
  * ---------------------------------------------------------------------------
- * @example Add a simple value:
+ * Algorithm
+ * ---------------------------------------------------------------------------
+ * If `expectedType` is provided:
+ *
+ * 1. Run {@link checkType}
+ *      Γ ⊢ term ⇐ expectedType
+ * 2. If successful, use the resolved expected type.
+ *
+ * Otherwise:
+ *
+ * 1. Run {@link inferType}
+ *      Γ ⊢ term ⇒ inferredType
+ * 2. Use the inferred type.
+ *
+ * Finally:
+ *
+ * 3. Construct a {@link TermBinding}
+ * 4. Insert it into the context via {@link addBinding}
+ *
+ * ---------------------------------------------------------------------------
+ * @param state - Current typechecker state
+ * @param name - The variable name to bind
+ * @param term - The term being added to the environment
+ * @param expectedType - Optional expected type to check against
+ *
+ * @returns Updated state or a {@link TypingError}
+ *
+ * ---------------------------------------------------------------------------
+ * @example (Inference mode)
  * ```ts
  * addTerm(state, "x", conTerm("42", conType("Int")));
- * // adds: x : Int
+ * // x : Int
  * ```
  *
- * @example Add a function:
+ * @example (Checking mode)
  * ```ts
- * addTerm(state, "id", lamTerm("x", Int, varTerm("x")));
- * // adds: id : Int → Int
+ * addTerm(
+ *   state,
+ *   "id",
+ *   lamTerm("x", varType("A"), varTerm("x")),
+ *   forallType("A", starKind, arrowType(varType("A"), varType("A")))
+ * );
  * ```
  *
- * @see {@link inferType} Determines the term’s type
- * @see {@link termBinding} Constructs the context binding
- * @see {@link addBinding} Inserts the binding into the context
+ * @example (Compiler‑generated enum constructor)
+ * ```ts
+ * addTerm(state, "Some", constructorTerm, constructorType);
+ * ```
+ *
+ * @see {@link inferType} Synthesizes types in inference mode
+ * @see {@link checkType} Validates against an expected type
+ * @see {@link termBinding} Constructs the binding
+ * @see {@link addBinding} Inserts into the global context
  */
 export function addTerm(
   state: TypeCheckerState,
   name: string,
   term: Term,
+  expectedType?: Type,
 ): Result<TypingError, TypeCheckerState> {
+  if (expectedType) {
+    // check mode
+    const expected = checkType(state, term, expectedType);
+    if ("err" in expected) return expected;
+
+    // Create a binding and insert it into the context
+    const binding = termBinding(name, expected.ok.type);
+    return addBinding(state, binding);
+  }
+
+  // else infer mode
   const inferred = inferType(state, term);
+
   if ("err" in inferred) return inferred;
 
-  const binding = termBinding(name, inferred.ok);
+  // Extract resolved type from either checkType ({type, subst}) or inferType (Type)
+  const finalType = inferred.ok;
+
+  // Create a binding and insert it into the context
+  const binding = termBinding(name, finalType);
   return addBinding(state, binding);
 }
 
